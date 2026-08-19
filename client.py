@@ -1,61 +1,123 @@
 import asyncio
+import threading
 import websockets
-import sys
 
-async def receive_messages(websocket):
+PORT = 8765
+
+
+def stdin_reader(loop, queue):
+    """Читает строки с клавиатуры в отдельном потоке и кладёт их в очередь.
+
+    Поток помечен как daemon, поэтому процесс сможет завершиться, даже если
+    input() в этот момент ждёт Enter (иначе выход из клиента после обрыва
+    связи повис бы до первого нажатия клавиши).
+    """
+    while True:
+        try:
+            line = input("> ")
+        except (EOFError, KeyboardInterrupt):
+            line = None
+
+        try:
+            loop.call_soon_threadsafe(queue.put_nowait, line)
+        except RuntimeError:
+            # Цикл событий уже закрыт — клиент завершается, читать больше некому.
+            return
+
+        if line is None:
+            return
+
+
+async def receive_messages(websocket, stop_event):
     """Фоновая задача для получения сообщений от сервера."""
     try:
         async for message in websocket:
-            # Убрали жестко заданное слово "[Друг]"
-            # Теперь мы просто выводим то, что пришло (там уже будет никнейм)
+            # Выводим то, что пришло (никнейм уже внутри сообщения)
             print(f"\r{message}\n> ", end="", flush=True)
     except websockets.exceptions.ConnectionClosed:
         print("\n[Система]: Соединение с сервером потеряно.")
-        sys.exit()
+    finally:
+        # Из корутины нельзя просто выйти из процесса: вторая задача ждёт ввод
+        # в другом потоке. Поэтому сообщаем main(), что пора завершаться.
+        stop_event.set()
 
-async def send_messages(websocket, nickname):
-    """Задача для чтения текста с клавиатуры и отправки на сервер."""
-    while True:
-        message = await asyncio.to_thread(input, "> ")
-        
-        if message.lower() in ['/exit', '/quit']:
-            print("Выход из Velix...")
-            await websocket.close()
-            sys.exit()
-            
-        if message.strip():
-            # Прикрепляем никнейм к сообщению перед отправкой
-            formatted_message = f"[{nickname}]: {message}"
-            await websocket.send(formatted_message)
+
+async def send_messages(websocket, nickname, queue, stop_event):
+    """Задача для отправки на сервер того, что пользователь набрал."""
+    try:
+        while True:
+            message = await queue.get()
+
+            # None приходит, когда stdin закончился (Ctrl+D / конец файла)
+            if message is None or message.lower() in ["/exit", "/quit"]:
+                print("Выход из Velix...")
+                return
+
+            if message.strip():
+                # Прикрепляем никнейм к сообщению перед отправкой
+                formatted_message = f"[{nickname}]: {message}"
+                try:
+                    await websocket.send(formatted_message)
+                except websockets.exceptions.ConnectionClosed:
+                    print("\n[Система]: Сообщение не отправлено, соединение закрыто.")
+                    return
+    finally:
+        stop_event.set()
+
 
 async def main():
-    print(f"--- Добро пожаловать в Velix ---")
-    
-    # 1. Запрашиваем никнейм
-    nickname = input("Введите ваш никнейм: ").strip()
+    print("--- Добро пожаловать в Velix ---")
+
+    # 1. Запрашиваем никнейм.
+    # Квадратные скобки вырезаем: сообщение уходит на сервер как
+    # "[ник]: текст", и скобка внутри ника сбивала бы разбор на сервере.
+    nickname = input("Введите ваш никнейм: ").strip().replace("[", "").replace("]", "")
     if not nickname:
-        nickname = "Аноним" # Если пользователь просто нажал Enter
-        
+        nickname = "Аноним"  # Если пользователь просто нажал Enter
+
     # 2. Запрашиваем IP сервера
     server_ip = input("Введите IP-адрес сервера (нажмите Enter для localhost): ").strip()
     if not server_ip:
         server_ip = "localhost"
-    
-    uri = f"ws://{server_ip}:8765"
+
+    uri = f"ws://{server_ip}:{PORT}"
     print(f"Подключение к {uri}...")
-    
+
     try:
         async with websockets.connect(uri) as websocket:
             print(f"[Система]: Успешно подключено как {nickname}! Можно писать сообщения. (для выхода введите /exit)\n")
-            
-            # Передаем никнейм в функцию отправки
-            receive_task = asyncio.create_task(receive_messages(websocket))
-            send_task = asyncio.create_task(send_messages(websocket, nickname))
-            
-            await asyncio.gather(receive_task, send_task)
-            
+
+            stop_event = asyncio.Event()
+            queue = asyncio.Queue()
+
+            # Ввод читаем в потоке-демоне, чтобы он не держал завершение клиента
+            threading.Thread(
+                target=stdin_reader,
+                args=(asyncio.get_running_loop(), queue),
+                daemon=True,
+            ).start()
+
+            receive_task = asyncio.create_task(receive_messages(websocket, stop_event))
+            send_task = asyncio.create_task(send_messages(websocket, nickname, queue, stop_event))
+
+            # Ждём, пока любая из задач не решит, что пора закругляться
+            await stop_event.wait()
+
+            for task in (receive_task, send_task):
+                task.cancel()
+            await asyncio.gather(receive_task, send_task, return_exceptions=True)
+
     except ConnectionRefusedError:
         print("\n[Ошибка]: Сервер недоступен. Проверьте, запущен ли он.")
+    except OSError as error:
+        # Неверный адрес, недоступная сеть и прочие сетевые проблемы
+        print(f"\n[Ошибка]: Не удалось подключиться к {uri}: {error}")
+    except websockets.exceptions.WebSocketException as error:
+        print(f"\n[Ошибка]: Не удалось установить WebSocket-соединение: {error}")
+
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nВыход из Velix...")
