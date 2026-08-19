@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.Python
+build/
+dist/
+
+# Виртуальные окружения
+.venv/
+venv/
+env/
+
+# Редакторы и IDE
+.vscode/
+.idea/
+*.swp
+
+# ОС
+.DS_Store
+Thumbs.db
+
+# База данных Velix
+velix.db
+velix.db-wal
+velix.db-shm
