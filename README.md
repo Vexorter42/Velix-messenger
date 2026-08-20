@@ -99,6 +99,16 @@ python -m PyInstaller --noconfirm --onefile --windowed --name Velix --icon icon.
 Иконка лежит в `icon.ico` (и `icon.png` для превью). Приложение подхватывает её
 и когда запущено из исходников, и внутри собранного exe.
 
+Сами `Velix.exe` и `VelixSetup.exe` в репозиторий не коммитятся — они
+собираются из исходников и весят три десятка мегабайт. Готовые сборки
+выкладываются в разделе Releases:
+
+```bash
+gh release create v1.0.0 Velix.exe VelixSetup.exe --title "Velix 1.0.0" --notes "Что нового"
+```
+
+Версия в `installer.iss` (`AppVersion`) должна совпадать с номером релиза.
+
 ## Кто может подключиться
 
 По умолчанию сервер принимает всех, кто дозвонился до порта. Если задать
