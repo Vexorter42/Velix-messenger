@@ -7,17 +7,65 @@
 """
 
 import asyncio
+import io
+import os
 import queue
-import re
+import subprocess
 import sys
+import tempfile
 import threading
 from datetime import datetime
 from pathlib import Path
+from tkinter import filedialog
 
 import customtkinter as ctk
 import websockets
+from PIL import Image, ImageSequence
+
+import protocol
 
 PORT = 8765
+
+# Картинку в чате шире этого не показываем — иначе пузырь распирает окно
+MAX_PICTURE = (360, 360)
+
+# Кадров в гифке берём не больше: длинные ролики иначе съедают память
+MAX_GIF_FRAMES = 120
+
+# Палитра снята с Telegram Desktop. Пары — (светлая тема, тёмная тема),
+# CustomTkinter сам подставит нужную половину.
+SIDEBAR = ("#ffffff", "#17212b")
+SIDEBAR_ACTIVE = ("#419fd9", "#2b5278")
+CHAT_BG = ("#e6ebf0", "#0e1621")
+COMPOSER = ("#ffffff", "#17212b")
+INPUT_BG = ("#f1f3f5", "#242f3d")
+BUBBLE_IN = ("#ffffff", "#182533")
+BUBBLE_OUT = ("#effdde", "#2b5278")
+TEXT = ("#000000", "#ffffff")
+TEXT_OUT = ("#000000", "#ffffff")
+MUTED = ("#707579", "#708499")
+TIME_IN = ("#a1aab3", "#6d7f8f")
+TIME_OUT = ("#62ad5a", "#7da8d3")
+ACCENT = ("#3390ec", "#5288c1")
+ACCENT_HOVER = ("#2b7fd4", "#3f6d9e")
+SEPARATOR = ("#dfe4e9", "#1b2836")
+SERVICE_BG = ("#ffffff", "#1b2836")
+ON_ACCENT = "#ffffff"
+ONLINE = ("#31a24c", "#4dc866")
+OFFLINE = ("#d1435b", "#ec5f75")
+
+AVATAR_COLORS = ["#e17076", "#faa774", "#a695e7", "#7bc862",
+                 "#6ec9cb", "#65aadd", "#ee7aae"]
+
+MONTHS = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля",
+          "августа", "сентября", "октября", "ноября", "декабря"]
+
+KIND_LABEL = {"video": "Видео", "file": "Файл"}
+
+
+def avatar_color(nickname):
+    """Цвет аватарки закреплён за никнеймом, чтобы не прыгал между запусками."""
+    return AVATAR_COLORS[sum(map(ord, nickname)) % len(AVATAR_COLORS)]
 
 
 def build_uri(address):
@@ -54,44 +102,23 @@ def resource_path(name):
     base = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
     return base / name
 
-# Палитра снята с Telegram Desktop. Пары — (светлая тема, тёмная тема),
-# CustomTkinter сам подставит нужную половину.
-SIDEBAR = ("#ffffff", "#17212b")
-SIDEBAR_ACTIVE = ("#419fd9", "#2b5278")
-CHAT_BG = ("#e6ebf0", "#0e1621")
-COMPOSER = ("#ffffff", "#17212b")
-INPUT_BG = ("#f1f3f5", "#242f3d")
-BUBBLE_IN = ("#ffffff", "#182533")
-BUBBLE_OUT = ("#effdde", "#2b5278")
-TEXT = ("#000000", "#ffffff")
-TEXT_OUT = ("#000000", "#ffffff")
-MUTED = ("#707579", "#708499")
-TIME_IN = ("#a1aab3", "#6d7f8f")
-TIME_OUT = ("#62ad5a", "#7da8d3")
-ACCENT = ("#3390ec", "#5288c1")
-ACCENT_HOVER = ("#2b7fd4", "#3f6d9e")
-SEPARATOR = ("#dfe4e9", "#1b2836")
-SERVICE_BG = ("#ffffff", "#1b2836")
-ON_ACCENT = "#ffffff"
-ONLINE = ("#31a24c", "#4dc866")
-OFFLINE = ("#d1435b", "#ec5f75")
 
-# Цвета аватарок — те же семь оттенков, что раздаёт Telegram
-AVATAR_COLORS = ["#e17076", "#faa774", "#a695e7", "#7bc862",
-                 "#6ec9cb", "#65aadd", "#ee7aae"]
-
-MONTHS = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля",
-          "августа", "сентября", "октября", "ноября", "декабря"]
-
-# Строка истории: "[20.08 00:52] [Гоша]: привет"
-HISTORY_PATTERN = re.compile(r"^\[(\d{2})\.(\d{2}) (\d{2}:\d{2})\] \[(.*?)\]: (.*)$", re.DOTALL)
-# Живое сообщение: "[Гоша]: привет"
-MESSAGE_PATTERN = re.compile(r"^\[(.*?)\]: (.*)$", re.DOTALL)
+def local_time(moment):
+    """Время сообщения из строки UTC в местном поясе."""
+    try:
+        return datetime.fromisoformat(moment).astimezone()
+    except (TypeError, ValueError):
+        return datetime.now()
 
 
-def avatar_color(nickname):
-    """Цвет аватарки закреплён за никнеймом, чтобы не прыгал между запусками."""
-    return AVATAR_COLORS[sum(map(ord, nickname)) % len(AVATAR_COLORS)]
+def open_in_system(path):
+    """Открывает файл тем, чем его открывает система."""
+    if sys.platform == "win32":
+        os.startfile(path)  # noqa: S606
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", path])
+    else:
+        subprocess.Popen(["xdg-open", path])
 
 
 class Network:
@@ -105,9 +132,17 @@ class Network:
     def connect(self, uri):
         threading.Thread(target=self._run, args=(uri,), daemon=True).start()
 
-    def send(self, text):
-        if self.websocket is not None and self.loop is not None:
-            asyncio.run_coroutine_threadsafe(self.websocket.send(text), self.loop)
+    def send(self, frame, payload=None):
+        """Отправляет кадр, при необходимости следом двоичный."""
+        if self.websocket is None or self.loop is None:
+            return
+
+        async def deliver(websocket):
+            await websocket.send(frame)
+            if payload is not None:
+                await websocket.send(payload)
+
+        asyncio.run_coroutine_threadsafe(deliver(self.websocket), self.loop)
 
     def disconnect(self):
         if self.websocket is not None and self.loop is not None:
@@ -130,12 +165,20 @@ class Network:
     async def _session(self, uri):
         connection = None
         try:
-            async with websockets.connect(uri) as websocket:
+            async with websockets.connect(uri, max_size=protocol.MAX_FRAME_SIZE) as websocket:
                 connection = websocket
                 self.websocket = websocket
                 self.events.put(("connected", None))
-                async for message in websocket:
+
+                while True:
+                    message = protocol.decode(await websocket.recv())
+                    if message is None:
+                        continue
+                    if message.get("type") == "blob":
+                        # За описанием вложения сразу идёт кадр с содержимым
+                        message["data"] = await websocket.recv()
                     self.events.put(("message", message))
+
         except ConnectionRefusedError:
             self.events.put(("error", "Сервер недоступен. Проверьте, запущен ли он."))
             return
@@ -180,6 +223,12 @@ class VelixApp(ctk.CTk):
         self.last_sender = None
         self.current_date = None
         self.empty_hint = None
+
+        # Вложения, содержимое которых мы ждём от сервера
+        self.pending_media = {}
+        # Ссылки на картинки: без них Tkinter выбрасывает их сборщиком мусора
+        self.images = []
+        self.animations = {}
 
         self.font_title = ctk.CTkFont(family="Segoe UI Semibold", size=26)
         self.font_name = ctk.CTkFont(family="Segoe UI Semibold", size=14)
@@ -239,10 +288,12 @@ class VelixApp(ctk.CTk):
 
         self.connect_error = ctk.CTkLabel(card, text="", font=self.font_small,
                                           text_color=OFFLINE, wraplength=300)
-        self.connect_error.pack(padx=48, pady=(0, 24))
+        self.connect_error.pack(padx=48, pady=(0, 22))
 
         self.nickname_entry.bind("<Return>", lambda event: self._on_connect())
         self.server_entry.bind("<Return>", lambda event: self._on_connect())
+        for entry in (self.nickname_entry, self.server_entry):
+            entry.bind("<Control-KeyPress>", self._on_entry_shortcut)
 
     def _entry(self, master, placeholder):
         return ctk.CTkEntry(
@@ -346,20 +397,29 @@ class VelixApp(ctk.CTk):
 
         composer = ctk.CTkFrame(main, fg_color=COMPOSER, corner_radius=0)
         composer.grid(row=2, column=0, sticky="ew")
-        composer.grid_columnconfigure(0, weight=1)
+        composer.grid_columnconfigure(1, weight=1)
+
+        self.attach_button = ctk.CTkButton(
+            composer, text="+", width=44, height=44, corner_radius=22,
+            font=ctk.CTkFont(family="Segoe UI", size=22), fg_color=INPUT_BG,
+            hover_color=SEPARATOR, text_color=MUTED, command=self._on_attach)
+        self.attach_button.grid(row=0, column=0, padx=(18, 8), pady=13)
 
         self.message_entry = ctk.CTkEntry(
             composer, placeholder_text="Написать сообщение…", height=44,
             corner_radius=22, border_width=0, fg_color=INPUT_BG, text_color=TEXT,
             placeholder_text_color=MUTED, font=self.font_body)
-        self.message_entry.grid(row=0, column=0, sticky="ew", padx=(18, 10), pady=13)
+        self.message_entry.grid(row=0, column=1, sticky="ew", padx=(0, 10), pady=13)
         self.message_entry.bind("<Return>", lambda event: self._on_send())
+        # Ctrl+V ловим по коду клавиши, а не по букве: при русской раскладке
+        # событие <Control-v> просто не приходит
+        self.message_entry.bind("<Control-KeyPress>", self._on_ctrl_key)
 
         self.send_button = ctk.CTkButton(
             composer, text="➤", width=44, height=44, corner_radius=22,
             font=ctk.CTkFont(family="Segoe UI", size=16), fg_color=ACCENT,
             hover_color=ACCENT_HOVER, text_color=ON_ACCENT, command=self._on_send)
-        self.send_button.grid(row=0, column=1, padx=(0, 18), pady=13)
+        self.send_button.grid(row=0, column=2, padx=(0, 18), pady=13)
 
     def _show_connect(self):
         self.chat_view.pack_forget()
@@ -374,7 +434,7 @@ class VelixApp(ctk.CTk):
     # ------------------------------------------------------------ действия
 
     def _on_connect(self):
-        # Квадратные скобки вырезаем: сообщение уходит как "[ник]: текст"
+        # Квадратные скобки вырезаем: имя показывается в подписи к сообщению
         nickname = self.nickname_entry.get().strip().replace("[", "").replace("]", "")
         if not nickname:
             nickname = "Аноним"
@@ -392,10 +452,129 @@ class VelixApp(ctk.CTk):
             return
 
         self.message_entry.delete(0, "end")
-        self.network.send(f"[{self.nickname}]: {text}")
+        self.network.send(protocol.text_message(self.nickname, text))
         now = datetime.now()
         self._ensure_date(now.strftime("%d.%m"))
         self._add_bubble(self.nickname, text, own=True, time_text=now.strftime("%H:%M"))
+
+    def _on_attach(self):
+        """Выбор файла для отправки."""
+        if self.network.websocket is None:
+            return
+
+        path = filedialog.askopenfilename(
+            title="Что отправляем?",
+            filetypes=[
+                ("Картинки и видео", "*.png *.jpg *.jpeg *.webp *.bmp *.gif "
+                                     "*.mp4 *.mov *.webm *.mkv *.avi *.m4v"),
+                ("Картинки", "*.png *.jpg *.jpeg *.webp *.bmp *.gif"),
+                ("Видео", "*.mp4 *.mov *.webm *.mkv *.avi *.m4v"),
+                ("Все файлы", "*.*"),
+            ])
+        if path:
+            self._send_file(Path(path))
+
+    def _on_entry_shortcut(self, event):
+        """Ctrl+A/C/X/V в полях ввода.
+
+        Tkinter вешает эти сочетания на буквы, а при русской раскладке
+        приходит не «v», а «м», и встроенная вставка просто не срабатывает.
+        Поэтому ловим по коду клавиши — он от раскладки не зависит.
+        """
+        entry = event.widget
+
+        if event.keycode == 65:  # A — выделить всё
+            entry.select_range(0, "end")
+            entry.icursor("end")
+            return "break"
+
+        if event.keycode in (67, 88):  # C и X — копировать и вырезать
+            try:
+                selection = entry.selection_get()
+            except Exception:
+                return "break"
+            self.clipboard_clear()
+            self.clipboard_append(selection)
+            if event.keycode == 88:
+                entry.delete("sel.first", "sel.last")
+            return "break"
+
+        if event.keycode == 86:  # V — вставить
+            return self._paste_text(entry)
+
+        return None
+
+    def _paste_text(self, entry):
+        """Вставляет текст из буфера в поле, заменяя выделенное."""
+        try:
+            text = self.clipboard_get()
+        except Exception:
+            return "break"
+
+        try:
+            entry.delete("sel.first", "sel.last")
+        except Exception:
+            pass
+        entry.insert("insert", text.strip().replace("\n", " "))
+        return "break"
+
+    def _on_ctrl_key(self, event):
+        """Ctrl+V в поле сообщения: сначала пробуем картинку из буфера."""
+        if event.keycode != 86:  # клавиша V, независимо от раскладки
+            return self._on_entry_shortcut(event)
+        if self._paste_from_clipboard() == "break":
+            return "break"
+        return self._paste_text(event.widget)
+
+    def _paste_from_clipboard(self):
+        """Возвращает "break", если вставку обработали сами."""
+        if self.network.websocket is None:
+            return None
+
+        try:
+            from PIL import ImageGrab
+            content = ImageGrab.grabclipboard()
+        except Exception:
+            return None
+
+        if isinstance(content, Image.Image):
+            buffer = io.BytesIO()
+            content.save(buffer, "PNG")
+            self._send_bytes("вставка.png", buffer.getvalue())
+            return "break"
+
+        if isinstance(content, list) and content:
+            for item in content[:5]:
+                path = Path(item)
+                if path.is_file():
+                    self._send_file(path)
+            return "break"
+
+        return None  # в буфере текст — пусть вставится как обычно
+
+    def _send_file(self, path):
+        try:
+            data = path.read_bytes()
+        except OSError as error:
+            self._service_label(f"Не удалось прочитать файл: {error}")
+            return
+        self._send_bytes(path.name, data)
+
+    def _send_bytes(self, name, data):
+        if len(data) > protocol.MAX_MEDIA_SIZE:
+            self._service_label(
+                f"«{name}» весит {protocol.human_size(len(data))}, а больше "
+                f"{protocol.human_size(protocol.MAX_MEDIA_SIZE)} сервер не принимает.")
+            return
+
+        kind = protocol.kind_of(name)
+        self.network.send(protocol.media_header(self.nickname, kind, name, len(data)), data)
+
+        now = datetime.now()
+        self._ensure_date(now.strftime("%d.%m"))
+        self._add_media_bubble(self.nickname, own=True, kind=kind, media_id=None,
+                               name=name, size=len(data),
+                               time_text=now.strftime("%H:%M"), data=data)
 
     def _on_leave(self):
         self.network.disconnect()
@@ -413,8 +592,7 @@ class VelixApp(ctk.CTk):
     def _on_resize(self, event):
         if event.widget is not self:
             return
-        # Пузырь не должен растягиваться на всю переписку — держим его в
-        # пределах примерно половины окна, как это делает Telegram
+        # Пузырь не должен растягиваться на всю переписку — ограничиваем ширину
         wrap = max(240, int((event.width - 292) * 0.62))
         if abs(wrap - self.wrap_length) > 24:
             self.wrap_length = wrap
@@ -442,51 +620,54 @@ class VelixApp(ctk.CTk):
             widget.destroy()
         self.last_sender = None
         self.current_date = None
+        self.pending_media.clear()
+        self.images.clear()
+        self.animations.clear()
         self.empty_hint = self._service_label("Пока тихо. Напишите первым.")
         self.header_subtitle.configure(text=f"вы вошли как {self.nickname}")
         self.status_dot.configure(text_color=ONLINE)
         self.message_entry.configure(state="normal")
         self.send_button.configure(state="normal")
+        self.attach_button.configure(state="normal")
         self.connect_button.configure(text="ПОДКЛЮЧИТЬСЯ", state="normal")
         self._show_chat()
 
-    def _on_message(self, raw_message):
-        # История приходит одним сообщением, внутри которого несколько строк
-        for line in raw_message.split("\n"):
-            if not line.strip():
-                continue
+    def _on_message(self, message):
+        kind = message.get("type")
 
-            if line.startswith("[Система]:"):
-                notice = line[len("[Система]:"):].strip()
-                # Служебные пометки истории в телеграмном оформлении не нужны:
-                # границу между старым и новым показывают плашки с датой.
-                if notice.startswith("последние сообщения") or "конец истории" in notice:
-                    continue
-                self._service_label(notice)
-                continue
+        if kind == "history":
+            for item in message.get("items", []):
+                self._show_item(item)
+        elif kind in ("text", "media"):
+            self._show_item(message)
+        elif kind == "blob":
+            self._fill_media(message)
+        elif kind == "system":
+            self._service_label(message.get("text", ""))
+        elif kind == "error":
+            self._service_label(message.get("text", ""))
 
-            match = HISTORY_PATTERN.match(line)
-            if match is not None:
-                day, month, time_text, nickname, text = match.groups()
-                self._ensure_date(f"{day}.{month}")
-                self._add_bubble(nickname, text, own=False, time_text=time_text)
-                continue
+    def _show_item(self, item):
+        """Показывает одно сообщение — своё или чужое, текст или вложение."""
+        moment = local_time(item.get("at"))
+        self._ensure_date(moment.strftime("%d.%m"))
+        nickname = item.get("nick", "?")
+        time_text = moment.strftime("%H:%M")
 
-            match = MESSAGE_PATTERN.match(line)
-            if match is not None:
-                now = datetime.now()
-                self._ensure_date(now.strftime("%d.%m"))
-                self._add_bubble(match.group(1), match.group(2), own=False,
-                                 time_text=now.strftime("%H:%M"))
-                continue
-
-            self._service_label(line)
+        if item.get("kind", "text") == "text":
+            self._add_bubble(nickname, item.get("text", ""), own=False,
+                             time_text=time_text)
+        else:
+            self._add_media_bubble(nickname, own=False, kind=item["kind"],
+                                   media_id=item.get("id"), name=item.get("name", "файл"),
+                                   size=item.get("size", 0), time_text=time_text)
 
     def _on_disconnected(self):
         self.status_dot.configure(text_color=OFFLINE)
         self.header_subtitle.configure(text="нет связи с сервером")
         self.message_entry.configure(state="disabled")
         self.send_button.configure(state="disabled")
+        self.attach_button.configure(state="disabled")
         self._service_label("Соединение потеряно. Нажмите «Выйти», чтобы подключиться заново.")
 
     def _on_error(self, text):
@@ -517,24 +698,23 @@ class VelixApp(ctk.CTk):
         self.last_sender = None
 
     def _service_label(self, text):
-        """Служебная строка: тёмная скруглённая плашка по центру."""
+        """Служебная строка: скруглённая плашка по центру."""
         self._clear_hint()
         row = ctk.CTkFrame(self.messages, fg_color="transparent")
         row.pack(fill="x", pady=8)
-        label = ctk.CTkLabel(row, text=text, font=self.font_small, text_color=MUTED,
-                             fg_color=SERVICE_BG, corner_radius=12, height=26,
-                             wraplength=self.wrap_length)
-        label.pack(padx=14, ipadx=10)
+        ctk.CTkLabel(row, text=text, font=self.font_small, text_color=MUTED,
+                     fg_color=SERVICE_BG, corner_radius=12, height=26,
+                     wraplength=self.wrap_length).pack(padx=14, ipadx=10)
         self._scroll_to_bottom()
         return row
 
-    def _add_bubble(self, nickname, text, own, time_text=None):
-        self._clear_hint()
+    def _new_bubble(self, nickname, own):
+        """Общая обвязка пузыря: ряд, аватарка, подпись автора."""
         grouped = self.last_sender == (nickname, own)
         self.last_sender = (nickname, own)
 
         row = ctk.CTkFrame(self.messages, fg_color="transparent")
-        row.pack(fill="x", padx=14, pady=(1 if grouped else 5, 0))
+        row.pack(fill="x", padx=22, pady=(1 if grouped else 5, 0))
 
         if not own:
             # Аватарку показываем только у первого сообщения в серии, дальше
@@ -557,18 +737,153 @@ class VelixApp(ctk.CTk):
                          text_color=avatar_color(nickname), anchor="w").pack(
                 fill="x", padx=13, pady=(7, 0))
 
+        return bubble, grouped
+
+    def _add_time(self, bubble, own, time_text):
+        if not time_text:
+            return
+        ctk.CTkLabel(bubble, text=time_text, font=self.font_small,
+                     text_color=TIME_OUT if own else TIME_IN, anchor="e").pack(
+            fill="x", padx=13, pady=(0, 5))
+
+    def _add_bubble(self, nickname, text, own, time_text=None):
+        self._clear_hint()
+        bubble, grouped = self._new_bubble(nickname, own)
+
         ctk.CTkLabel(bubble, text=text, font=self.font_body,
                      text_color=TEXT_OUT if own else TEXT, justify="left",
                      anchor="w", wraplength=self.wrap_length).pack(
             fill="x", padx=13, pady=(3 if own or grouped else 1, 0))
 
-        if time_text:
-            ctk.CTkLabel(bubble, text=time_text, font=self.font_small,
-                         text_color=TIME_OUT if own else TIME_IN, anchor="e").pack(
-                fill="x", padx=13, pady=(0, 5))
-
+        self._add_time(bubble, own, time_text)
         self._update_preview(nickname, text, time_text, own)
         self._scroll_to_bottom()
+
+    # ----------------------------------------------------------- вложения
+
+    def _add_media_bubble(self, nickname, own, kind, media_id, name, size,
+                          time_text=None, data=None):
+        self._clear_hint()
+        bubble, _ = self._new_bubble(nickname, own)
+
+        if kind in ("image", "gif"):
+            holder = ctk.CTkLabel(bubble, text="загружаю картинку…",
+                                  font=self.font_small, text_color=MUTED)
+            holder.pack(padx=6, pady=(6, 2))
+
+            if data is not None:
+                self._show_picture(holder, kind, data)
+            elif media_id:
+                self.pending_media[media_id] = ("picture", holder, kind)
+                self.network.send(protocol.fetch_request(media_id))
+        else:
+            holder = self._file_card(bubble, own, kind, media_id, name, size, data)
+
+        self._add_time(bubble, own, time_text)
+        label = f"{KIND_LABEL.get(kind, 'Фото')}: {name}" if kind not in ("image", "gif") \
+            else ("GIF" if kind == "gif" else "Фото")
+        self._update_preview(nickname, label, time_text, own)
+        self._scroll_to_bottom()
+
+    def _file_card(self, bubble, own, kind, media_id, name, size, data):
+        """Видео и прочие файлы показываем карточкой с кнопкой «Открыть»."""
+        card = ctk.CTkFrame(bubble, fg_color="transparent")
+        card.pack(padx=13, pady=(4, 2))
+
+        caption = KIND_LABEL.get(kind, "Файл")
+        ctk.CTkLabel(card, text=f"{caption} · {name}", font=self.font_body,
+                     text_color=TEXT_OUT if own else TEXT, anchor="w",
+                     wraplength=self.wrap_length - 40).pack(fill="x")
+        ctk.CTkLabel(card, text=protocol.human_size(size or 0), font=self.font_small,
+                     text_color=TIME_OUT if own else TIME_IN, anchor="w").pack(fill="x")
+
+        button = ctk.CTkButton(card, text="Открыть", height=30, corner_radius=8,
+                               font=self.font_small, fg_color=ACCENT,
+                               hover_color=ACCENT_HOVER, text_color=ON_ACCENT)
+        button.pack(fill="x", pady=(6, 2))
+
+        if data is not None:
+            button.configure(command=lambda: self._open_media(name, data))
+        elif media_id:
+            def request():
+                button.configure(text="Загружаю…", state="disabled")
+                self.pending_media[media_id] = ("file", button, name)
+                self.network.send(protocol.fetch_request(media_id))
+            button.configure(command=request)
+        else:
+            button.configure(state="disabled")
+
+        return card
+
+    def _fill_media(self, message):
+        """Пришло содержимое вложения — показываем его."""
+        waiting = self.pending_media.pop(message.get("id"), None)
+        if waiting is None:
+            return
+
+        mode, widget, extra = waiting
+        data = message.get("data") or b""
+
+        if mode == "picture":
+            self._show_picture(widget, extra, data)
+        else:
+            widget.configure(text="Открыть", state="normal",
+                             command=lambda: self._open_media(extra, data))
+            self._open_media(extra, data)
+
+    def _show_picture(self, holder, kind, data):
+        """Заменяет заглушку картинкой, гифку — запускает."""
+        try:
+            image = Image.open(io.BytesIO(data))
+            frames = self._prepare_frames(image, kind)
+        except Exception as error:
+            holder.configure(text=f"не удалось показать картинку: {error}")
+            return
+
+        self.images.extend(frames)
+        holder.configure(text="", image=frames[0])
+
+        if len(frames) > 1:
+            delay = max(30, int(image.info.get("duration", 80)))
+            self.animations[holder] = frames
+            self._animate(holder, frames, 0, delay)
+
+    def _prepare_frames(self, image, kind):
+        """Готовит кадры: обычной картинке — один, гифке — все по очереди."""
+        if kind != "gif":
+            picture = image.convert("RGBA")
+            picture.thumbnail(MAX_PICTURE, Image.LANCZOS)
+            return [ctk.CTkImage(light_image=picture, dark_image=picture,
+                                 size=picture.size)]
+
+        frames = []
+        for frame in ImageSequence.Iterator(image):
+            picture = frame.convert("RGBA")
+            picture.thumbnail(MAX_PICTURE, Image.LANCZOS)
+            frames.append(ctk.CTkImage(light_image=picture, dark_image=picture,
+                                       size=picture.size))
+            if len(frames) >= MAX_GIF_FRAMES:
+                break
+        return frames or [ctk.CTkImage(light_image=image.convert("RGBA"),
+                                       dark_image=image.convert("RGBA"))]
+
+    def _animate(self, holder, frames, index, delay):
+        """Крутит кадры гифки, пока пузырь жив."""
+        if not holder.winfo_exists() or self.animations.get(holder) is not frames:
+            return
+        holder.configure(image=frames[index])
+        self.after(delay, self._animate, holder, frames, (index + 1) % len(frames), delay)
+
+    def _open_media(self, name, data):
+        """Сохраняет вложение во временный файл и открывает системным плеером."""
+        folder = Path(tempfile.gettempdir()) / "velix"
+        folder.mkdir(exist_ok=True)
+        path = folder / name
+        try:
+            path.write_bytes(data)
+            open_in_system(path)
+        except OSError as error:
+            self._service_label(f"Не удалось открыть файл: {error}")
 
     def _update_preview(self, nickname, text, time_text, own):
         """Последнее сообщение видно в списке чатов слева."""

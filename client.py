@@ -1,8 +1,23 @@
+"""Консольный клиент Velix.
+
+Показывает переписку в терминале. Вложения тут не нарисуешь, поэтому картинки
+и видео отображаются строкой с именем и размером — смотреть их нужно в оконном
+клиенте.
+"""
+
 import asyncio
+import queue
+import sys
 import threading
+from datetime import datetime
+
 import websockets
 
+import protocol
+
 PORT = 8765
+
+KIND_LABEL = {"image": "фото", "gif": "гифку", "video": "видео", "file": "файл"}
 
 
 def build_uri(address):
@@ -30,12 +45,33 @@ def build_uri(address):
     return f"ws://{address}:{PORT}"
 
 
-def stdin_reader(loop, queue):
+def format_item(item):
+    """Собирает строку для показа в терминале."""
+    try:
+        stamp = datetime.fromisoformat(item["at"]).astimezone().strftime("%H:%M")
+    except (KeyError, TypeError, ValueError):
+        stamp = datetime.now().strftime("%H:%M")
+
+    nickname = item.get("nick", "?")
+    if item.get("kind", "text") == "text":
+        return f"[{stamp}] {nickname}: {item.get('text', '')}"
+
+    label = KIND_LABEL.get(item.get("kind"), "файл")
+    size = protocol.human_size(item.get("size") or 0)
+    return (f"[{stamp}] {nickname} прислал {label}: {item.get('name', 'без имени')}"
+            f" ({size}) — открыть можно в оконном клиенте")
+
+
+def show(line):
+    """Печатает строку, не затирая набранное приглашение ввода."""
+    print(f"\r{line}\n> ", end="", flush=True)
+
+
+def stdin_reader(loop, outgoing):
     """Читает строки с клавиатуры в отдельном потоке и кладёт их в очередь.
 
     Поток помечен как daemon, поэтому процесс сможет завершиться, даже если
-    input() в этот момент ждёт Enter (иначе выход из клиента после обрыва
-    связи повис бы до первого нажатия клавиши).
+    input() в этот момент ждёт Enter.
     """
     while True:
         try:
@@ -44,7 +80,7 @@ def stdin_reader(loop, queue):
             line = None
 
         try:
-            loop.call_soon_threadsafe(queue.put_nowait, line)
+            loop.call_soon_threadsafe(outgoing.put_nowait, line)
         except RuntimeError:
             # Цикл событий уже закрыт — клиент завершается, читать больше некому.
             return
@@ -56,9 +92,28 @@ def stdin_reader(loop, queue):
 async def receive_messages(websocket, stop_event):
     """Фоновая задача для получения сообщений от сервера."""
     try:
-        async for message in websocket:
-            # Выводим то, что пришло (никнейм уже внутри сообщения)
-            print(f"\r{message}\n> ", end="", flush=True)
+        while True:
+            message = protocol.decode(await websocket.recv())
+            if message is None:
+                continue
+
+            kind = message.get("type")
+            if kind == "history":
+                items = message.get("items", [])
+                if items:
+                    show("--- последние сообщения ---")
+                    for item in items:
+                        show(format_item(item))
+                    show("--- конец истории ---")
+            elif kind in ("text", "media"):
+                show(format_item(message))
+            elif kind in ("system", "error"):
+                show(f"[Система]: {message.get('text', '')}")
+            elif kind == "blob":
+                # Содержимое вложений консольному клиенту не нужно,
+                # но кадр с данными идёт следом и его надо вычитать
+                await websocket.recv()
+
     except websockets.exceptions.ConnectionClosed:
         print("\n[Система]: Соединение с сервером потеряно.")
     finally:
@@ -67,11 +122,11 @@ async def receive_messages(websocket, stop_event):
         stop_event.set()
 
 
-async def send_messages(websocket, nickname, queue, stop_event):
+async def send_messages(websocket, nickname, outgoing, stop_event):
     """Задача для отправки на сервер того, что пользователь набрал."""
     try:
         while True:
-            message = await queue.get()
+            message = await outgoing.get()
 
             # None приходит, когда stdin закончился (Ctrl+D / конец файла)
             if message is None or message.lower() in ["/exit", "/quit"]:
@@ -79,10 +134,8 @@ async def send_messages(websocket, nickname, queue, stop_event):
                 return
 
             if message.strip():
-                # Прикрепляем никнейм к сообщению перед отправкой
-                formatted_message = f"[{nickname}]: {message}"
                 try:
-                    await websocket.send(formatted_message)
+                    await websocket.send(protocol.text_message(nickname, message))
                 except websockets.exceptions.ConnectionClosed:
                     print("\n[Система]: Сообщение не отправлено, соединение закрыто.")
                     return
@@ -93,14 +146,12 @@ async def send_messages(websocket, nickname, queue, stop_event):
 async def main():
     print("--- Добро пожаловать в Velix ---")
 
-    # 1. Запрашиваем никнейм.
-    # Квадратные скобки вырезаем: сообщение уходит на сервер как
-    # "[ник]: текст", и скобка внутри ника сбивала бы разбор на сервере.
-    nickname = input("Введите ваш никнейм: ").strip().replace("[", "").replace("]", "")
+    # 1. Запрашиваем никнейм
+    nickname = input("Введите ваш никнейм: ").strip()
     if not nickname:
         nickname = "Аноним"  # Если пользователь просто нажал Enter
 
-    # 2. Запрашиваем IP сервера
+    # 2. Запрашиваем адрес сервера
     server_ip = input("Адрес сервера, можно с портом (Enter — localhost): ").strip()
     if not server_ip:
         server_ip = "localhost"
@@ -109,21 +160,21 @@ async def main():
     print(f"Подключение к {uri}...")
 
     try:
-        async with websockets.connect(uri) as websocket:
+        async with websockets.connect(uri, max_size=protocol.MAX_FRAME_SIZE) as websocket:
             print(f"[Система]: Успешно подключено как {nickname}! Можно писать сообщения. (для выхода введите /exit)\n")
 
             stop_event = asyncio.Event()
-            queue = asyncio.Queue()
+            outgoing = asyncio.Queue()
 
             # Ввод читаем в потоке-демоне, чтобы он не держал завершение клиента
             threading.Thread(
                 target=stdin_reader,
-                args=(asyncio.get_running_loop(), queue),
+                args=(asyncio.get_running_loop(), outgoing),
                 daemon=True,
             ).start()
 
             receive_task = asyncio.create_task(receive_messages(websocket, stop_event))
-            send_task = asyncio.create_task(send_messages(websocket, nickname, queue, stop_event))
+            send_task = asyncio.create_task(send_messages(websocket, nickname, outgoing, stop_event))
 
             # Ждём, пока любая из задач не решит, что пора закругляться
             await stop_event.wait()
