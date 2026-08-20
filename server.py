@@ -32,6 +32,11 @@ ALLOWED_HOSTS = {
 
 MAX_TEXT = 4000
 
+# Свежая сборка для кнопки «Обновить» в клиенте: рядом кладутся Velix.exe и
+# version.txt с номером версии. Каталог можно увести переменной VELIX_UPDATES.
+UPDATES_DIR = Path(os.environ.get("VELIX_UPDATES")
+                   or Path(__file__).with_name("updates"))
+
 # Аватарка — картинка, и большая тут ни к чему
 MAX_AVATAR_SIZE = 4 * 1024 * 1024
 
@@ -70,6 +75,35 @@ def check_host(connection, request):
 
     print(f"[Сервер]: Отклонено подключение по имени '{host_header}'")
     return connection.respond(HTTPStatus.FORBIDDEN, "Здесь ничего нет.\n")
+
+
+def available_update():
+    """Что за версия лежит в каталоге обновлений. None, если ничего нет."""
+    build = UPDATES_DIR / "Velix.exe"
+    marker = UPDATES_DIR / "version.txt"
+    if not build.exists() or not marker.exists():
+        return None
+    try:
+        version = marker.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not version:
+        return None
+    return {"version": version, "size": build.stat().st_size}
+
+
+async def handle_update(websocket):
+    """Отдаёт клиенту свежую сборку."""
+    update = available_update()
+    if update is None:
+        await websocket.send(protocol.error_message("Обновление недоступно."))
+        return
+
+    data = await asyncio.to_thread((UPDATES_DIR / "Velix.exe").read_bytes)
+    print(f"[Сервер]: Отдаём обновление {update['version']} "
+          f"({protocol.human_size(len(data))})")
+    await websocket.send(protocol.update_header(update["version"], len(data)))
+    await websocket.send(data)
 
 
 def clean_filename(value):
@@ -298,7 +332,8 @@ async def chat_handler(websocket):
         return
 
     try:
-        await websocket.send(protocol.welcome_message(user, token))
+        await websocket.send(protocol.welcome_message(user, token,
+                                                      available_update()))
         # Историю отдаём до регистрации в connected_clients, иначе новые
         # сообщения чата могли бы вклиниться в середину выгрузки.
         await websocket.send(protocol.history_message(await storage.last_messages()))
@@ -326,6 +361,8 @@ async def chat_handler(websocket):
                 await handle_profile(websocket, user, message)
             elif kind == "avatar":
                 await handle_avatar(websocket, user, message)
+            elif kind == "update":
+                await handle_update(websocket)
             elif kind == "logout":
                 await storage.forget_token(token)
                 await websocket.close()
@@ -354,6 +391,9 @@ async def main():
             print(f"Слушаем подключения на порту {PORT} (например, ws://localhost:{PORT})...")
             if ALLOWED_HOSTS:
                 print(f"Пускаем только по именам: {', '.join(sorted(ALLOWED_HOSTS))}")
+            update = available_update()
+            print(f"Раздаём обновление {update['version']}" if update
+                  else "Обновление для раздачи не найдено")
 
             # future() работает как бесконечный цикл, не давая серверу завершить работу
             await asyncio.Future()

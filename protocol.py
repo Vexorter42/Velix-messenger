@@ -13,8 +13,12 @@ VERSION = 3
 # Больше этого файлы не принимаем — и сокет не забьётся, и малина цела
 MAX_MEDIA_SIZE = 25 * 1024 * 1024
 
+# Обновление приложения приезжает одним куском и весит заметно больше
+# вложения, поэтому запас считаем по нему
+MAX_UPDATE_SIZE = 80 * 1024 * 1024
+
 # Запас поверх лимита: в кадр кроме файла попадают и служебные байты
-MAX_FRAME_SIZE = MAX_MEDIA_SIZE + 1024 * 1024
+MAX_FRAME_SIZE = max(MAX_MEDIA_SIZE, MAX_UPDATE_SIZE) + 1024 * 1024
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 GIF_SUFFIXES = {".gif"}
@@ -97,8 +101,19 @@ def avatar_header(name, size):
     return encode({"type": "avatar", "name": name, "size": size})
 
 
-def welcome_message(user, token):
-    return encode({"type": "welcome", "user": user, "token": token})
+def welcome_message(user, token, update=None):
+    payload = {"type": "welcome", "user": user, "token": token}
+    if update:
+        payload["update"] = update
+    return encode(payload)
+
+
+def update_request():
+    return encode({"type": "update"})
+
+
+def update_header(version, size):
+    return encode({"type": "update_blob", "version": version, "size": size})
 
 
 def authfail_message(text):

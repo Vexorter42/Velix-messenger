@@ -26,6 +26,8 @@ import autostart
 import protocol
 import store
 import tray as tray_module
+import updates
+import version
 
 PORT = 8765
 
@@ -204,7 +206,7 @@ class Network:
                     message = protocol.decode(await websocket.recv())
                     if message is None:
                         continue
-                    if message.get("type") == "blob":
+                    if message.get("type") in ("blob", "update_blob"):
                         # За описанием вложения сразу идёт кадр с содержимым
                         message["data"] = await websocket.recv()
                     self.events.put(("message", message))
@@ -256,6 +258,11 @@ class VelixApp(ctk.CTk):
                                      on_quit=lambda: self.events.put(("tray_quit", None)),
                                      icon_path=str(resource_path("icon.ico")))
         self.hidden_notice_shown = False
+        self.available_update = None   # что сервер предлагает поставить
+
+        # Файл, оставшийся от прошлого обновления, больше не нужен
+        if updates.running_as_exe():
+            updates.cleanup()
 
         self.server = ""
         self.user = {}
@@ -689,6 +696,19 @@ class VelixApp(ctk.CTk):
                                           justify="left")
         self.settings_hint.pack(padx=48, pady=(6, 12))
 
+        ctk.CTkFrame(card, height=2, corner_radius=0, fg_color=SEPARATOR).pack(
+            fill="x", padx=48, pady=(0, 12))
+
+        self.version_label = ctk.CTkLabel(card, text=f"Версия {version.VERSION}",
+                                          font=self.font_small, text_color=MUTED)
+        self.version_label.pack(padx=48)
+
+        self.update_button = ctk.CTkButton(
+            card, text="Обновлений нет", width=300, height=38, corner_radius=10,
+            font=self.font_small, fg_color=INPUT_BG, hover_color=SEPARATOR,
+            text_color=MUTED, state="disabled", command=self._on_update)
+        self.update_button.pack(padx=48, pady=(8, 4))
+
         ctk.CTkButton(card, text="Назад в чат", width=300, height=32,
                       corner_radius=8, font=self.font_small, fg_color="transparent",
                       hover_color=INPUT_BG, text_color=MUTED,
@@ -720,6 +740,7 @@ class VelixApp(ctk.CTk):
         if not self.tray.available:
             self.tray_switch.configure(state="disabled")
         self.settings_hint.configure(text=self._settings_hint(), text_color=MUTED)
+        self._refresh_update_button()
 
     def _settings_hint(self):
         if not self.tray.available:
@@ -730,6 +751,64 @@ class VelixApp(ctk.CTk):
 
     def _set_switch(self, switch, on):
         switch.select() if on else switch.deselect()
+
+    # -------------------------------------------------------- обновление
+
+    def _refresh_update_button(self):
+        """Приводит кнопку к тому, что сейчас предлагает сервер."""
+        offer = self.available_update
+        if not offer or not version.is_newer(offer.get("version")):
+            self.update_button.configure(text="У вас последняя версия",
+                                         state="disabled", fg_color=INPUT_BG,
+                                         text_color=MUTED)
+            return
+
+        size = protocol.human_size(offer.get("size") or 0)
+        if not updates.running_as_exe():
+            self.update_button.configure(
+                text=f"Есть версия {offer['version']} — обновитесь через git",
+                state="disabled", fg_color=INPUT_BG, text_color=MUTED)
+            return
+
+        self.update_button.configure(text=f"Обновить до {offer['version']} · {size}",
+                                     state="normal", fg_color=ACCENT,
+                                     text_color=ON_ACCENT)
+
+    def _on_update(self):
+        """Просит у сервера свежую сборку."""
+        if self.network.websocket is None:
+            self.settings_hint.configure(text="Нет связи с сервером.",
+                                         text_color=OFFLINE)
+            return
+        self.update_button.configure(text="Загружаю…", state="disabled",
+                                     fg_color=INPUT_BG, text_color=MUTED)
+        self.network.send(protocol.update_request())
+
+    def _install_update(self, message):
+        """Пришла новая сборка — подменяем себя и перезапускаемся."""
+        data = message.get("data") or b""
+        if not data:
+            self.settings_hint.configure(text="Сервер прислал пустой файл.",
+                                         text_color=OFFLINE)
+            self._refresh_update_button()
+            return
+
+        problem = updates.swap(updates.executable_path(), data)
+        if problem:
+            self.settings_hint.configure(text=problem, text_color=OFFLINE)
+            self._refresh_update_button()
+            return
+
+        self.settings_hint.configure(text="Обновление установлено, перезапускаюсь…",
+                                     text_color=ONLINE)
+        self.update_button.configure(text="Перезапуск…", state="disabled")
+        self.update()
+
+        problem = updates.restart()
+        if problem:
+            self.settings_hint.configure(text=problem, text_color=OFFLINE)
+            return
+        self._quit()
 
     def _save_settings(self):
         self.config_data["settings"] = self.settings
@@ -1051,6 +1130,7 @@ class VelixApp(ctk.CTk):
     def _on_welcome(self, message):
         self.user = dict(message.get("user") or {})
         self.token = message.get("token")
+        self.available_update = message.get("update")
         self.pending_login = None
 
         store.remember_account(self.config_data, self.user.get("login", ""),
@@ -1098,6 +1178,8 @@ class VelixApp(ctk.CTk):
             self._show_item(message)
         elif kind == "blob":
             self._fill_media(message)
+        elif kind == "update_blob":
+            self._install_update(message)
         elif kind == "profile":
             self._on_profile(message)
         elif kind in ("system", "error"):
