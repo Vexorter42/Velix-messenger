@@ -24,3 +24,8 @@ Thumbs.db
 velix.db
 velix.db-wal
 velix.db-shm
+
+# Сборка .exe через PyInstaller
+build/
+dist/
+*.spec
