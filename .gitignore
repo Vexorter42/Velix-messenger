@@ -29,3 +29,5 @@ velix.db-shm
 build/
 dist/
 *.spec
+Velix.exe
+VelixSetup.exe

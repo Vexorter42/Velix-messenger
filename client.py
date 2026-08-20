@@ -5,6 +5,31 @@ import websockets
 PORT = 8765
 
 
+def build_uri(address):
+    """Собирает адрес подключения из того, что ввёл пользователь.
+
+    Порт можно дописать через двоеточие — "vexorter.duckdns.org:9000".
+    Без него подставляется стандартный 8765.
+    """
+    address = address.strip() or "localhost"
+
+    if address.startswith("["):  # IPv6 в скобках: [::1] или [::1]:8765
+        host, _, rest = address.partition("]")
+        if rest.startswith(":") and rest[1:].isdigit():
+            return f"ws://{address}"
+        return f"ws://{host}]:{PORT}"
+
+    if address.count(":") == 1:
+        host, _, port = address.partition(":")
+        if port.isdigit() and host:
+            return f"ws://{host}:{port}"
+
+    if address.count(":") > 1:  # голый IPv6 без порта
+        return f"ws://[{address}]:{PORT}"
+
+    return f"ws://{address}:{PORT}"
+
+
 def stdin_reader(loop, queue):
     """Читает строки с клавиатуры в отдельном потоке и кладёт их в очередь.
 
@@ -76,11 +101,11 @@ async def main():
         nickname = "Аноним"  # Если пользователь просто нажал Enter
 
     # 2. Запрашиваем IP сервера
-    server_ip = input("Введите IP-адрес сервера (нажмите Enter для localhost): ").strip()
+    server_ip = input("Адрес сервера, можно с портом (Enter — localhost): ").strip()
     if not server_ip:
         server_ip = "localhost"
 
-    uri = f"ws://{server_ip}:{PORT}"
+    uri = build_uri(server_ip)
     print(f"Подключение к {uri}...")
 
     try:

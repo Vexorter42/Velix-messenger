@@ -9,13 +9,50 @@
 import asyncio
 import queue
 import re
+import sys
 import threading
 from datetime import datetime
+from pathlib import Path
 
 import customtkinter as ctk
 import websockets
 
 PORT = 8765
+
+
+def build_uri(address):
+    """Собирает адрес подключения из того, что ввёл пользователь.
+
+    Порт можно дописать через двоеточие — "vexorter.duckdns.org:9000".
+    Без него подставляется стандартный 8765.
+    """
+    address = address.strip() or "localhost"
+
+    if address.startswith("["):  # IPv6 в скобках: [::1] или [::1]:8765
+        host, _, rest = address.partition("]")
+        if rest.startswith(":") and rest[1:].isdigit():
+            return f"ws://{address}"
+        return f"ws://{host}]:{PORT}"
+
+    if address.count(":") == 1:
+        host, _, port = address.partition(":")
+        if port.isdigit() and host:
+            return f"ws://{host}:{port}"
+
+    if address.count(":") > 1:  # голый IPv6 без порта
+        return f"ws://[{address}]:{PORT}"
+
+    return f"ws://{address}:{PORT}"
+
+
+def resource_path(name):
+    """Путь к файлу рядом с программой.
+
+    В собранном PyInstaller'ом exe ресурсы распаковываются во временный
+    каталог, путь к которому лежит в sys._MEIPASS.
+    """
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
+    return base / name
 
 # Палитра снята с Telegram Desktop. Пары — (светлая тема, тёмная тема),
 # CustomTkinter сам подставит нужную половину.
@@ -144,6 +181,7 @@ class VelixApp(ctk.CTk):
         self.font_avatar = ctk.CTkFont(family="Segoe UI Semibold", size=16)
         self.font_button = ctk.CTkFont(family="Segoe UI Semibold", size=14)
 
+        self._apply_icon()
         self._build_connect_view()
         self._build_chat_view()
         self._show_connect()
@@ -151,6 +189,16 @@ class VelixApp(ctk.CTk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.bind("<Configure>", self._on_resize)
         self.after(60, self._pump_events)
+
+    def _apply_icon(self):
+        """Ставит иконку окна, если файл на месте."""
+        icon = resource_path("icon.ico")
+        if not icon.exists():
+            return
+        self.iconbitmap(str(icon))
+        # CustomTkinter возвращает свою иконку через пару сотен миллисекунд
+        # после создания окна, поэтому ставим ещё раз следом за ним
+        self.after(300, lambda: self.iconbitmap(str(icon)))
 
     # -------------------------------------------------------------- экраны
 
@@ -328,7 +376,7 @@ class VelixApp(ctk.CTk):
         self.server = server
         self.connect_error.configure(text="")
         self.connect_button.configure(text="ПОДКЛЮЧЕНИЕ…", state="disabled")
-        self.network.connect(f"ws://{server}:{PORT}")
+        self.network.connect(build_uri(server))
 
     def _on_send(self):
         text = self.message_entry.get().strip()
