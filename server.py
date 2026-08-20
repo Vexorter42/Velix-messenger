@@ -1,7 +1,10 @@
 import asyncio
+import os
 import re
+from http import HTTPStatus
 
 import websockets
+from websockets.datastructures import MultipleValuesError
 
 import storage
 
@@ -13,6 +16,14 @@ import storage
 HOST = None
 PORT = 8765
 
+# Имена, по которым разрешено подключаться, через запятую в переменной
+# окружения VELIX_ALLOWED_HOSTS. Пустое значение — пускать всех.
+ALLOWED_HOSTS = {
+    name.strip().lower()
+    for name in os.environ.get("VELIX_ALLOWED_HOSTS", "").split(",")
+    if name.strip()
+}
+
 # Клиент присылает сообщения в виде "[никнейм]: текст".
 # Ленивая (.*?) группа для ника: так "]: " внутри самого текста сообщения
 # не будет принято за границу никнейма.
@@ -20,6 +31,39 @@ MESSAGE_PATTERN = re.compile(r"^\[(.*?)\]: (.*)$", re.DOTALL)
 
 # Множество для хранения всех активных подключений
 connected_clients = set()
+
+
+def hostname_of(host_header):
+    """Отрезает порт от заголовка Host: "velix.example.org:8765" -> "velix.example.org"."""
+    if host_header.startswith("["):  # IPv6 в скобках
+        return host_header.partition("]")[0] + "]"
+    if host_header.count(":") == 1:
+        return host_header.partition(":")[0]
+    return host_header
+
+
+def check_host(connection, request):
+    """Отклоняет подключение, если клиент пришёл не по разрешённому имени.
+
+    Имя берётся из заголовка Host, который клиент отправляет при рукопожатии.
+    Защитой это не является: заголовок ничего не стоит подделать вручную.
+    Но случайный сканер, который стучится по голому IP-адресу, до чата не
+    доберётся — он не знает имени.
+    """
+    if not ALLOWED_HOSTS:
+        return None
+
+    try:
+        host_header = request.headers.get("Host", "")
+    except MultipleValuesError:
+        # Два заголовка Host сразу — нормальный клиент так не делает
+        host_header = ""
+
+    if hostname_of(host_header).lower() in ALLOWED_HOSTS:
+        return None
+
+    print(f"[Сервер]: Отклонено подключение по имени '{host_header}'")
+    return connection.respond(HTTPStatus.FORBIDDEN, "Здесь ничего нет.\n")
 
 
 def parse_message(raw_message):
@@ -104,9 +148,11 @@ async def main():
 
     try:
         # Запускаем WebSocket-сервер
-        async with websockets.serve(chat_handler, HOST, PORT):
+        async with websockets.serve(chat_handler, HOST, PORT, process_request=check_host):
             print("--- Сервер Velix запущен ---")
             print(f"Слушаем подключения на порту {PORT} (например, ws://localhost:{PORT})...")
+            if ALLOWED_HOSTS:
+                print(f"Пускаем только по именам: {', '.join(sorted(ALLOWED_HOSTS))}")
 
             # future() работает как бесконечный цикл, не давая серверу завершить работу
             await asyncio.Future()

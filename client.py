@@ -137,6 +137,13 @@ async def main():
     except OSError as error:
         # Неверный адрес, недоступная сеть и прочие сетевые проблемы
         print(f"\n[Ошибка]: Не удалось подключиться к {uri}: {error}")
+    except websockets.exceptions.InvalidStatus as error:
+        # Сервер может пускать только по определённому имени и отвечать 403
+        if error.response.status_code == 403:
+            print("\n[Ошибка]: Сервер не принимает подключение по этому адресу."
+                  " Проверьте, что он введён точно.")
+        else:
+            print(f"\n[Ошибка]: Сервер ответил кодом {error.response.status_code}.")
     except websockets.exceptions.WebSocketException as error:
         print(f"\n[Ошибка]: Не удалось установить WebSocket-соединение: {error}")
 

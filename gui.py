@@ -144,6 +144,14 @@ class Network:
             return
         except websockets.exceptions.ConnectionClosed:
             pass
+        except websockets.exceptions.InvalidStatus as error:
+            # Сервер может пускать только по определённому имени и отвечать 403
+            if error.response.status_code == 403:
+                self.events.put(("error", "Сервер не принимает подключение по этому "
+                                          "адресу. Проверьте, что он введён точно."))
+            else:
+                self.events.put(("error", f"Сервер ответил кодом {error.response.status_code}."))
+            return
         except websockets.exceptions.WebSocketException as error:
             self.events.put(("error", f"Ошибка соединения: {error}"))
             return
