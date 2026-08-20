@@ -1,5 +1,6 @@
 import asyncio
 import os
+import ssl
 from http import HTTPStatus
 from pathlib import Path
 
@@ -31,6 +32,11 @@ ALLOWED_HOSTS = {
 }
 
 MAX_TEXT = 4000
+
+# Сертификат и ключ для wss://. Если оба заданы и файлы на месте, сервер
+# поднимается по TLS: пароли и переписка перестают ходить открытым текстом.
+CERT_FILE = os.environ.get("VELIX_CERT")
+KEY_FILE = os.environ.get("VELIX_KEY")
 
 # Свежая сборка для кнопки «Обновить» в клиенте: рядом кладутся Velix.exe и
 # version.txt с номером версии. Каталог можно увести переменной VELIX_UPDATES.
@@ -376,19 +382,42 @@ async def chat_handler(websocket):
         print(f"[Сервер]: Вышел {user['login']}. Активных: {len(connected_clients)}")
 
 
+def build_ssl_context():
+    """Готовит TLS, если указаны сертификат и ключ."""
+    if not CERT_FILE or not KEY_FILE:
+        return None
+
+    certificate, key = Path(CERT_FILE), Path(KEY_FILE)
+    if not certificate.exists() or not key.exists():
+        print(f"[Сервер]: Сертификат не найден ({certificate}), поднимаюсь без шифрования")
+        return None
+
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    # Ниже TLS 1.2 не опускаемся: всё, что старше, давно дырявое
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.load_cert_chain(certificate, key)
+    return context
+
+
 async def main():
     await storage.init()
     print(f"[Сервер]: База лежит в {storage.DB_PATH}")
     print(f"[Сервер]: Вложения складываются в {storage.MEDIA_DIR}")
+
+    context = build_ssl_context()
 
     try:
         # Запускаем WebSocket-сервер. max_size поднят: в кадр должен помещаться
         # файл целиком, а по умолчанию библиотека рвёт связь уже на мегабайте.
         async with websockets.serve(chat_handler, HOST, PORT,
                                     process_request=check_host,
-                                    max_size=protocol.MAX_FRAME_SIZE):
+                                    max_size=protocol.MAX_FRAME_SIZE,
+                                    ssl=context):
+            scheme = "wss" if context else "ws"
             print("--- Сервер Velix запущен ---")
-            print(f"Слушаем подключения на порту {PORT} (например, ws://localhost:{PORT})...")
+            print(f"Слушаем подключения на порту {PORT} ({scheme}://)...")
+            if context is None:
+                print("ВНИМАНИЕ: шифрования нет, пароли идут открытым текстом.")
             if ALLOWED_HOSTS:
                 print(f"Пускаем только по именам: {', '.join(sorted(ALLOWED_HOSTS))}")
             update = available_update()

@@ -10,6 +10,7 @@ import asyncio
 import io
 import os
 import queue
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -82,8 +83,8 @@ def avatar_color(nickname):
     return AVATAR_COLORS[sum(map(ord, nickname or "?")) % len(AVATAR_COLORS)]
 
 
-def build_uri(address):
-    """Собирает адрес подключения из того, что ввёл пользователь.
+def host_and_port(address):
+    """Разбирает то, что ввёл пользователь, на хост и порт.
 
     Порт можно дописать через двоеточие — "vexorter.duckdns.org:9000".
     Без него подставляется стандартный 8765.
@@ -93,18 +94,41 @@ def build_uri(address):
     if address.startswith("["):  # IPv6 в скобках: [::1] или [::1]:8765
         host, _, rest = address.partition("]")
         if rest.startswith(":") and rest[1:].isdigit():
-            return f"ws://{address}"
-        return f"ws://{host}]:{PORT}"
+            return f"{host}]", rest[1:]
+        return f"{host}]", str(PORT)
 
     if address.count(":") == 1:
         host, _, port = address.partition(":")
         if port.isdigit() and host:
-            return f"ws://{host}:{port}"
+            return host, port
 
     if address.count(":") > 1:  # голый IPv6 без порта
-        return f"ws://[{address}]:{PORT}"
+        return f"[{address}]", str(PORT)
 
-    return f"ws://{address}:{PORT}"
+    return address, str(PORT)
+
+
+def build_uri(address):
+    """Один адрес подключения — на случай, когда схема указана явно."""
+    return connection_uris(address)[0]
+
+
+def connection_uris(address):
+    """Адреса для попыток подключения, от защищённого к обычному.
+
+    Сначала пробуем wss:// — это тот же TLS, что у банковских сайтов.
+    Если сервер его не умеет, откатываемся на ws://, но пользователю об
+    этом честно говорим.
+    """
+    address = address.strip() or "localhost"
+
+    for scheme in ("wss://", "ws://"):
+        if address.lower().startswith(scheme):
+            host, port = host_and_port(address[len(scheme):])
+            return [f"{scheme}{host}:{port}"]
+
+    host, port = host_and_port(address)
+    return [f"wss://{host}:{port}", f"ws://{host}:{port}"]
 
 
 def resource_path(name):
@@ -161,8 +185,10 @@ class Network:
         self.loop = None
         self.websocket = None
 
-    def connect(self, uri):
-        threading.Thread(target=self._run, args=(uri,), daemon=True).start()
+    def connect(self, uris):
+        if isinstance(uris, str):
+            uris = [uris]
+        threading.Thread(target=self._run, args=(list(uris),), daemon=True).start()
 
     def send(self, frame, payload=None):
         """Отправляет кадр, при необходимости следом двоичный."""
@@ -180,7 +206,7 @@ class Network:
         if self.websocket is not None and self.loop is not None:
             asyncio.run_coroutine_threadsafe(self.websocket.close(), self.loop)
 
-    def _run(self, uri):
+    def _run(self, uris):
         # Цикл держим в локальной переменной и только потом публикуем в self:
         # если пользователь успел переподключиться, старый поток не должен
         # закрыть цикл нового — тот ещё работает.
@@ -188,19 +214,29 @@ class Network:
         asyncio.set_event_loop(loop)
         self.loop = loop
         try:
-            loop.run_until_complete(self._session(uri))
+            loop.run_until_complete(self._try_all(uris))
         finally:
             loop.close()
             if self.loop is loop:
                 self.loop = None
 
-    async def _session(self, uri):
+    async def _try_all(self, uris):
+        """Пробует адреса по очереди: сначала защищённый, потом обычный."""
+        for index, uri in enumerate(uris):
+            last = index == len(uris) - 1
+            handled = await self._session(uri, report_failure=last)
+            if handled:
+                return
+
+    async def _session(self, uri, report_failure=True):
+        """Одна попытка. Возвращает True, если до сервера достучались."""
         connection = None
+        secure = uri.startswith("wss://")
         try:
             async with websockets.connect(uri, max_size=protocol.MAX_FRAME_SIZE) as websocket:
                 connection = websocket
                 self.websocket = websocket
-                self.events.put(("opened", None))
+                self.events.put(("opened", secure))
 
                 while True:
                     message = protocol.decode(await websocket.recv())
@@ -212,11 +248,18 @@ class Network:
                     self.events.put(("message", message))
 
         except ConnectionRefusedError:
-            self.events.put(("error", "Сервер недоступен. Проверьте, запущен ли он."))
-            return
+            if report_failure:
+                self.events.put(("error", "Сервер недоступен. Проверьте, запущен ли он."))
+            return False
+        except ssl.SSLError:
+            # Сервер не умеет TLS или сертификат не подошёл — пробуем дальше
+            if report_failure:
+                self.events.put(("error", "Сервер не принял защищённое соединение."))
+            return False
         except OSError as error:
-            self.events.put(("error", f"Не удалось подключиться: {error}"))
-            return
+            if report_failure:
+                self.events.put(("error", f"Не удалось подключиться: {error}"))
+            return False
         except websockets.exceptions.ConnectionClosed:
             pass
         except websockets.exceptions.InvalidStatus as error:
@@ -226,16 +269,18 @@ class Network:
                                           "адресу. Проверьте, что он введён точно."))
             else:
                 self.events.put(("error", f"Сервер ответил кодом {error.response.status_code}."))
-            return
+            return True
         except websockets.exceptions.WebSocketException as error:
-            self.events.put(("error", f"Ошибка соединения: {error}"))
-            return
+            if report_failure:
+                self.events.put(("error", f"Ошибка соединения: {error}"))
+            return False
         finally:
             # Сбрасываем только своё подключение, чужое не трогаем
             if self.websocket is connection:
                 self.websocket = None
 
         self.events.put(("disconnected", None))
+        return True
 
 
 class VelixApp(ctk.CTk):
@@ -259,6 +304,7 @@ class VelixApp(ctk.CTk):
                                      icon_path=str(resource_path("icon.ico")))
         self.hidden_notice_shown = False
         self.available_update = None   # что сервер предлагает поставить
+        self.secure = False            # идёт ли соединение по TLS
 
         # Файл, оставшийся от прошлого обновления, больше не нужен
         if updates.running_as_exe():
@@ -882,7 +928,7 @@ class VelixApp(ctk.CTk):
         self.login = login
         self.auth_error.configure(text="")
         self.primary_button.configure(text="ПОДКЛЮЧЕНИЕ…", state="disabled")
-        self.network.connect(build_uri(server))
+        self.network.connect(connection_uris(server))
 
     def _enter_saved(self, account):
         """Вход по сохранённому токену, без пароля."""
@@ -891,7 +937,7 @@ class VelixApp(ctk.CTk):
         self.pending_login = protocol.auth_message(account.get("token", ""))
         self.auth_error.configure(text="")
         self.auth_subtitle.configure(text=f"Входим как {account.get('name')}…")
-        self.network.connect(build_uri(self.server))
+        self.network.connect(connection_uris(self.server))
 
     def _on_send(self):
         text = self.message_entry.get().strip()
@@ -1106,7 +1152,7 @@ class VelixApp(ctk.CTk):
             while True:
                 kind, payload = self.events.get_nowait()
                 if kind == "opened":
-                    self._on_opened()
+                    self._on_opened(payload)
                 elif kind == "tray_open":
                     self._restore_window()
                 elif kind == "tray_quit":
@@ -1122,8 +1168,9 @@ class VelixApp(ctk.CTk):
             pass
         self.after(60, self._pump_events)
 
-    def _on_opened(self):
+    def _on_opened(self, secure):
         """Соединение открылось — отправляем то, чем собирались входить."""
+        self.secure = bool(secure)
         if self.pending_login:
             self.network.send(self.pending_login)
 
@@ -1149,7 +1196,12 @@ class VelixApp(ctk.CTk):
 
         self._refresh_me()
         self.status_dot.configure(text_color=ONLINE)
-        self.header_subtitle.configure(text=f"вы вошли как {self.user.get('name')}")
+        lock = "🔒 " if self.secure else "⚠ без шифрования · "
+        self.header_subtitle.configure(
+            text=f"{lock}вы вошли как {self.user.get('name')}")
+        if not self.secure:
+            self._service_label("Соединение без шифрования: сервер не умеет wss://. "
+                                "Переписку в такой сети можно перехватить.")
         self.message_entry.configure(state="normal")
         self.send_button.configure(state="normal")
         self.attach_button.configure(state="normal")

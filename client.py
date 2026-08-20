@@ -7,6 +7,7 @@
 
 import asyncio
 import getpass
+import ssl
 import sys
 import threading
 from datetime import datetime
@@ -20,8 +21,8 @@ PORT = 8765
 KIND_LABEL = {"image": "фото", "gif": "гифку", "video": "видео", "file": "файл"}
 
 
-def build_uri(address):
-    """Собирает адрес подключения из того, что ввёл пользователь.
+def host_and_port(address):
+    """Разбирает то, что ввёл пользователь, на хост и порт.
 
     Порт можно дописать через двоеточие — "vexorter.duckdns.org:9000".
     Без него подставляется стандартный 8765.
@@ -31,18 +32,53 @@ def build_uri(address):
     if address.startswith("["):  # IPv6 в скобках: [::1] или [::1]:8765
         host, _, rest = address.partition("]")
         if rest.startswith(":") and rest[1:].isdigit():
-            return f"ws://{address}"
-        return f"ws://{host}]:{PORT}"
+            return f"{host}]", rest[1:]
+        return f"{host}]", str(PORT)
 
     if address.count(":") == 1:
         host, _, port = address.partition(":")
         if port.isdigit() and host:
-            return f"ws://{host}:{port}"
+            return host, port
 
     if address.count(":") > 1:  # голый IPv6 без порта
-        return f"ws://[{address}]:{PORT}"
+        return f"[{address}]", str(PORT)
 
-    return f"ws://{address}:{PORT}"
+    return address, str(PORT)
+
+
+def connection_uris(address):
+    """Адреса для попыток: сначала защищённый wss://, потом обычный ws://."""
+    address = address.strip() or "localhost"
+
+    for scheme in ("wss://", "ws://"):
+        if address.lower().startswith(scheme):
+            host, port = host_and_port(address[len(scheme):])
+            return [f"{scheme}{host}:{port}"]
+
+    host, port = host_and_port(address)
+    return [f"wss://{host}:{port}", f"ws://{host}:{port}"]
+
+
+def build_uri(address):
+    """Один адрес — первый из списка попыток."""
+    return connection_uris(address)[0]
+
+
+async def open_connection(address):
+    """Открывает соединение, пробуя адреса по очереди."""
+    uris = connection_uris(address)
+    last_error = None
+    for index, uri in enumerate(uris):
+        try:
+            websocket = await websockets.connect(uri, max_size=protocol.MAX_FRAME_SIZE)
+            if not uri.startswith("wss://"):
+                print("[Система]: соединение без шифрования, переписку можно перехватить.")
+            return websocket
+        except (OSError, ssl.SSLError, websockets.exceptions.WebSocketException) as error:
+            last_error = error
+            if index == len(uris) - 1:
+                raise
+    raise last_error
 
 
 def format_item(item):
@@ -188,10 +224,10 @@ async def main():
     name = input("Как вас зовут: ").strip() if register else ""
 
     uri = build_uri(server_ip)
-    print(f"Подключение к {uri}...")
+    print(f"Подключение к {server_ip}...")
 
     try:
-        async with websockets.connect(uri, max_size=protocol.MAX_FRAME_SIZE) as websocket:
+        async with await open_connection(server_ip) as websocket:
             user = await sign_in(websocket, login, password, name, register)
             if user is None:
                 return
