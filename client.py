@@ -6,7 +6,7 @@
 """
 
 import asyncio
-import queue
+import getpass
 import sys
 import threading
 from datetime import datetime
@@ -109,6 +109,8 @@ async def receive_messages(websocket, stop_event):
                 show(format_item(message))
             elif kind in ("system", "error"):
                 show(f"[Система]: {message.get('text', '')}")
+            elif kind == "profile":
+                show("[Система]: профиль обновлён")
             elif kind == "blob":
                 # Содержимое вложений консольному клиенту не нужно,
                 # но кадр с данными идёт следом и его надо вычитать
@@ -143,24 +145,57 @@ async def send_messages(websocket, nickname, outgoing, stop_event):
         stop_event.set()
 
 
+def ask_password(prompt="Пароль: "):
+    """Спрашивает пароль, не показывая его на экране.
+
+    Когда ввод перенаправлен из файла или конвейера, getpass на Windows всё
+    равно читает прямо с консоли и виснет насмерть — в этом случае читаем
+    обычным input().
+    """
+    if sys.stdin is None or not sys.stdin.isatty():
+        return input(prompt)
+    return getpass.getpass(prompt)
+
+
+async def sign_in(websocket, login, password, name, register):
+    """Входит в аккаунт. Возвращает профиль или None, если не пустили."""
+    if register:
+        await websocket.send(protocol.register_message(login, password, name))
+    else:
+        await websocket.send(protocol.login_message(login, password))
+
+    while True:
+        answer = protocol.decode(await websocket.recv())
+        if answer is None:
+            continue
+        if answer.get("type") == "welcome":
+            return answer["user"]
+        if answer.get("type") in ("authfail", "error"):
+            print(f"\n[Ошибка]: {answer.get('text', 'не пустили в чат')}")
+            return None
+
+
 async def main():
     print("--- Добро пожаловать в Velix ---")
 
-    # 1. Запрашиваем никнейм
-    nickname = input("Введите ваш никнейм: ").strip()
-    if not nickname:
-        nickname = "Аноним"  # Если пользователь просто нажал Enter
-
-    # 2. Запрашиваем адрес сервера
     server_ip = input("Адрес сервера, можно с портом (Enter — localhost): ").strip()
     if not server_ip:
         server_ip = "localhost"
+
+    register = input("Создать новый аккаунт? (y/N): ").strip().lower() in ("y", "д", "да")
+    login = input("Логин: ").strip()
+    password = ask_password()
+    name = input("Как вас зовут: ").strip() if register else ""
 
     uri = build_uri(server_ip)
     print(f"Подключение к {uri}...")
 
     try:
         async with websockets.connect(uri, max_size=protocol.MAX_FRAME_SIZE) as websocket:
+            user = await sign_in(websocket, login, password, name, register)
+            if user is None:
+                return
+            nickname = user.get("name", login)
             print(f"[Система]: Успешно подключено как {nickname}! Можно писать сообщения. (для выхода введите /exit)\n")
 
             stop_event = asyncio.Event()

@@ -8,7 +8,7 @@
 import json
 from pathlib import Path
 
-VERSION = 2
+VERSION = 3
 
 # Больше этого файлы не принимаем — и сокет не забьётся, и малина цела
 MAX_MEDIA_SIZE = 25 * 1024 * 1024
@@ -68,6 +68,45 @@ def media_header(nickname, kind, name, size):
 
 def fetch_request(media_id):
     return encode({"type": "fetch", "id": media_id})
+
+
+# --- вход и профиль ---
+
+def register_message(login, password, name):
+    return encode({"type": "register", "login": login, "password": password,
+                   "name": name})
+
+
+def login_message(login, password):
+    return encode({"type": "login", "login": login, "password": password})
+
+
+def auth_message(token):
+    return encode({"type": "auth", "token": token})
+
+
+def logout_message():
+    return encode({"type": "logout"})
+
+
+def profile_message(name, bio):
+    return encode({"type": "profile", "name": name, "bio": bio})
+
+
+def avatar_header(name, size):
+    return encode({"type": "avatar", "name": name, "size": size})
+
+
+def welcome_message(user, token):
+    return encode({"type": "welcome", "user": user, "token": token})
+
+
+def authfail_message(text):
+    return encode({"type": "authfail", "text": text})
+
+
+def profile_message_result(user):
+    return encode({"type": "profile", "user": user})
 
 
 # --- то, что отправляет сервер ---

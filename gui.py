@@ -20,9 +20,10 @@ from tkinter import filedialog
 
 import customtkinter as ctk
 import websockets
-from PIL import Image, ImageSequence
+from PIL import Image, ImageDraw, ImageSequence
 
 import protocol
+import store
 
 PORT = 8765
 
@@ -31,6 +32,9 @@ MAX_PICTURE = (360, 360)
 
 # Кадров в гифке берём не больше: длинные ролики иначе съедают память
 MAX_GIF_FRAMES = 120
+
+AVATAR_SMALL = 36
+AVATAR_LARGE = 96
 
 # Палитра снята с Telegram Desktop. Пары — (светлая тема, тёмная тема),
 # CustomTkinter сам подставит нужную половину.
@@ -64,8 +68,8 @@ KIND_LABEL = {"video": "Видео", "file": "Файл"}
 
 
 def avatar_color(nickname):
-    """Цвет аватарки закреплён за никнеймом, чтобы не прыгал между запусками."""
-    return AVATAR_COLORS[sum(map(ord, nickname)) % len(AVATAR_COLORS)]
+    """Цвет аватарки закреплён за именем, чтобы не прыгал между запусками."""
+    return AVATAR_COLORS[sum(map(ord, nickname or "?")) % len(AVATAR_COLORS)]
 
 
 def build_uri(address):
@@ -121,6 +125,24 @@ def open_in_system(path):
         subprocess.Popen(["xdg-open", path])
 
 
+def circular(data, side):
+    """Вырезает из картинки круг нужного размера — так рисует аватарки Telegram."""
+    with Image.open(io.BytesIO(data)) as source:
+        picture = source.convert("RGBA")
+
+    # Берём квадрат по центру, чтобы лицо не растянулось
+    smallest = min(picture.size)
+    left = (picture.width - smallest) // 2
+    top = (picture.height - smallest) // 2
+    picture = picture.crop((left, top, left + smallest, top + smallest))
+    picture = picture.resize((side, side), Image.LANCZOS)
+
+    mask = Image.new("L", (side, side), 0)
+    ImageDraw.Draw(mask).ellipse((0, 0, side - 1, side - 1), fill=255)
+    picture.putalpha(mask)
+    return picture
+
+
 class Network:
     """Подключение к серверу в фоновом потоке."""
 
@@ -168,7 +190,7 @@ class Network:
             async with websockets.connect(uri, max_size=protocol.MAX_FRAME_SIZE) as websocket:
                 connection = websocket
                 self.websocket = websocket
-                self.events.put(("connected", None))
+                self.events.put(("opened", None))
 
                 while True:
                     message = protocol.decode(await websocket.recv())
@@ -212,13 +234,18 @@ class VelixApp(ctk.CTk):
 
         self.title("Velix")
         self.geometry("1040x680")
-        self.minsize(820, 520)
+        self.minsize(880, 560)
         self.configure(fg_color=CHAT_BG)
 
         self.events = queue.Queue()
         self.network = Network(self.events)
-        self.nickname = ""
+        self.config_data = store.load()
+
         self.server = ""
+        self.user = {}
+        self.token = None
+        self.pending_login = None   # чем входим, когда соединение откроется
+
         self.wrap_length = 420
         self.last_sender = None
         self.current_date = None
@@ -226,6 +253,9 @@ class VelixApp(ctk.CTk):
 
         # Вложения, содержимое которых мы ждём от сервера
         self.pending_media = {}
+        # Аватарки: готовые картинки и виджеты, которые их ждут
+        self.avatar_cache = {}
+        self.avatar_waiters = {}
         # Ссылки на картинки: без них Tkinter выбрасывает их сборщиком мусора
         self.images = []
         self.animations = {}
@@ -236,12 +266,14 @@ class VelixApp(ctk.CTk):
         self.font_body = ctk.CTkFont(family="Segoe UI", size=14)
         self.font_small = ctk.CTkFont(family="Segoe UI", size=11)
         self.font_avatar = ctk.CTkFont(family="Segoe UI Semibold", size=16)
+        self.font_big_avatar = ctk.CTkFont(family="Segoe UI Semibold", size=34)
         self.font_button = ctk.CTkFont(family="Segoe UI Semibold", size=14)
 
         self._apply_icon()
-        self._build_connect_view()
+        self._build_auth_view()
         self._build_chat_view()
-        self._show_connect()
+        self._build_profile_view()
+        self._show_auth()
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.bind("<Configure>", self._on_resize)
@@ -257,50 +289,182 @@ class VelixApp(ctk.CTk):
         # после создания окна, поэтому ставим ещё раз следом за ним
         self.after(300, lambda: self.iconbitmap(str(icon)))
 
-    # -------------------------------------------------------------- экраны
+    # ---------------------------------------------------------- экран входа
 
-    def _build_connect_view(self):
-        self.connect_view = ctk.CTkFrame(self, fg_color="transparent")
+    def _build_auth_view(self):
+        self.auth_view = ctk.CTkFrame(self, fg_color="transparent")
 
-        card = ctk.CTkFrame(self.connect_view, fg_color=SIDEBAR, corner_radius=16)
+        card = ctk.CTkFrame(self.auth_view, fg_color=SIDEBAR, corner_radius=16)
         card.place(relx=0.5, rely=0.5, anchor="center")
+        self.auth_card = card
 
-        ctk.CTkLabel(card, text="V", font=ctk.CTkFont(family="Segoe UI Semibold", size=34),
+        ctk.CTkLabel(card, text="V", font=self.font_big_avatar,
                      text_color=ON_ACCENT, fg_color=ACCENT, corner_radius=40,
-                     width=80, height=80).pack(padx=48, pady=(40, 18))
+                     width=80, height=80).pack(padx=48, pady=(36, 16))
 
         ctk.CTkLabel(card, text="Velix", font=self.font_title,
                      text_color=TEXT).pack(padx=48, pady=(0, 4))
-        ctk.CTkLabel(card, text="Введите имя и адрес сервера", font=self.font_small,
-                     text_color=MUTED).pack(padx=48, pady=(0, 24))
+        self.auth_subtitle = ctk.CTkLabel(card, text="", font=self.font_small,
+                                          text_color=MUTED)
+        self.auth_subtitle.pack(padx=48, pady=(0, 20))
 
-        self.nickname_entry = self._entry(card, "Ваше имя")
-        self.nickname_entry.pack(padx=48, pady=(0, 10))
+        # Список сохранённых аккаунтов
+        self.saved_box = ctk.CTkFrame(card, fg_color="transparent")
+        self.saved_box.pack(padx=48, fill="x")
 
-        self.server_entry = self._entry(card, "Адрес сервера — пусто значит localhost")
-        self.server_entry.pack(padx=48, pady=(0, 18))
+        # Форма входа
+        self.form = ctk.CTkFrame(card, fg_color="transparent")
+        self.form.pack(padx=48, fill="x")
 
-        self.connect_button = ctk.CTkButton(
-            card, text="ПОДКЛЮЧИТЬСЯ", width=300, height=46, corner_radius=10,
+        self.server_entry = self._entry(self.form, "Адрес сервера")
+        self.login_entry = self._entry(self.form, "Логин")
+        self.password_entry = self._entry(self.form, "Пароль", show="•")
+        self.name_entry = self._entry(self.form, "Как вас зовут")
+
+        self.primary_button = ctk.CTkButton(
+            self.form, text="ВОЙТИ", width=300, height=46, corner_radius=10,
             font=self.font_button, fg_color=ACCENT, hover_color=ACCENT_HOVER,
-            text_color=ON_ACCENT, command=self._on_connect)
-        self.connect_button.pack(padx=48, pady=(0, 12))
+            text_color=ON_ACCENT, command=self._on_primary)
 
-        self.connect_error = ctk.CTkLabel(card, text="", font=self.font_small,
-                                          text_color=OFFLINE, wraplength=300)
-        self.connect_error.pack(padx=48, pady=(0, 22))
+        self.switch_button = ctk.CTkButton(
+            self.form, text="Создать аккаунт", width=300, height=32,
+            corner_radius=8, font=self.font_small, fg_color="transparent",
+            hover_color=INPUT_BG, text_color=ACCENT, command=self._toggle_mode)
 
-        self.nickname_entry.bind("<Return>", lambda event: self._on_connect())
-        self.server_entry.bind("<Return>", lambda event: self._on_connect())
-        for entry in (self.nickname_entry, self.server_entry):
+        self.back_button = ctk.CTkButton(
+            card, text="К списку аккаунтов", width=300, height=32,
+            corner_radius=8, font=self.font_small, fg_color="transparent",
+            hover_color=INPUT_BG, text_color=MUTED,
+            command=lambda: self._show_auth())
+
+        self.auth_error = ctk.CTkLabel(card, text="", font=self.font_small,
+                                       text_color=OFFLINE, wraplength=300)
+        self.auth_error.pack(padx=48, pady=(8, 24))
+
+        for entry in (self.server_entry, self.login_entry, self.password_entry,
+                      self.name_entry):
+            entry.bind("<Return>", lambda event: self._on_primary())
             entry.bind("<Control-KeyPress>", self._on_entry_shortcut)
 
-    def _entry(self, master, placeholder):
-        return ctk.CTkEntry(
+        self.register_mode = False
+
+    def _entry(self, master, placeholder, show=None):
+        entry = ctk.CTkEntry(
             master, placeholder_text=placeholder, width=300, height=46,
             corner_radius=10, border_width=1, border_color=SEPARATOR,
             fg_color=INPUT_BG, text_color=TEXT, placeholder_text_color=MUTED,
             font=self.font_body)
+        if show:
+            entry.configure(show=show)
+        return entry
+
+    def _show_auth(self):
+        """Список сохранённых аккаунтов, если они есть, иначе сразу форма."""
+        self.chat_view.pack_forget()
+        self.profile_view.pack_forget()
+        self.auth_view.pack(fill="both", expand=True)
+
+        for widget in self.saved_box.winfo_children():
+            widget.destroy()
+
+        accounts = self.config_data.get("accounts", [])
+        if not accounts:
+            self._show_form(register=False)
+            return
+
+        self.form.pack_forget()
+        self.back_button.pack_forget()
+        # before= обязателен: повторный pack иначе отправляет рамку в конец
+        # очереди, ниже пустой строки ошибки, и в карточке зияет дыра
+        self.saved_box.pack(padx=48, fill="x", before=self.auth_error)
+        self.auth_subtitle.configure(text="Выберите аккаунт")
+
+        for account in accounts[:6]:
+            self._account_row(account)
+
+        ctk.CTkButton(self.saved_box, text="Войти в другой аккаунт", width=300,
+                      height=38, corner_radius=10, font=self.font_small,
+                      fg_color="transparent", hover_color=INPUT_BG,
+                      text_color=ACCENT,
+                      command=lambda: self._show_form(register=False)).pack(pady=(6, 0))
+
+    def _account_row(self, account):
+        row = ctk.CTkFrame(self.saved_box, fg_color=INPUT_BG, corner_radius=10,
+                           height=58)
+        row.pack(fill="x", pady=4)
+        row.pack_propagate(False)
+
+        name = account.get("name") or account.get("login", "?")
+        ctk.CTkLabel(row, text=name[0].upper(), font=self.font_avatar,
+                     text_color=ON_ACCENT, fg_color=avatar_color(name),
+                     corner_radius=20, width=40, height=40).pack(
+            side="left", padx=(9, 10), pady=9)
+
+        lines = ctk.CTkFrame(row, fg_color="transparent")
+        lines.pack(side="left", fill="both", expand=True, pady=10)
+        ctk.CTkLabel(lines, text=name, font=self.font_name, text_color=TEXT,
+                     anchor="w").pack(fill="x")
+        ctk.CTkLabel(lines, text=f"{account.get('login')} · {account.get('server')}",
+                     font=self.font_small, text_color=MUTED, anchor="w").pack(fill="x")
+
+        ctk.CTkButton(row, text="✕", width=28, height=28, corner_radius=8,
+                      font=self.font_small, fg_color="transparent",
+                      hover_color=SEPARATOR, text_color=MUTED,
+                      command=lambda: self._forget(account)).pack(side="right", padx=(0, 8))
+
+        for widget in (row, lines):
+            widget.bind("<Button-1>", lambda event, item=account: self._enter_saved(item))
+        for child in lines.winfo_children():
+            child.bind("<Button-1>", lambda event, item=account: self._enter_saved(item))
+
+    def _show_form(self, register):
+        """Показывает форму входа или регистрации."""
+        self.register_mode = register
+        self.saved_box.pack_forget()
+        self.form.pack(padx=48, fill="x", before=self.auth_error)
+
+        for entry in (self.server_entry, self.login_entry, self.password_entry,
+                      self.name_entry):
+            entry.pack_forget()
+        self.primary_button.pack_forget()
+        self.switch_button.pack_forget()
+
+        self.server_entry.pack(pady=(0, 10))
+        self.login_entry.pack(pady=(0, 10))
+        self.password_entry.pack(pady=(0, 10))
+        if register:
+            self.name_entry.pack(pady=(0, 10))
+
+        self.primary_button.configure(text="СОЗДАТЬ АККАУНТ" if register else "ВОЙТИ")
+        self.primary_button.pack(pady=(6, 6))
+        self.switch_button.configure(text="У меня уже есть аккаунт" if register
+                                     else "Создать аккаунт")
+        self.switch_button.pack()
+
+        self.auth_subtitle.configure(
+            text="Придумайте логин и пароль" if register else "Вход в аккаунт")
+        self.auth_error.configure(text="")
+
+        if self.config_data.get("accounts"):
+            self.back_button.pack(padx=48, pady=(10, 0), before=self.auth_error)
+        else:
+            self.back_button.pack_forget()
+
+        if not self.server_entry.get():
+            last = self.config_data.get("accounts")
+            if last:
+                self.server_entry.insert(0, last[0].get("server", ""))
+        self.login_entry.focus_set()
+
+    def _toggle_mode(self):
+        self._show_form(register=not self.register_mode)
+
+    def _forget(self, account):
+        store.forget_account(self.config_data, account)
+        store.save(self.config_data)
+        self._show_auth()
+
+    # -------------------------------------------------------------- экраны
 
     def _build_chat_view(self):
         self.chat_view = ctk.CTkFrame(self, fg_color="transparent")
@@ -319,23 +483,44 @@ class VelixApp(ctk.CTk):
         # grid_propagate тут не сработает, и панель схлопнется по содержимому.
         sidebar.pack_propagate(False)
 
-        top = ctk.CTkFrame(sidebar, fg_color="transparent", height=58)
-        top.pack(fill="x", padx=14, pady=(12, 6))
+        # --- своя карточка: аватарка, имя, вход в профиль
+        me = ctk.CTkFrame(sidebar, fg_color="transparent")
+        me.pack(fill="x", padx=14, pady=(14, 8))
 
-        ctk.CTkLabel(top, text="Velix", font=self.font_name,
-                     text_color=TEXT).pack(side="left", padx=(6, 0))
+        self.my_avatar = ctk.CTkLabel(me, text="?", font=self.font_avatar,
+                                      text_color=ON_ACCENT, fg_color=ACCENT,
+                                      corner_radius=20, width=40, height=40)
+        self.my_avatar.pack(side="left", padx=(0, 10))
 
-        self.leave_button = ctk.CTkButton(
-            top, text="Выйти", width=62, height=30, corner_radius=8,
+        names = ctk.CTkFrame(me, fg_color="transparent")
+        names.pack(side="left", fill="both", expand=True)
+        self.my_name = ctk.CTkLabel(names, text="", font=self.font_name,
+                                    text_color=TEXT, anchor="w")
+        self.my_name.pack(fill="x")
+        self.my_login = ctk.CTkLabel(names, text="", font=self.font_small,
+                                     text_color=MUTED, anchor="w")
+        self.my_login.pack(fill="x")
+
+        buttons = ctk.CTkFrame(sidebar, fg_color="transparent")
+        buttons.pack(fill="x", padx=14, pady=(0, 10))
+
+        self.profile_button = ctk.CTkButton(
+            buttons, text="Профиль", width=70, height=30, corner_radius=8,
             font=self.font_small, fg_color=INPUT_BG, hover_color=SEPARATOR,
-            text_color=MUTED, command=self._on_leave)
-        self.leave_button.pack(side="right")
+            text_color=MUTED, command=self._show_profile)
+        self.profile_button.pack(side="left", expand=True, fill="x", padx=(0, 4))
 
         self.theme_button = ctk.CTkButton(
-            top, text="Тема", width=58, height=30, corner_radius=8,
+            buttons, text="Тема", width=70, height=30, corner_radius=8,
             font=self.font_small, fg_color=INPUT_BG, hover_color=SEPARATOR,
             text_color=MUTED, command=self._toggle_theme)
-        self.theme_button.pack(side="right", padx=(0, 6))
+        self.theme_button.pack(side="left", expand=True, fill="x", padx=4)
+
+        self.leave_button = ctk.CTkButton(
+            buttons, text="Сменить", width=70, height=30, corner_radius=8,
+            font=self.font_small, fg_color=INPUT_BG, hover_color=SEPARATOR,
+            text_color=MUTED, command=self._on_leave)
+        self.leave_button.pack(side="left", expand=True, fill="x", padx=(4, 0))
 
         # Единственный чат в списке — он же всегда открытый
         item = ctk.CTkFrame(sidebar, fg_color=SIDEBAR_ACTIVE, corner_radius=10,
@@ -421,30 +606,102 @@ class VelixApp(ctk.CTk):
             hover_color=ACCENT_HOVER, text_color=ON_ACCENT, command=self._on_send)
         self.send_button.grid(row=0, column=2, padx=(0, 18), pady=13)
 
-    def _show_connect(self):
-        self.chat_view.pack_forget()
-        self.connect_view.pack(fill="both", expand=True)
-        self.nickname_entry.focus_set()
+    def _build_profile_view(self):
+        self.profile_view = ctk.CTkFrame(self, fg_color="transparent")
+
+        card = ctk.CTkFrame(self.profile_view, fg_color=SIDEBAR, corner_radius=16)
+        card.place(relx=0.5, rely=0.5, anchor="center")
+
+        ctk.CTkLabel(card, text="Профиль", font=self.font_title,
+                     text_color=TEXT).pack(padx=48, pady=(32, 18))
+
+        self.profile_avatar = ctk.CTkLabel(
+            card, text="?", font=self.font_big_avatar, text_color=ON_ACCENT,
+            fg_color=ACCENT, corner_radius=AVATAR_LARGE // 2,
+            width=AVATAR_LARGE, height=AVATAR_LARGE)
+        self.profile_avatar.pack(padx=48)
+        self.profile_avatar.bind("<Button-1>", lambda event: self._choose_avatar())
+
+        ctk.CTkButton(card, text="Сменить фото", width=300, height=32,
+                      corner_radius=8, font=self.font_small, fg_color="transparent",
+                      hover_color=INPUT_BG, text_color=ACCENT,
+                      command=self._choose_avatar).pack(padx=48, pady=(8, 16))
+
+        self.profile_name = self._entry(card, "Как вас зовут")
+        self.profile_name.pack(padx=48, pady=(0, 10))
+        self.profile_name.bind("<Control-KeyPress>", self._on_entry_shortcut)
+
+        self.profile_bio = ctk.CTkTextbox(
+            card, width=300, height=90, corner_radius=10, border_width=1,
+            border_color=SEPARATOR, fg_color=INPUT_BG, text_color=TEXT,
+            font=self.font_body, wrap="word")
+        self.profile_bio.pack(padx=48, pady=(0, 4))
+
+        self.profile_hint = ctk.CTkLabel(card, text="Пара слов о себе",
+                                         font=self.font_small, text_color=MUTED)
+        self.profile_hint.pack(padx=48, pady=(0, 14))
+
+        ctk.CTkButton(card, text="СОХРАНИТЬ", width=300, height=46,
+                      corner_radius=10, font=self.font_button, fg_color=ACCENT,
+                      hover_color=ACCENT_HOVER, text_color=ON_ACCENT,
+                      command=self._save_profile).pack(padx=48)
+
+        ctk.CTkButton(card, text="Назад в чат", width=300, height=32,
+                      corner_radius=8, font=self.font_small, fg_color="transparent",
+                      hover_color=INPUT_BG, text_color=MUTED,
+                      command=self._show_chat).pack(padx=48, pady=(8, 30))
 
     def _show_chat(self):
-        self.connect_view.pack_forget()
+        self.auth_view.pack_forget()
+        self.profile_view.pack_forget()
         self.chat_view.pack(fill="both", expand=True)
         self.message_entry.focus_set()
 
+    def _show_profile(self):
+        self.auth_view.pack_forget()
+        self.chat_view.pack_forget()
+        self.profile_view.pack(fill="both", expand=True)
+
+        self.profile_name.delete(0, "end")
+        self.profile_name.insert(0, self.user.get("name", ""))
+        self.profile_bio.delete("1.0", "end")
+        self.profile_bio.insert("1.0", self.user.get("bio", ""))
+        self._paint_avatar(self.profile_avatar, self.user.get("name", "?"),
+                           self.user.get("avatar"), AVATAR_LARGE)
+        self.profile_hint.configure(text="Пара слов о себе", text_color=MUTED)
+
     # ------------------------------------------------------------ действия
 
-    def _on_connect(self):
-        # Квадратные скобки вырезаем: имя показывается в подписи к сообщению
-        nickname = self.nickname_entry.get().strip().replace("[", "").replace("]", "")
-        if not nickname:
-            nickname = "Аноним"
+    def _on_primary(self):
+        """Кнопка «Войти» или «Создать аккаунт»."""
         server = self.server_entry.get().strip() or "localhost"
+        login = self.login_entry.get().strip()
+        password = self.password_entry.get()
 
-        self.nickname = nickname
+        if not login or not password:
+            self.auth_error.configure(text="Заполните логин и пароль.")
+            return
+
+        if self.register_mode:
+            name = self.name_entry.get().strip() or login
+            self.pending_login = protocol.register_message(login, password, name)
+        else:
+            self.pending_login = protocol.login_message(login, password)
+
         self.server = server
-        self.connect_error.configure(text="")
-        self.connect_button.configure(text="ПОДКЛЮЧЕНИЕ…", state="disabled")
+        self.login = login
+        self.auth_error.configure(text="")
+        self.primary_button.configure(text="ПОДКЛЮЧЕНИЕ…", state="disabled")
         self.network.connect(build_uri(server))
+
+    def _enter_saved(self, account):
+        """Вход по сохранённому токену, без пароля."""
+        self.server = account.get("server", "localhost")
+        self.login = account.get("login", "")
+        self.pending_login = protocol.auth_message(account.get("token", ""))
+        self.auth_error.configure(text="")
+        self.auth_subtitle.configure(text=f"Входим как {account.get('name')}…")
+        self.network.connect(build_uri(self.server))
 
     def _on_send(self):
         text = self.message_entry.get().strip()
@@ -452,10 +709,11 @@ class VelixApp(ctk.CTk):
             return
 
         self.message_entry.delete(0, "end")
-        self.network.send(protocol.text_message(self.nickname, text))
+        self.network.send(protocol.text_message(self.user.get("name", ""), text))
         now = datetime.now()
         self._ensure_date(now.strftime("%d.%m"))
-        self._add_bubble(self.nickname, text, own=True, time_text=now.strftime("%H:%M"))
+        self._add_bubble(self.user.get("name", "Я"), text, own=True,
+                         time_text=now.strftime("%H:%M"))
 
     def _on_attach(self):
         """Выбор файла для отправки."""
@@ -473,6 +731,43 @@ class VelixApp(ctk.CTk):
             ])
         if path:
             self._send_file(Path(path))
+
+    def _choose_avatar(self):
+        """Выбор картинки для профиля."""
+        path = filedialog.askopenfilename(
+            title="Выберите фото",
+            filetypes=[("Картинки", "*.png *.jpg *.jpeg *.webp *.bmp"),
+                       ("Все файлы", "*.*")])
+        if not path:
+            return
+
+        try:
+            data = Path(path).read_bytes()
+        except OSError as error:
+            self.profile_hint.configure(text=f"Не прочитать файл: {error}",
+                                        text_color=OFFLINE)
+            return
+
+        self.profile_hint.configure(text="Отправляем фото…", text_color=MUTED)
+        self.network.send(protocol.avatar_header(Path(path).name, len(data)), data)
+
+    def _save_profile(self):
+        name = self.profile_name.get().strip()
+        bio = self.profile_bio.get("1.0", "end").strip()
+        if not name:
+            self.profile_hint.configure(text="Имя не может быть пустым.",
+                                        text_color=OFFLINE)
+            return
+        self.network.send(protocol.profile_message(name, bio))
+        self.profile_hint.configure(text="Сохраняем…", text_color=MUTED)
+
+    def _on_ctrl_key(self, event):
+        """Ctrl+V в поле сообщения: сначала пробуем картинку из буфера."""
+        if event.keycode != 86:  # клавиша V, независимо от раскладки
+            return self._on_entry_shortcut(event)
+        if self._paste_from_clipboard() == "break":
+            return "break"
+        return self._paste_text(event.widget)
 
     def _on_entry_shortcut(self, event):
         """Ctrl+A/C/X/V в полях ввода.
@@ -518,14 +813,6 @@ class VelixApp(ctk.CTk):
         entry.insert("insert", text.strip().replace("\n", " "))
         return "break"
 
-    def _on_ctrl_key(self, event):
-        """Ctrl+V в поле сообщения: сначала пробуем картинку из буфера."""
-        if event.keycode != 86:  # клавиша V, независимо от раскладки
-            return self._on_entry_shortcut(event)
-        if self._paste_from_clipboard() == "break":
-            return "break"
-        return self._paste_text(event.widget)
-
     def _paste_from_clipboard(self):
         """Возвращает "break", если вставку обработали сами."""
         if self.network.websocket is None:
@@ -568,18 +855,21 @@ class VelixApp(ctk.CTk):
             return
 
         kind = protocol.kind_of(name)
-        self.network.send(protocol.media_header(self.nickname, kind, name, len(data)), data)
+        self.network.send(protocol.media_header(self.user.get("name", ""), kind,
+                                                name, len(data)), data)
 
         now = datetime.now()
         self._ensure_date(now.strftime("%d.%m"))
-        self._add_media_bubble(self.nickname, own=True, kind=kind, media_id=None,
-                               name=name, size=len(data),
+        self._add_media_bubble(self.user.get("name", "Я"), own=True, kind=kind,
+                               media_id=None, name=name, size=len(data),
                                time_text=now.strftime("%H:%M"), data=data)
 
     def _on_leave(self):
+        """Возврат к выбору аккаунта — сессия сохраняется."""
         self.network.disconnect()
-        self.connect_button.configure(text="ПОДКЛЮЧИТЬСЯ", state="normal")
-        self._show_connect()
+        self.primary_button.configure(text="ВОЙТИ", state="normal")
+        self.password_entry.delete(0, "end")
+        self._show_auth()
 
     def _toggle_theme(self):
         light = ctk.get_appearance_mode() == "Light"
@@ -603,8 +893,8 @@ class VelixApp(ctk.CTk):
         try:
             while True:
                 kind, payload = self.events.get_nowait()
-                if kind == "connected":
-                    self._on_connected()
+                if kind == "opened":
+                    self._on_opened()
                 elif kind == "message":
                     self._on_message(payload)
                 elif kind == "disconnected":
@@ -615,37 +905,88 @@ class VelixApp(ctk.CTk):
             pass
         self.after(60, self._pump_events)
 
-    def _on_connected(self):
+    def _on_opened(self):
+        """Соединение открылось — отправляем то, чем собирались входить."""
+        if self.pending_login:
+            self.network.send(self.pending_login)
+
+    def _on_welcome(self, message):
+        self.user = dict(message.get("user") or {})
+        self.token = message.get("token")
+        self.pending_login = None
+
+        store.remember_account(self.config_data, self.user.get("login", ""),
+                               self.user.get("name", ""), self.server, self.token)
+        store.save(self.config_data)
+
         for widget in self.messages.winfo_children():
             widget.destroy()
         self.last_sender = None
         self.current_date = None
         self.pending_media.clear()
+        self.avatar_waiters.clear()
         self.images.clear()
         self.animations.clear()
         self.empty_hint = self._service_label("Пока тихо. Напишите первым.")
-        self.header_subtitle.configure(text=f"вы вошли как {self.nickname}")
+
+        self._refresh_me()
         self.status_dot.configure(text_color=ONLINE)
+        self.header_subtitle.configure(text=f"вы вошли как {self.user.get('name')}")
         self.message_entry.configure(state="normal")
         self.send_button.configure(state="normal")
         self.attach_button.configure(state="normal")
-        self.connect_button.configure(text="ПОДКЛЮЧИТЬСЯ", state="normal")
+        self.primary_button.configure(text="ВОЙТИ", state="normal")
+        self.password_entry.delete(0, "end")
         self._show_chat()
+
+    def _refresh_me(self):
+        """Обновляет свою карточку в панели слева."""
+        name = self.user.get("name", "?")
+        self.my_name.configure(text=name)
+        self.my_login.configure(text=f"{self.user.get('login', '')} · {self.server}")
+        self._paint_avatar(self.my_avatar, name, self.user.get("avatar"), 40)
 
     def _on_message(self, message):
         kind = message.get("type")
 
-        if kind == "history":
+        if kind == "welcome":
+            self._on_welcome(message)
+        elif kind == "authfail":
+            self._on_authfail(message.get("text", ""))
+        elif kind == "history":
             for item in message.get("items", []):
                 self._show_item(item)
         elif kind in ("text", "media"):
             self._show_item(message)
         elif kind == "blob":
             self._fill_media(message)
-        elif kind == "system":
+        elif kind == "profile":
+            self._on_profile(message)
+        elif kind in ("system", "error"):
             self._service_label(message.get("text", ""))
-        elif kind == "error":
-            self._service_label(message.get("text", ""))
+
+    def _on_profile(self, message):
+        user = message.get("user") or {}
+        self.user.update(user)
+        store.update_name(self.config_data, self.user.get("login"), self.server,
+                          self.user.get("name"))
+        store.save(self.config_data)
+        self._refresh_me()
+        if self.profile_view.winfo_ismapped():
+            self._paint_avatar(self.profile_avatar, self.user.get("name", "?"),
+                               self.user.get("avatar"), AVATAR_LARGE)
+            self.profile_hint.configure(text="Сохранено", text_color=ONLINE)
+
+    def _on_authfail(self, text):
+        self.pending_login = None
+        self.network.disconnect()
+        self.primary_button.configure(text="ВОЙТИ", state="normal")
+        self.auth_view.pack(fill="both", expand=True)
+        self.chat_view.pack_forget()
+        self.auth_error.configure(text=text)
+        if not self.form.winfo_ismapped():
+            self._show_form(register=False)
+            self.auth_error.configure(text=text)
 
     def _show_item(self, item):
         """Показывает одно сообщение — своё или чужое, текст или вложение."""
@@ -653,14 +994,17 @@ class VelixApp(ctk.CTk):
         self._ensure_date(moment.strftime("%d.%m"))
         nickname = item.get("nick", "?")
         time_text = moment.strftime("%H:%M")
+        avatar = item.get("avatar")
 
         if item.get("kind", "text") == "text":
             self._add_bubble(nickname, item.get("text", ""), own=False,
-                             time_text=time_text)
+                             time_text=time_text, avatar=avatar)
         else:
             self._add_media_bubble(nickname, own=False, kind=item["kind"],
-                                   media_id=item.get("id"), name=item.get("name", "файл"),
-                                   size=item.get("size", 0), time_text=time_text)
+                                   media_id=item.get("id"),
+                                   name=item.get("name", "файл"),
+                                   size=item.get("size", 0), time_text=time_text,
+                                   avatar=avatar)
 
     def _on_disconnected(self):
         self.status_dot.configure(text_color=OFFLINE)
@@ -668,12 +1012,50 @@ class VelixApp(ctk.CTk):
         self.message_entry.configure(state="disabled")
         self.send_button.configure(state="disabled")
         self.attach_button.configure(state="disabled")
-        self._service_label("Соединение потеряно. Нажмите «Выйти», чтобы подключиться заново.")
+        if self.chat_view.winfo_ismapped():
+            self._service_label("Соединение потеряно. Нажмите «Сменить», чтобы войти заново.")
 
     def _on_error(self, text):
-        self.connect_button.configure(text="ПОДКЛЮЧИТЬСЯ", state="normal")
-        self.connect_error.configure(text=text)
-        self._show_connect()
+        self.pending_login = None
+        self.primary_button.configure(text="ВОЙТИ", state="normal")
+        self.auth_error.configure(text=text)
+        if not self.auth_view.winfo_ismapped():
+            self._show_auth()
+        self.auth_error.configure(text=text)
+
+    # ----------------------------------------------------------- аватарки
+
+    def _paint_avatar(self, label, nickname, avatar_id, side):
+        """Рисует кружок с буквой, а если есть фото — заменяет его фотографией."""
+        label.configure(text=(nickname or "?")[0].upper(), image=None,
+                        fg_color=avatar_color(nickname), corner_radius=side // 2,
+                        width=side, height=side)
+
+        if not avatar_id:
+            return
+
+        cached = self.avatar_cache.get((avatar_id, side))
+        if cached is not None:
+            label.configure(text="", image=cached, fg_color="transparent")
+            return
+
+        self.avatar_waiters.setdefault(avatar_id, []).append((label, side))
+        if len(self.avatar_waiters[avatar_id]) == 1:
+            self.network.send(protocol.fetch_request(avatar_id))
+
+    def _fill_avatar(self, avatar_id, data):
+        waiters = self.avatar_waiters.pop(avatar_id, [])
+        for label, side in waiters:
+            try:
+                picture = circular(data, side)
+            except Exception:
+                continue
+            image = ctk.CTkImage(light_image=picture, dark_image=picture,
+                                 size=(side, side))
+            self.avatar_cache[(avatar_id, side)] = image
+            self.images.append(image)
+            if label.winfo_exists():
+                label.configure(text="", image=image, fg_color="transparent")
 
     # ----------------------------------------------------------- сообщения
 
@@ -708,7 +1090,7 @@ class VelixApp(ctk.CTk):
         self._scroll_to_bottom()
         return row
 
-    def _new_bubble(self, nickname, own):
+    def _new_bubble(self, nickname, own, avatar=None):
         """Общая обвязка пузыря: ряд, аватарка, подпись автора."""
         grouped = self.last_sender == (nickname, own)
         self.last_sender = (nickname, own)
@@ -723,10 +1105,10 @@ class VelixApp(ctk.CTk):
                 ctk.CTkFrame(row, fg_color="transparent", width=44,
                              height=1).pack(side="left")
             else:
-                ctk.CTkLabel(row, text=nickname[0].upper(), font=self.font_sender,
-                             text_color=ON_ACCENT, fg_color=avatar_color(nickname),
-                             corner_radius=18, width=36, height=36).pack(
-                    side="left", padx=(0, 8), anchor="s")
+                label = ctk.CTkLabel(row, text="", width=AVATAR_SMALL,
+                                     height=AVATAR_SMALL, font=self.font_sender)
+                label.pack(side="left", padx=(0, 8), anchor="s")
+                self._paint_avatar(label, nickname, avatar, AVATAR_SMALL)
 
         bubble = ctk.CTkFrame(row, corner_radius=14,
                               fg_color=BUBBLE_OUT if own else BUBBLE_IN)
@@ -746,9 +1128,9 @@ class VelixApp(ctk.CTk):
                      text_color=TIME_OUT if own else TIME_IN, anchor="e").pack(
             fill="x", padx=13, pady=(0, 5))
 
-    def _add_bubble(self, nickname, text, own, time_text=None):
+    def _add_bubble(self, nickname, text, own, time_text=None, avatar=None):
         self._clear_hint()
-        bubble, grouped = self._new_bubble(nickname, own)
+        bubble, grouped = self._new_bubble(nickname, own, avatar)
 
         ctk.CTkLabel(bubble, text=text, font=self.font_body,
                      text_color=TEXT_OUT if own else TEXT, justify="left",
@@ -762,9 +1144,9 @@ class VelixApp(ctk.CTk):
     # ----------------------------------------------------------- вложения
 
     def _add_media_bubble(self, nickname, own, kind, media_id, name, size,
-                          time_text=None, data=None):
+                          time_text=None, data=None, avatar=None):
         self._clear_hint()
-        bubble, _ = self._new_bubble(nickname, own)
+        bubble, _ = self._new_bubble(nickname, own, avatar)
 
         if kind in ("image", "gif"):
             holder = ctk.CTkLabel(bubble, text="загружаю картинку…",
@@ -777,11 +1159,11 @@ class VelixApp(ctk.CTk):
                 self.pending_media[media_id] = ("picture", holder, kind)
                 self.network.send(protocol.fetch_request(media_id))
         else:
-            holder = self._file_card(bubble, own, kind, media_id, name, size, data)
+            self._file_card(bubble, own, kind, media_id, name, size, data)
 
         self._add_time(bubble, own, time_text)
-        label = f"{KIND_LABEL.get(kind, 'Фото')}: {name}" if kind not in ("image", "gif") \
-            else ("GIF" if kind == "gif" else "Фото")
+        label = ("GIF" if kind == "gif" else "Фото") if kind in ("image", "gif") \
+            else f"{KIND_LABEL.get(kind, 'Файл')}: {name}"
         self._update_preview(nickname, label, time_text, own)
         self._scroll_to_bottom()
 
@@ -817,13 +1199,18 @@ class VelixApp(ctk.CTk):
 
     def _fill_media(self, message):
         """Пришло содержимое вложения — показываем его."""
-        waiting = self.pending_media.pop(message.get("id"), None)
+        media_id = message.get("id")
+        data = message.get("data") or b""
+
+        if media_id in self.avatar_waiters:
+            self._fill_avatar(media_id, data)
+            return
+
+        waiting = self.pending_media.pop(media_id, None)
         if waiting is None:
             return
 
         mode, widget, extra = waiting
-        data = message.get("data") or b""
-
         if mode == "picture":
             self._show_picture(widget, extra, data)
         else:
