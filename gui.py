@@ -390,6 +390,7 @@ class VelixApp(ctk.CTk):
         self.login_entry = self._entry(self.form, "Логин")
         self.password_entry = self._entry(self.form, "Пароль", show="•")
         self.name_entry = self._entry(self.form, "Как вас зовут")
+        self.invite_entry = self._entry(self.form, "Код приглашения")
 
         self.primary_button = ctk.CTkButton(
             self.form, text="ВОЙТИ", width=300, height=46, corner_radius=10,
@@ -412,7 +413,7 @@ class VelixApp(ctk.CTk):
         self.auth_error.pack(padx=48, pady=(8, 24))
 
         for entry in (self.server_entry, self.login_entry, self.password_entry,
-                      self.name_entry):
+                      self.name_entry, self.invite_entry):
             entry.bind("<Return>", lambda event: self._on_primary())
             entry.bind("<Control-KeyPress>", self._on_entry_shortcut)
 
@@ -495,7 +496,7 @@ class VelixApp(ctk.CTk):
         self.form.pack(padx=48, fill="x", before=self.auth_error)
 
         for entry in (self.server_entry, self.login_entry, self.password_entry,
-                      self.name_entry):
+                      self.name_entry, self.invite_entry):
             entry.pack_forget()
         self.primary_button.pack_forget()
         self.switch_button.pack_forget()
@@ -505,6 +506,7 @@ class VelixApp(ctk.CTk):
         self.password_entry.pack(pady=(0, 10))
         if register:
             self.name_entry.pack(pady=(0, 10))
+            self.invite_entry.pack(pady=(0, 10))
 
         self.primary_button.configure(text="СОЗДАТЬ АККАУНТ" if register else "ВОЙТИ")
         self.primary_button.pack(pady=(6, 6))
@@ -513,7 +515,7 @@ class VelixApp(ctk.CTk):
         self.switch_button.pack()
 
         self.auth_subtitle.configure(
-            text="Придумайте логин и пароль" if register else "Вход в аккаунт")
+            text="Нужен код приглашения" if register else "Вход в аккаунт")
         self.auth_error.configure(text="")
 
         if self.config_data.get("accounts"):
@@ -920,7 +922,8 @@ class VelixApp(ctk.CTk):
 
         if self.register_mode:
             name = self.name_entry.get().strip() or login
-            self.pending_login = protocol.register_message(login, password, name)
+            invite = self.invite_entry.get().strip()
+            self.pending_login = protocol.register_message(login, password, name, invite)
         else:
             self.pending_login = protocol.login_message(login, password)
 

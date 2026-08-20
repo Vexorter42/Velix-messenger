@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#17212b">
+<title>Velix</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- Экран входа -->
+<section id="auth" class="screen">
+  <div class="card">
+    <div class="logo">V</div>
+    <h1>Velix</h1>
+    <p id="auth-subtitle" class="muted">Вход в аккаунт</p>
+
+    <input id="login" type="text" placeholder="Логин" autocomplete="username"
+           autocapitalize="none" autocorrect="off">
+    <input id="password" type="password" placeholder="Пароль"
+           autocomplete="current-password">
+    <input id="name" type="text" placeholder="Как вас зовут" hidden>
+    <input id="invite" type="text" placeholder="Код приглашения" hidden
+           autocapitalize="characters" autocorrect="off">
+
+    <button id="primary" class="primary">Войти</button>
+    <button id="switch-mode" class="link">Создать аккаунт</button>
+    <p id="auth-error" class="error"></p>
+  </div>
+</section>
+
+<!-- Экран чата -->
+<section id="chat" class="screen" hidden>
+  <header class="bar">
+    <div class="avatar" id="room-avatar">V</div>
+    <div class="bar-titles">
+      <strong>Общий чат</strong>
+      <span id="status" class="muted small">подключаюсь…</span>
+    </div>
+    <button id="profile-button" class="icon-button" title="Профиль">⋯</button>
+  </header>
+
+  <main id="messages"></main>
+
+  <form id="composer" autocomplete="off">
+    <label class="icon-button" for="file">+</label>
+    <input id="file" type="file" accept="image/*,video/*" hidden>
+    <input id="text" type="text" placeholder="Написать сообщение…"
+           autocomplete="off">
+    <button id="send" class="send" type="submit">➤</button>
+  </form>
+</section>
+
+<!-- Профиль -->
+<section id="profile" class="screen" hidden>
+  <div class="card">
+    <h1>Профиль</h1>
+    <div class="avatar big" id="my-avatar">?</div>
+    <label class="link" for="avatar-file">Сменить фото</label>
+    <input id="avatar-file" type="file" accept="image/*" hidden>
+
+    <input id="profile-name" type="text" placeholder="Как вас зовут">
+    <textarea id="profile-bio" rows="3" placeholder="Пара слов о себе"></textarea>
+    <p id="profile-hint" class="muted small"></p>
+
+    <button id="save-profile" class="primary">Сохранить</button>
+    <button id="back-to-chat" class="link">Назад в чат</button>
+    <button id="logout" class="link danger">Выйти из аккаунта</button>
+  </div>
+</section>
+
+<script src="app.js"></script>
+</body>
+</html>

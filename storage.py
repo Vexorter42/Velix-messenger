@@ -90,6 +90,17 @@ def _init_sync(path, media_dir):
             )
             """
         )
+        _connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS invites (
+                code       TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                note       TEXT NOT NULL DEFAULT '',
+                used_by    INTEGER,
+                used_at    TEXT
+            )
+            """
+        )
         # База могла остаться от прежней версии — дописываем недостающие столбцы
         existing = {row[1] for row in _connection.execute("PRAGMA table_info(messages)")}
         for column, definition in MESSAGE_COLUMNS.items():
@@ -214,6 +225,43 @@ def _set_avatar_sync(user_id, name, data):
     return avatar_id
 
 
+# -------------------------------------------------------------- приглашения
+
+def _add_invite_sync(code, note):
+    with _lock:
+        _connection.execute(
+            "INSERT OR IGNORE INTO invites (code, created_at, note) VALUES (?, ?, ?)",
+            (code, now(), note),
+        )
+        _connection.commit()
+    return code
+
+
+def _take_invite_sync(code, user_id):
+    """Помечает код использованным. False, если кода нет или он уже потрачен."""
+    with _lock:
+        cursor = _connection.execute(
+            "UPDATE invites SET used_by = ?, used_at = ? WHERE code = ? AND used_by IS NULL",
+            (user_id, now(), code),
+        )
+        _connection.commit()
+    return cursor.rowcount == 1
+
+
+def _invite_exists_sync(code):
+    with _lock:
+        row = _connection.execute(
+            "SELECT used_by FROM invites WHERE code = ?", (code,)).fetchone()
+    return row is not None and row[0] is None
+
+
+def _list_invites_sync():
+    with _lock:
+        return _connection.execute(
+            "SELECT code, created_at, note, used_by, used_at FROM invites"
+            " ORDER BY created_at DESC").fetchall()
+
+
 # --------------------------------------------------------------- сообщения
 
 def _save_message_sync(user_id, nickname, text):
@@ -316,6 +364,25 @@ def _close_sync():
 async def init(path=DB_PATH, media_dir=MEDIA_DIR):
     """Открывает базу, создаёт таблицы и каталог для вложений."""
     await asyncio.to_thread(_init_sync, path, media_dir)
+
+
+async def add_invite(code, note=""):
+    """Заводит код приглашения."""
+    return await asyncio.to_thread(_add_invite_sync, code, note)
+
+
+async def invite_exists(code):
+    """Есть ли такой неиспользованный код."""
+    return await asyncio.to_thread(_invite_exists_sync, code)
+
+
+async def take_invite(code, user_id):
+    """Забирает код за пользователем. False, если код уже потрачен."""
+    return await asyncio.to_thread(_take_invite_sync, code, user_id)
+
+
+async def list_invites():
+    return await asyncio.to_thread(_list_invites_sync)
 
 
 async def create_user(login, password_hash, name):

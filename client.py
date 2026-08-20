@@ -193,10 +193,10 @@ def ask_password(prompt="Пароль: "):
     return getpass.getpass(prompt)
 
 
-async def sign_in(websocket, login, password, name, register):
+async def sign_in(websocket, login, password, name, register, invite=""):
     """Входит в аккаунт. Возвращает профиль или None, если не пустили."""
     if register:
-        await websocket.send(protocol.register_message(login, password, name))
+        await websocket.send(protocol.register_message(login, password, name, invite))
     else:
         await websocket.send(protocol.login_message(login, password))
 
@@ -222,13 +222,14 @@ async def main():
     login = input("Логин: ").strip()
     password = ask_password()
     name = input("Как вас зовут: ").strip() if register else ""
+    invite = input("Код приглашения: ").strip() if register else ""
 
     uri = build_uri(server_ip)
     print(f"Подключение к {server_ip}...")
 
     try:
         async with await open_connection(server_ip) as websocket:
-            user = await sign_in(websocket, login, password, name, register)
+            user = await sign_in(websocket, login, password, name, register, invite)
             if user is None:
                 return
             nickname = user.get("name", login)

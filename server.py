@@ -1,11 +1,13 @@
 import asyncio
 import os
 import ssl
+import time
 from http import HTTPStatus
 from pathlib import Path
 
 import websockets
-from websockets.datastructures import MultipleValuesError
+from websockets.http11 import Response
+from websockets.datastructures import Headers, MultipleValuesError
 
 import accounts
 import media
@@ -33,6 +35,18 @@ ALLOWED_HOSTS = {
 
 MAX_TEXT = 4000
 
+# Регистрация по коду приглашения. VELIX_OPEN_REGISTRATION=1 открывает её
+# всем подряд — по умолчанию в чат попадают только по приглашению.
+OPEN_REGISTRATION = os.environ.get("VELIX_OPEN_REGISTRATION") == "1"
+
+# Защита от перебора пароля: сколько промахов подряд терпим и насколько
+# запираем дверь после этого
+MAX_ATTEMPTS = 5
+LOCKOUT_SECONDS = 300
+
+# Логин -> (число промахов, время последнего)
+_failures = {}
+
 # Сертификат и ключ для wss://. Если оба заданы и файлы на месте, сервер
 # поднимается по TLS: пароли и переписка перестают ходить открытым текстом.
 CERT_FILE = os.environ.get("VELIX_CERT")
@@ -48,6 +62,62 @@ MAX_AVATAR_SIZE = 4 * 1024 * 1024
 
 # Множество для хранения всех активных подключений
 connected_clients = set()
+
+
+# Каталог с мобильным веб-клиентом: те же страницы отдаются с того же порта,
+# что и чат, поэтому отдельный веб-сервер и второй проброс порта не нужны.
+WEB_DIR = Path(os.environ.get("VELIX_WEB") or Path(__file__).with_name("web"))
+
+CONTENT_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".js": "application/javascript; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".webmanifest": "application/manifest+json; charset=utf-8",
+    ".png": "image/png",
+    ".ico": "image/x-icon",
+    ".svg": "image/svg+xml",
+}
+
+
+def serve_file(connection, path):
+    """Отдаёт страницу веб-клиента обычным HTTP-ответом."""
+    relative = path.split("?", 1)[0].lstrip("/") or "index.html"
+
+    # Никаких прогулок по файловой системе: только то, что лежит в web/
+    target = (WEB_DIR / relative).resolve()
+    try:
+        target.relative_to(WEB_DIR.resolve())
+    except ValueError:
+        return connection.respond(HTTPStatus.FORBIDDEN, "Нельзя.")
+
+    if not target.is_file():
+        return connection.respond(HTTPStatus.NOT_FOUND, "Не найдено.")
+
+    body = target.read_bytes()
+    headers = Headers({
+        "Content-Type": CONTENT_TYPES.get(target.suffix.lower(),
+                                          "application/octet-stream"),
+        "Content-Length": str(len(body)),
+        # Страницу не кешируем, чтобы обновления доезжали сразу
+        "Cache-Control": "no-cache",
+    })
+    return Response(200, "OK", headers, body)
+
+
+def serve_if_browser(connection, request):
+    """Браузеру отдаём страницу, клиенту чата — пропускаем рукопожатие."""
+    try:
+        upgrade = request.headers.get("Upgrade", "")
+    except MultipleValuesError:
+        upgrade = ""
+
+    if upgrade.lower() == "websocket":
+        return None  # это подключение к чату, дальше разбирается библиотека
+
+    if WEB_DIR.is_dir():
+        return serve_file(connection, request.path)
+    return connection.respond(HTTPStatus.NOT_FOUND, "Здесь только чат.")
 
 
 def hostname_of(host_header):
@@ -68,7 +138,7 @@ def check_host(connection, request):
     доберётся — он не знает имени.
     """
     if not ALLOWED_HOSTS:
-        return None
+        return serve_if_browser(connection, request)
 
     try:
         host_header = request.headers.get("Host", "")
@@ -77,7 +147,7 @@ def check_host(connection, request):
         host_header = ""
 
     if hostname_of(host_header).lower() in ALLOWED_HOSTS:
-        return None
+        return serve_if_browser(connection, request)
 
     print(f"[Сервер]: Отклонено подключение по имени '{host_header}'")
     return connection.respond(HTTPStatus.FORBIDDEN, "Здесь ничего нет.\n")
@@ -139,6 +209,27 @@ async def broadcast(frame, sender, payload=None):
 
 # --------------------------------------------------------------------- вход
 
+def locked_for(login):
+    """Сколько секунд ещё нельзя пробовать этот логин."""
+    attempts, last = _failures.get(login, (0, 0.0))
+    if attempts < MAX_ATTEMPTS:
+        return 0
+    left = LOCKOUT_SECONDS - (time.monotonic() - last)
+    if left <= 0:
+        _failures.pop(login, None)
+        return 0
+    return int(left) + 1
+
+
+def note_failure(login):
+    attempts, _ = _failures.get(login, (0, 0.0))
+    _failures[login] = (attempts + 1, time.monotonic())
+
+
+def note_success(login):
+    _failures.pop(login, None)
+
+
 async def handle_register(websocket, message):
     """Заводит учётную запись и сразу впускает в чат."""
     login = str(message.get("login") or "").strip()
@@ -148,6 +239,17 @@ async def handle_register(websocket, message):
     if problem:
         await websocket.send(protocol.authfail_message(problem))
         return None
+
+    invite = accounts.clean_invite(message.get("invite"))
+    if not OPEN_REGISTRATION:
+        if not invite:
+            await websocket.send(protocol.authfail_message(
+                "Нужен код приглашения — попросите его у того, кто держит чат."))
+            return None
+        if not await storage.invite_exists(invite):
+            await websocket.send(protocol.authfail_message(
+                "Код приглашения не подошёл: его либо нет, либо им уже воспользовались."))
+            return None
 
     name = accounts.clean_name(message.get("name"), login)
     # scrypt считается заметное время и грузит процессор — уводим в поток,
@@ -159,6 +261,12 @@ async def handle_register(websocket, message):
         await websocket.send(protocol.authfail_message("Такой логин уже занят."))
         return None
 
+    if not OPEN_REGISTRATION and not await storage.take_invite(invite, user["id"]):
+        # Кто-то успел воспользоваться кодом, пока считался хеш пароля
+        await websocket.send(protocol.authfail_message(
+            "Код приглашения только что заняли. Попросите новый."))
+        return None
+
     print(f"[Сервер]: Зарегистрирован {login} ({name})")
     return user
 
@@ -168,20 +276,30 @@ async def handle_login(websocket, message):
     login = str(message.get("login") or "").strip()
     password = message.get("password")
 
+    waiting = locked_for(login.lower())
+    if waiting:
+        await websocket.send(protocol.authfail_message(
+            f"Слишком много неудачных попыток. Попробуйте через {waiting // 60 + 1} мин."))
+        return None
+
     user, password_hash = await storage.user_with_hash(login)
     if user is None:
         # Пароль всё равно считаем, чтобы по времени ответа нельзя было
         # понять, существует такой логин или нет
         await asyncio.to_thread(accounts.hash_password, str(password or ""))
+        note_failure(login.lower())
         await websocket.send(protocol.authfail_message("Неверный логин или пароль."))
         return None
 
     correct = await asyncio.to_thread(accounts.verify_password,
                                       str(password or ""), password_hash)
     if not correct:
+        note_failure(login.lower())
+        print(f"[Сервер]: Неудачный вход в {login}")
         await websocket.send(protocol.authfail_message("Неверный логин или пароль."))
         return None
 
+    note_success(login.lower())
     return user
 
 
@@ -420,6 +538,10 @@ async def main():
                 print("ВНИМАНИЕ: шифрования нет, пароли идут открытым текстом.")
             if ALLOWED_HOSTS:
                 print(f"Пускаем только по именам: {', '.join(sorted(ALLOWED_HOSTS))}")
+            print("Регистрация: по коду приглашения" if not OPEN_REGISTRATION
+                  else "ВНИМАНИЕ: регистрация открыта всем подряд")
+            if WEB_DIR.is_dir():
+                print(f"Веб-клиент раздаётся из {WEB_DIR}")
             update = available_update()
             print(f"Раздаём обновление {update['version']}" if update
                   else "Обновление для раздачи не найдено")

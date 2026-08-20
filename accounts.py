@@ -65,6 +65,20 @@ def new_token():
     return secrets.token_urlsafe(32)
 
 
+def new_invite():
+    """Код приглашения: четыре группы по четыре знака, без похожих букв."""
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    groups = ["".join(secrets.choice(alphabet) for _ in range(4)) for _ in range(4)]
+    return "-".join(groups)
+
+
+def clean_invite(code):
+    """Приводит введённый код к единому виду: заглавные, дефисы на местах."""
+    letters = "".join(character for character in str(code or "").upper()
+                      if character.isalnum())
+    return "-".join(letters[index:index + 4] for index in range(0, len(letters), 4))
+
+
 def check_login(login):
     """Возвращает текст ошибки или None, если логин годится."""
     if not LOGIN_PATTERN.match(login or ""):

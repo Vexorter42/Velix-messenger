@@ -76,9 +76,9 @@ def fetch_request(media_id):
 
 # --- вход и профиль ---
 
-def register_message(login, password, name):
+def register_message(login, password, name, invite=""):
     return encode({"type": "register", "login": login, "password": password,
-                   "name": name})
+                   "name": name, "invite": invite})
 
 
 def login_message(login, password):
