@@ -22,8 +22,10 @@ import customtkinter as ctk
 import websockets
 from PIL import Image, ImageDraw, ImageSequence
 
+import autostart
 import protocol
 import store
+import tray as tray_module
 
 PORT = 8765
 
@@ -65,6 +67,12 @@ MONTHS = ["января", "февраля", "марта", "апреля", "ма�
           "августа", "сентября", "октября", "ноября", "декабря"]
 
 KIND_LABEL = {"video": "Видео", "file": "Файл"}
+
+DEFAULT_SETTINGS = {
+    "theme": "dark",
+    "tray": True,        # закрытие окна прячет его в трей, а не выходит
+    "autostart": False,  # запуск вместе с Windows
+}
 
 
 def avatar_color(nickname):
@@ -240,6 +248,14 @@ class VelixApp(ctk.CTk):
         self.events = queue.Queue()
         self.network = Network(self.events)
         self.config_data = store.load()
+        self.settings = dict(DEFAULT_SETTINGS, **self.config_data.get("settings", {}))
+        # Тему поднимаем из настроек до того, как построим экраны
+        ctk.set_appearance_mode(self.settings.get("theme", "dark"))
+
+        self.tray = tray_module.Tray(on_open=lambda: self.events.put(("tray_open", None)),
+                                     on_quit=lambda: self.events.put(("tray_quit", None)),
+                                     icon_path=str(resource_path("icon.ico")))
+        self.hidden_notice_shown = False
 
         self.server = ""
         self.user = {}
@@ -273,6 +289,7 @@ class VelixApp(ctk.CTk):
         self._build_auth_view()
         self._build_chat_view()
         self._build_profile_view()
+        self._build_settings_view()
         self._show_auth()
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -362,6 +379,7 @@ class VelixApp(ctk.CTk):
         """Список сохранённых аккаунтов, если они есть, иначе сразу форма."""
         self.chat_view.pack_forget()
         self.profile_view.pack_forget()
+        self.settings_view.pack_forget()
         self.auth_view.pack(fill="both", expand=True)
 
         for widget in self.saved_box.winfo_children():
@@ -510,11 +528,11 @@ class VelixApp(ctk.CTk):
             text_color=MUTED, command=self._show_profile)
         self.profile_button.pack(side="left", expand=True, fill="x", padx=(0, 4))
 
-        self.theme_button = ctk.CTkButton(
-            buttons, text="Тема", width=70, height=30, corner_radius=8,
+        self.settings_button = ctk.CTkButton(
+            buttons, text="Настройки", width=70, height=30, corner_radius=8,
             font=self.font_small, fg_color=INPUT_BG, hover_color=SEPARATOR,
-            text_color=MUTED, command=self._toggle_theme)
-        self.theme_button.pack(side="left", expand=True, fill="x", padx=4)
+            text_color=MUTED, command=self._show_settings)
+        self.settings_button.pack(side="left", expand=True, fill="x", padx=4)
 
         self.leave_button = ctk.CTkButton(
             buttons, text="Сменить", width=70, height=30, corner_radius=8,
@@ -651,15 +669,108 @@ class VelixApp(ctk.CTk):
                       hover_color=INPUT_BG, text_color=MUTED,
                       command=self._show_chat).pack(padx=48, pady=(8, 30))
 
+    def _build_settings_view(self):
+        self.settings_view = ctk.CTkFrame(self, fg_color="transparent")
+
+        card = ctk.CTkFrame(self.settings_view, fg_color=SIDEBAR, corner_radius=16)
+        card.place(relx=0.5, rely=0.5, anchor="center")
+
+        ctk.CTkLabel(card, text="Настройки", font=self.font_title,
+                     text_color=TEXT).pack(padx=48, pady=(32, 22))
+
+        self.theme_switch = self._switch(card, "Тёмное оформление", self._on_theme_switch)
+        self.tray_switch = self._switch(card, "Прятать в трей при закрытии",
+                                        self._on_tray_switch)
+        self.autostart_switch = self._switch(card, "Запускать вместе с Windows",
+                                             self._on_autostart_switch)
+
+        self.settings_hint = ctk.CTkLabel(card, text="", font=self.font_small,
+                                          text_color=MUTED, wraplength=300,
+                                          justify="left")
+        self.settings_hint.pack(padx=48, pady=(6, 12))
+
+        ctk.CTkButton(card, text="Назад в чат", width=300, height=32,
+                      corner_radius=8, font=self.font_small, fg_color="transparent",
+                      hover_color=INPUT_BG, text_color=MUTED,
+                      command=self._show_chat).pack(padx=48, pady=(0, 30))
+
+    def _switch(self, master, text, command):
+        row = ctk.CTkFrame(master, fg_color="transparent", width=300)
+        row.pack(padx=48, pady=(0, 14), fill="x")
+        switch = ctk.CTkSwitch(row, text=text, font=self.font_body, text_color=TEXT,
+                               progress_color=ACCENT, command=command)
+        switch.pack(anchor="w")
+        return switch
+
+    def _show_settings(self):
+        self.auth_view.pack_forget()
+        self.chat_view.pack_forget()
+        self.profile_view.pack_forget()
+        self.settings_view.pack(fill="both", expand=True)
+
+        self._set_switch(self.theme_switch,
+                         self.settings.get("theme", "dark") == "dark")
+        self._set_switch(self.tray_switch, self.settings.get("tray", True))
+        # Спрашиваем реестр, а не свою память: пользователь мог убрать
+        # автозапуск и мимо нас
+        self._set_switch(self.autostart_switch, autostart.is_enabled())
+
+        if not autostart.supported():
+            self.autostart_switch.configure(state="disabled")
+        if not self.tray.available:
+            self.tray_switch.configure(state="disabled")
+        self.settings_hint.configure(text=self._settings_hint(), text_color=MUTED)
+
+    def _settings_hint(self):
+        if not self.tray.available:
+            return "Значок в трее недоступен: не установлен pystray."
+        if not autostart.supported():
+            return "Автозапуск настраивается только в Windows."
+        return "Настройки сохраняются сразу."
+
+    def _set_switch(self, switch, on):
+        switch.select() if on else switch.deselect()
+
+    def _save_settings(self):
+        self.config_data["settings"] = self.settings
+        store.save(self.config_data)
+
+    def _on_theme_switch(self):
+        theme = "dark" if self.theme_switch.get() else "light"
+        self.settings["theme"] = theme
+        ctk.set_appearance_mode(theme)
+        self._save_settings()
+
+    def _on_tray_switch(self):
+        self.settings["tray"] = bool(self.tray_switch.get())
+        self._save_settings()
+        if not self.settings["tray"]:
+            self.tray.hide()
+
+    def _on_autostart_switch(self):
+        wanted = bool(self.autostart_switch.get())
+        problem = autostart.apply(wanted)
+        if problem:
+            self._set_switch(self.autostart_switch, autostart.is_enabled())
+            self.settings_hint.configure(text=problem, text_color=OFFLINE)
+            return
+        self.settings["autostart"] = wanted
+        self._save_settings()
+        self.settings_hint.configure(
+            text="Velix будет запускаться при входе в Windows." if wanted
+            else "Автозапуск выключен.", text_color=MUTED)
+
     def _show_chat(self):
         self.auth_view.pack_forget()
         self.profile_view.pack_forget()
+        self.settings_view.pack_forget()
         self.chat_view.pack(fill="both", expand=True)
         self.message_entry.focus_set()
 
     def _show_profile(self):
         self.auth_view.pack_forget()
         self.chat_view.pack_forget()
+        self.settings_view.pack_forget()
         self.profile_view.pack(fill="both", expand=True)
 
         self.profile_name.delete(0, "end")
@@ -876,8 +987,30 @@ class VelixApp(ctk.CTk):
         ctk.set_appearance_mode("dark" if light else "light")
 
     def _on_close(self):
+        """Крестик окна: прячем в трей либо выходим совсем."""
+        if self.settings.get("tray", True) and self.tray.available:
+            self.withdraw()
+            self.tray.show()
+            if not self.hidden_notice_shown:
+                self.tray.notify("Velix свернулся в трей",
+                                 "Программа продолжает работать. "
+                                 "Значок рядом с часами открывает окно обратно.")
+                self.hidden_notice_shown = True
+            return
+        self._quit()
+
+    def _quit(self):
+        """Полный выход: закрываем связь и убираем значок."""
+        self.tray.hide()
         self.network.disconnect()
         self.destroy()
+
+    def _restore_window(self):
+        """Показывает спрятанное окно обратно."""
+        self.deiconify()
+        self.lift()
+        self.focus_force()
+        self.tray.hide()
 
     def _on_resize(self, event):
         if event.widget is not self:
@@ -895,6 +1028,11 @@ class VelixApp(ctk.CTk):
                 kind, payload = self.events.get_nowait()
                 if kind == "opened":
                     self._on_opened()
+                elif kind == "tray_open":
+                    self._restore_window()
+                elif kind == "tray_quit":
+                    self._quit()
+                    return
                 elif kind == "message":
                     self._on_message(payload)
                 elif kind == "disconnected":
@@ -999,12 +1137,18 @@ class VelixApp(ctk.CTk):
         if item.get("kind", "text") == "text":
             self._add_bubble(nickname, item.get("text", ""), own=False,
                              time_text=time_text, avatar=avatar)
+            self._notify_if_hidden(nickname, item.get("text", ""))
         else:
             self._add_media_bubble(nickname, own=False, kind=item["kind"],
                                    media_id=item.get("id"),
                                    name=item.get("name", "файл"),
                                    size=item.get("size", 0), time_text=time_text,
                                    avatar=avatar)
+
+    def _notify_if_hidden(self, nickname, text):
+        """Пока окно в трее, о новых сообщениях сообщаем всплывашкой."""
+        if self.state() == "withdrawn":
+            self.tray.notify(nickname, text[:120])
 
     def _on_disconnected(self):
         self.status_dot.configure(text_color=OFFLINE)

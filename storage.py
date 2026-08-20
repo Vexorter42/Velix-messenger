@@ -10,15 +10,18 @@
 """
 
 import asyncio
+import os
 import sqlite3
 import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Файл базы лежит рядом с server.py, независимо от того, откуда его запустили
-DB_PATH = Path(__file__).with_name("velix.db")
-MEDIA_DIR = Path(__file__).with_name("media")
+# Файл базы лежит рядом с server.py, независимо от того, откуда его запустили.
+# Переменные окружения VELIX_DB и VELIX_MEDIA уводят их в другое место —
+# так поднимается тестовый сервер, которому нельзя трогать боевую переписку.
+DB_PATH = Path(os.environ.get("VELIX_DB") or Path(__file__).with_name("velix.db"))
+MEDIA_DIR = Path(os.environ.get("VELIX_MEDIA") or Path(__file__).with_name("media"))
 
 # Сколько последних сообщений получает клиент при подключении
 HISTORY_LIMIT = 50
