@@ -6,6 +6,7 @@ from pathlib import Path
 import websockets
 from websockets.datastructures import MultipleValuesError
 
+import media
 import protocol
 import storage
 
@@ -125,14 +126,21 @@ async def handle_media(websocket, message):
 
     # Вид вложения определяем сами, присланному на слово не верим
     kind = protocol.kind_of(name)
-    media_id, created_at = await storage.save_media(nickname, kind, name, bytes(payload))
+
+    # Картинку ужимаем до отправки в хранилище: на диске малины лежит уже
+    # сжатая, оригинал не нужен. Работа с картинкой упирается в процессор,
+    # поэтому уводим её в отдельный поток.
+    original_size = len(payload)
+    name, packed = await asyncio.to_thread(media.compress, kind, name, bytes(payload))
+
+    media_id, created_at = await storage.save_media(nickname, kind, name, packed)
     print(f"[Лог]: {nickname} прислал {kind} '{name}' "
-          f"({protocol.human_size(len(payload))})")
+          f"({protocol.human_size(len(packed))}, {media.describe(original_size, len(packed))})")
 
     # Остальным уходит только описание — содержимое они запросят сами,
     # когда дойдут до отрисовки
     await broadcast(protocol.encode({"type": "media", "id": media_id, "nick": nickname,
-                                     "kind": kind, "name": name, "size": len(payload),
+                                     "kind": kind, "name": name, "size": len(packed),
                                      "at": created_at}), websocket)
 
 
