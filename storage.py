@@ -39,7 +39,14 @@ MESSAGE_COLUMNS = {
     "media_name": "TEXT",
     "media_size": "INTEGER",
     "user_id": "INTEGER",
+    "conversation_id": "INTEGER",
+    "reply_to": "INTEGER",
+    "deleted": "INTEGER NOT NULL DEFAULT 0",
 }
+
+# Общий чат существует всегда и лежит под первым номером
+GENERAL_ID = 1
+GENERAL_TITLE = "Общий чат"
 
 
 def now():
@@ -92,6 +99,25 @@ def _init_sync(path, media_dir):
         )
         _connection.execute(
             """
+            CREATE TABLE IF NOT EXISTS conversations (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind       TEXT NOT NULL,
+                title      TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        _connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS members (
+                conversation_id INTEGER NOT NULL,
+                user_id         INTEGER NOT NULL,
+                PRIMARY KEY (conversation_id, user_id)
+            )
+            """
+        )
+        _connection.execute(
+            """
             CREATE TABLE IF NOT EXISTS invites (
                 code       TEXT PRIMARY KEY,
                 created_at TEXT NOT NULL,
@@ -106,6 +132,15 @@ def _init_sync(path, media_dir):
         for column, definition in MESSAGE_COLUMNS.items():
             if column not in existing:
                 _connection.execute(f"ALTER TABLE messages ADD COLUMN {column} {definition}")
+        # Общий чат заводим сразу: он есть у всех и всегда
+        _connection.execute(
+            "INSERT OR IGNORE INTO conversations (id, kind, title, created_at)"
+            " VALUES (?, 'room', ?, ?)", (GENERAL_ID, GENERAL_TITLE, now()))
+
+        # Сообщения из прежних версий жили без переписок — считаем их общими
+        _connection.execute(
+            "UPDATE messages SET conversation_id = ? WHERE conversation_id IS NULL",
+            (GENERAL_ID,))
         _connection.commit()
 
 
@@ -225,6 +260,111 @@ def _set_avatar_sync(user_id, name, data):
     return avatar_id
 
 
+# --------------------------------------------------------------- переписки
+
+def _direct_id_sync(first, second):
+    """Личная переписка двоих: находит существующую или заводит новую."""
+    with _lock:
+        row = _connection.execute(
+            """
+            SELECT c.id FROM conversations c
+            JOIN members a ON a.conversation_id = c.id AND a.user_id = ?
+            JOIN members b ON b.conversation_id = c.id AND b.user_id = ?
+            WHERE c.kind = 'direct'
+            LIMIT 1
+            """,
+            (first, second),
+        ).fetchone()
+        if row is not None:
+            return row[0]
+
+        cursor = _connection.execute(
+            "INSERT INTO conversations (kind, title, created_at) VALUES ('direct', '', ?)",
+            (now(),))
+        conversation = cursor.lastrowid
+        _connection.executemany(
+            "INSERT OR IGNORE INTO members (conversation_id, user_id) VALUES (?, ?)",
+            [(conversation, first), (conversation, second)])
+        _connection.commit()
+    return conversation
+
+
+def _conversations_sync(user_id):
+    """Список переписок пользователя: общий чат плюс его личные."""
+    with _lock:
+        rows = _connection.execute(
+            """
+            SELECT c.id, c.kind, c.title
+            FROM conversations c
+            WHERE c.kind = 'room'
+               OR c.id IN (SELECT conversation_id FROM members WHERE user_id = ?)
+            ORDER BY c.kind DESC, c.id ASC
+            """,
+            (user_id,),
+        ).fetchall()
+
+        result = []
+        for conversation_id, kind, title in rows:
+            item = {"id": conversation_id, "kind": kind, "title": title}
+
+            if kind == "direct":
+                # У личной переписки заголовок — это имя собеседника
+                other = _connection.execute(
+                    "SELECT u.id, u.name, u.avatar_id FROM members m"
+                    " JOIN users u ON u.id = m.user_id"
+                    " WHERE m.conversation_id = ? AND m.user_id != ?",
+                    (conversation_id, user_id)).fetchone()
+                if other is None:
+                    continue
+                item["title"] = other[1]
+                item["user"] = other[0]
+                if other[2]:
+                    item["avatar"] = other[2]
+
+            last = _connection.execute(
+                "SELECT m.text, m.kind, m.created_at, u.name FROM messages m"
+                " LEFT JOIN users u ON u.id = m.user_id"
+                " WHERE m.conversation_id = ? AND m.kind != 'avatar' AND m.deleted = 0"
+                " ORDER BY m.id DESC LIMIT 1",
+                (conversation_id,)).fetchone()
+            if last is not None:
+                item["last"] = {"text": last[0], "kind": last[1],
+                                "at": last[2], "nick": last[3]}
+            result.append(item)
+    return result
+
+
+def _is_member_sync(conversation_id, user_id):
+    """Пускать ли пользователя в эту переписку."""
+    with _lock:
+        row = _connection.execute(
+            "SELECT kind FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
+        if row is None:
+            return False
+        if row[0] == "room":
+            return True  # общий чат открыт всем, кто вошёл
+        member = _connection.execute(
+            "SELECT 1 FROM members WHERE conversation_id = ? AND user_id = ?",
+            (conversation_id, user_id)).fetchone()
+    return member is not None
+
+
+def _members_sync(conversation_id):
+    with _lock:
+        rows = _connection.execute(
+            "SELECT user_id FROM members WHERE conversation_id = ?",
+            (conversation_id,)).fetchall()
+    return [row[0] for row in rows]
+
+
+def _people_sync():
+    """Все, кто зарегистрирован — для списка участников."""
+    with _lock:
+        rows = _connection.execute(
+            f"SELECT {USER_FIELDS} FROM users ORDER BY name COLLATE NOCASE").fetchall()
+    return [_row_to_user(row) for row in rows]
+
+
 # -------------------------------------------------------------- приглашения
 
 def _add_invite_sync(code, note):
@@ -264,33 +404,34 @@ def _list_invites_sync():
 
 # --------------------------------------------------------------- сообщения
 
-def _save_message_sync(user_id, nickname, text):
+def _save_message_sync(user_id, nickname, text, conversation_id, reply_to):
     created_at = now()
     with _lock:
-        _connection.execute(
-            "INSERT INTO messages (nickname, text, created_at, kind, user_id)"
-            " VALUES (?, ?, ?, 'text', ?)",
-            (nickname, text, created_at, user_id),
+        cursor = _connection.execute(
+            "INSERT INTO messages (nickname, text, created_at, kind, user_id,"
+            " conversation_id, reply_to) VALUES (?, ?, ?, 'text', ?, ?, ?)",
+            (nickname, text, created_at, user_id, conversation_id, reply_to),
         )
         _connection.commit()
-    return created_at
+    return cursor.lastrowid, created_at
 
 
-def _save_media_sync(user_id, nickname, kind, name, data):
+def _save_media_sync(user_id, nickname, kind, name, data, conversation_id, reply_to):
     media_id = uuid.uuid4().hex
     suffix = Path(name).suffix.lower()[:16]
     (_media_dir / f"{media_id}{suffix}").write_bytes(data)
 
     created_at = now()
     with _lock:
-        _connection.execute(
+        cursor = _connection.execute(
             "INSERT INTO messages (nickname, text, created_at, kind,"
-            " media_id, media_name, media_size, user_id)"
-            " VALUES (?, '', ?, ?, ?, ?, ?, ?)",
-            (nickname, created_at, kind, media_id, name, len(data), user_id),
+            " media_id, media_name, media_size, user_id, conversation_id, reply_to)"
+            " VALUES (?, '', ?, ?, ?, ?, ?, ?, ?, ?)",
+            (nickname, created_at, kind, media_id, name, len(data), user_id,
+             conversation_id, reply_to),
         )
         _connection.commit()
-    return media_id, created_at
+    return cursor.lastrowid, media_id, created_at
 
 
 def _media_bytes_sync(media_id):
@@ -306,6 +447,114 @@ def _media_bytes_sync(media_id):
     if not matches:
         return None
     return kind, name or "файл", matches[0].read_bytes()
+
+
+def _row_to_item(row):
+    """Одна строка из базы — в то, что понимает клиент."""
+    (message_id, nickname, text, created_at, kind, media_id, media_name,
+     media_size, deleted, reply_to, user_id, profile_name, avatar_id) = row
+
+    item = {"id": message_id, "nick": profile_name or nickname, "at": created_at,
+            "kind": kind or "text", "user": user_id}
+    if avatar_id:
+        item["avatar"] = avatar_id
+    if reply_to:
+        item["reply_to"] = reply_to
+
+    if deleted:
+        item["kind"] = "deleted"
+        return item
+
+    if item["kind"] == "text":
+        item["text"] = text
+    else:
+        item["media"] = media_id
+        item["name"] = media_name
+        item["size"] = media_size
+    return item
+
+
+MESSAGE_FIELDS = ("m.id, m.nickname, m.text, m.created_at, m.kind, m.media_id,"
+                  " m.media_name, m.media_size, m.deleted, m.reply_to, m.user_id,"
+                  " u.name, u.avatar_id")
+
+
+def _messages_sync(conversation_id, limit, before):
+    """Последние сообщения переписки; before подгружает те, что старше."""
+    condition = "AND id < ?" if before else ""
+    parameters = [conversation_id]
+    if before:
+        parameters.append(before)
+    parameters.append(limit)
+
+    with _lock:
+        rows = _connection.execute(
+            "SELECT " + MESSAGE_FIELDS + " FROM ("
+            "  SELECT * FROM messages"
+            "  WHERE conversation_id = ? AND kind != 'avatar' " + condition +
+            "  ORDER BY id DESC LIMIT ?"
+            ") m LEFT JOIN users u ON u.id = m.user_id ORDER BY m.id ASC",
+            parameters,
+        ).fetchall()
+    return [_row_to_item(row) for row in rows]
+
+
+def _quoted_sync(message_ids):
+    """Выжимки сообщений, на которые отвечают."""
+    if not message_ids:
+        return {}
+    marks = ",".join("?" * len(message_ids))
+    with _lock:
+        rows = _connection.execute(
+            "SELECT " + MESSAGE_FIELDS + " FROM messages m"
+            " LEFT JOIN users u ON u.id = m.user_id"
+            " WHERE m.id IN (" + marks + ")",
+            list(message_ids),
+        ).fetchall()
+    return {row[0]: _row_to_item(row) for row in rows}
+
+
+def _delete_message_sync(message_id, user_id):
+    """Прячет своё сообщение. Возвращает переписку или None."""
+    with _lock:
+        row = _connection.execute(
+            "SELECT conversation_id, media_id FROM messages"
+            " WHERE id = ? AND user_id = ? AND deleted = 0",
+            (message_id, user_id)).fetchone()
+        if row is None:
+            return None
+        _connection.execute(
+            "UPDATE messages SET deleted = 1, text = '' WHERE id = ?", (message_id,))
+        _connection.commit()
+
+    # Вложение с диска тоже убираем: держать его больше незачем
+    if row[1]:
+        for path in _media_dir.glob(str(row[1]) + "*"):
+            path.unlink(missing_ok=True)
+    return row[0]
+
+
+def _search_sync(user_id, query, limit):
+    """Ищет текст в переписках, доступных этому пользователю."""
+    pattern = "%" + query + "%"
+    with _lock:
+        rows = _connection.execute(
+            "SELECT " + MESSAGE_FIELDS + ", m.conversation_id FROM messages m"
+            " LEFT JOIN users u ON u.id = m.user_id"
+            " JOIN conversations c ON c.id = m.conversation_id"
+            " WHERE m.deleted = 0 AND m.kind = 'text' AND m.text LIKE ?"
+            "   AND (c.kind = 'room'"
+            "        OR c.id IN (SELECT conversation_id FROM members WHERE user_id = ?))"
+            " ORDER BY m.id DESC LIMIT ?",
+            (pattern, user_id, limit),
+        ).fetchall()
+
+    found = []
+    for row in rows:
+        item = _row_to_item(row[:13])
+        item["conversation"] = row[13]
+        found.append(item)
+    return found
 
 
 def _last_messages_sync(limit):
@@ -366,6 +615,29 @@ async def init(path=DB_PATH, media_dir=MEDIA_DIR):
     await asyncio.to_thread(_init_sync, path, media_dir)
 
 
+async def direct_id(first, second):
+    """Личная переписка двоих, создаётся при первом обращении."""
+    return await asyncio.to_thread(_direct_id_sync, first, second)
+
+
+async def conversations(user_id):
+    """Переписки пользователя с последним сообщением в каждой."""
+    return await asyncio.to_thread(_conversations_sync, user_id)
+
+
+async def is_member(conversation_id, user_id):
+    return await asyncio.to_thread(_is_member_sync, conversation_id, user_id)
+
+
+async def members(conversation_id):
+    return await asyncio.to_thread(_members_sync, conversation_id)
+
+
+async def people():
+    """Все зарегистрированные пользователи."""
+    return await asyncio.to_thread(_people_sync)
+
+
 async def add_invite(code, note=""):
     """Заводит код приглашения."""
     return await asyncio.to_thread(_add_invite_sync, code, note)
@@ -421,14 +693,38 @@ async def set_avatar(user_id, name, data):
     return await asyncio.to_thread(_set_avatar_sync, user_id, name, data)
 
 
-async def save_message(user_id, nickname, text):
-    """Сохраняет текстовое сообщение, возвращает время в UTC."""
-    return await asyncio.to_thread(_save_message_sync, user_id, nickname, text)
+async def save_message(user_id, nickname, text, conversation_id=GENERAL_ID,
+                       reply_to=None):
+    """Сохраняет текстовое сообщение, возвращает (номер, время в UTC)."""
+    return await asyncio.to_thread(_save_message_sync, user_id, nickname, text,
+                                   conversation_id, reply_to)
 
 
-async def save_media(user_id, nickname, kind, name, data):
-    """Сохраняет вложение файлом, возвращает (идентификатор, время)."""
-    return await asyncio.to_thread(_save_media_sync, user_id, nickname, kind, name, data)
+async def save_media(user_id, nickname, kind, name, data,
+                     conversation_id=GENERAL_ID, reply_to=None):
+    """Сохраняет вложение файлом, возвращает (номер, идентификатор, время)."""
+    return await asyncio.to_thread(_save_media_sync, user_id, nickname, kind, name,
+                                   data, conversation_id, reply_to)
+
+
+async def messages(conversation_id, limit=HISTORY_LIMIT, before=None):
+    """Сообщения переписки; before подгружает то, что старше."""
+    return await asyncio.to_thread(_messages_sync, conversation_id, limit, before)
+
+
+async def quoted(message_ids):
+    """Выжимки сообщений, на которые отвечают."""
+    return await asyncio.to_thread(_quoted_sync, list(message_ids))
+
+
+async def delete_message(message_id, user_id):
+    """Прячет своё сообщение, возвращает переписку или None."""
+    return await asyncio.to_thread(_delete_message_sync, message_id, user_id)
+
+
+async def search(user_id, query, limit=50):
+    """Ищет текст в доступных пользователю переписках."""
+    return await asyncio.to_thread(_search_sync, user_id, query, limit)
 
 
 async def media_bytes(media_id):

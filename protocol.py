@@ -8,7 +8,7 @@
 import json
 from pathlib import Path
 
-VERSION = 3
+VERSION = 4
 
 # Больше этого файлы не принимаем — и сокет не забьётся, и малина цела
 MAX_MEDIA_SIZE = 25 * 1024 * 1024
@@ -61,17 +61,71 @@ def decode(frame):
 
 # --- то, что отправляет клиент ---
 
-def text_message(nickname, text):
-    return encode({"type": "text", "nick": nickname, "text": text})
+def text_message(nickname, text, conversation=1, reply_to=None):
+    return encode({"type": "text", "nick": nickname, "text": text,
+                   "conversation": conversation, "reply_to": reply_to})
 
 
-def media_header(nickname, kind, name, size):
+def media_header(nickname, kind, name, size, conversation=1, reply_to=None):
     return encode({"type": "media", "nick": nickname, "kind": kind,
-                   "name": name, "size": size})
+                   "name": name, "size": size, "conversation": conversation,
+                   "reply_to": reply_to})
 
 
 def fetch_request(media_id):
     return encode({"type": "fetch", "id": media_id})
+
+
+# --- переписки ---
+
+def open_request(conversation, before=None):
+    """Открыть переписку; before подгружает то, что старше."""
+    return encode({"type": "open", "conversation": conversation, "before": before})
+
+
+def direct_request(user_id):
+    """Начать личную переписку с этим человеком."""
+    return encode({"type": "direct", "user": user_id})
+
+
+def delete_request(message_id):
+    return encode({"type": "delete", "id": message_id})
+
+
+def search_request(query):
+    return encode({"type": "search", "query": query})
+
+
+def typing_message(conversation):
+    return encode({"type": "typing", "conversation": conversation})
+
+
+def history_page(conversation, items, quotes, more, before=None):
+    """Кусок истории переписки."""
+    return encode({"type": "history", "conversation": conversation,
+                   "items": items, "quotes": quotes, "more": more,
+                   "before": before})
+
+
+def conversations_message(items):
+    return encode({"type": "conversations", "items": items})
+
+
+def people_message(items, online):
+    return encode({"type": "people", "items": items, "online": online})
+
+
+def presence_message(user_id, online):
+    return encode({"type": "presence", "user": user_id, "online": online})
+
+
+def deleted_message(conversation, message_id):
+    return encode({"type": "deleted", "conversation": conversation,
+                   "id": message_id})
+
+
+def search_result(query, items):
+    return encode({"type": "search", "query": query, "items": items})
 
 
 # --- вход и профиль ---
@@ -132,10 +186,6 @@ def system_message(text):
 
 def error_message(text):
     return encode({"type": "error", "text": text})
-
-
-def history_message(items):
-    return encode({"type": "history", "items": items})
 
 
 def blob_header(media_id, kind, name):

@@ -63,6 +63,29 @@ MAX_AVATAR_SIZE = 4 * 1024 * 1024
 # Множество для хранения всех активных подключений
 connected_clients = set()
 
+# Кто сейчас в сети: номер пользователя -> его подключения. У одного человека
+# их может быть несколько — окно на компьютере и вкладка на телефоне.
+online = {}
+
+
+def register_online(user_id, websocket):
+    """Добавляет подключение. True, если человек только что появился в сети."""
+    sockets = online.setdefault(user_id, set())
+    sockets.add(websocket)
+    return len(sockets) == 1
+
+
+def forget_online(user_id, websocket):
+    """Убирает подключение. True, если человек ушёл совсем."""
+    sockets = online.get(user_id)
+    if not sockets:
+        return False
+    sockets.discard(websocket)
+    if sockets:
+        return False
+    online.pop(user_id, None)
+    return True
+
 
 # Каталог с мобильным веб-клиентом: те же страницы отдаются с того же порта,
 # что и чат, поэтому отдельный веб-сервер и второй проброс порта не нужны.
@@ -182,17 +205,104 @@ async def handle_update(websocket):
     await websocket.send(data)
 
 
+async def handle_open(websocket, user, message):
+    """Открывает переписку или подгружает то, что старше."""
+    conversation = conversation_of(message)
+    if not await allowed(websocket, user, conversation):
+        return
+    before = reply_of({"reply_to": message.get("before")})
+    await send_history(websocket, user, conversation, before)
+
+
+async def handle_direct(websocket, user, message):
+    """Заводит личную переписку с выбранным человеком."""
+    try:
+        other = int(message.get("user"))
+    except (TypeError, ValueError):
+        return
+
+    if other == user["id"]:
+        await websocket.send(protocol.error_message("Написать самому себе не выйдет."))
+        return
+    if await storage.user_by_id(other) is None:
+        await websocket.send(protocol.error_message("Такого человека нет."))
+        return
+
+    conversation = await storage.direct_id(user["id"], other)
+    await websocket.send(protocol.conversations_message(
+        await storage.conversations(user["id"])))
+    await send_history(websocket, user, conversation)
+
+    # Собеседнику тоже обновляем список: у него появилась новая переписка
+    for client in online.get(other, ()):
+        await client.send(protocol.conversations_message(
+            await storage.conversations(other)))
+
+
+async def handle_delete(websocket, user, message):
+    """Прячет своё сообщение у всех."""
+    try:
+        message_id = int(message.get("id"))
+    except (TypeError, ValueError):
+        return
+
+    conversation = await storage.delete_message(message_id, user["id"])
+    if conversation is None:
+        await websocket.send(protocol.error_message(
+            "Удалить можно только своё сообщение."))
+        return
+
+    print(f"[Лог]: {user['name']} удалил сообщение {message_id}")
+    frame = protocol.deleted_message(conversation, message_id)
+    await websocket.send(frame)
+    await send_to_conversation(conversation, frame, websocket)
+
+
+async def handle_search(websocket, user, message):
+    """Ищет по переписке."""
+    query = str(message.get("query") or "").strip()
+    if len(query) < 2:
+        await websocket.send(protocol.search_result(query, []))
+        return
+    found = await storage.search(user["id"], query)
+    await websocket.send(protocol.search_result(query, found))
+
+
+async def handle_typing(websocket, user, message):
+    """Сообщает собеседникам, что человек набирает текст."""
+    conversation = conversation_of(message)
+    if not await storage.is_member(conversation, user["id"]):
+        return
+    await send_to_conversation(conversation, protocol.encode(
+        {"type": "typing", "conversation": conversation,
+         "user": user["id"], "nick": user["name"]}), websocket)
+
+
+async def send_people(websocket):
+    """Список участников с отметкой, кто сейчас в сети."""
+    await websocket.send(protocol.people_message(await storage.people(),
+                                                 sorted(online)))
+
+
+async def announce_presence(user_id, is_online, sender=None):
+    """Всем остальным — что человек появился или ушёл.
+
+    Самому себе не шлём: он и так знает, что подключился, а лишний кадр
+    только путался бы под ногами у истории.
+    """
+    frame = protocol.presence_message(user_id, is_online)
+    await deliver_to([client for client in connected_clients if client is not sender],
+                     frame)
+
+
 def clean_filename(value):
     """Оставляет от присланного имени только сам файл, без путей."""
     name = Path(str(value or "файл")).name.strip()[:120]
     return name or "файл"
 
 
-async def broadcast(frame, sender, payload=None):
-    """Рассылает кадр всем подключенным клиентам, кроме отправителя."""
-    # Собираем получателей заранее: пока идёт await, кто-то может подключиться
-    # или отвалиться, и множество изменится прямо посреди итерации.
-    recipients = [client for client in connected_clients if client is not sender]
+async def deliver_to(recipients, frame, payload=None):
+    """Отправляет кадр списку подключений, не спотыкаясь на мёртвых."""
     if not recipients:
         return
 
@@ -205,6 +315,51 @@ async def broadcast(frame, sender, payload=None):
     # рассылку всем остальным.
     await asyncio.gather(*(deliver(client) for client in recipients),
                          return_exceptions=True)
+
+
+async def broadcast(frame, sender, payload=None):
+    """Рассылает кадр всем подключенным клиентам, кроме отправителя."""
+    # Собираем получателей заранее: пока идёт await, кто-то может подключиться
+    # или отвалиться, и множество изменится прямо посреди итерации.
+    await deliver_to([client for client in connected_clients if client is not sender],
+                     frame, payload)
+
+
+async def send_to_conversation(conversation_id, frame, sender=None, payload=None):
+    """Отправляет кадр участникам переписки.
+
+    В общий чат уходит всем, в личную — только её двоим, где бы они ни сидели.
+    """
+    if conversation_id == storage.GENERAL_ID:
+        await broadcast(frame, sender, payload)
+        return
+
+    recipients = []
+    for user_id in await storage.members(conversation_id):
+        for client in online.get(user_id, ()):  # у человека может быть и окно, и телефон
+            if client is not sender:
+                recipients.append(client)
+    await deliver_to(recipients, frame, payload)
+
+
+async def allowed(websocket, user, conversation_id):
+    """Проверяет, что человеку вообще есть дело до этой переписки."""
+    if await storage.is_member(conversation_id, user["id"]):
+        return True
+    await websocket.send(protocol.error_message("Эта переписка вам недоступна."))
+    return False
+
+
+async def send_history(websocket, user, conversation_id, before=None):
+    """Отдаёт кусок истории вместе с цитатами, на которые она ссылается."""
+    items = await storage.messages(conversation_id, before=before)
+    quotes = await storage.quoted({item["reply_to"] for item in items
+                                   if item.get("reply_to")})
+    # Если пришло ровно столько, сколько просили, вероятно есть и постарше
+    more = len(items) >= storage.HISTORY_LIMIT
+    await websocket.send(protocol.history_page(
+        conversation_id, items, {str(key): value for key, value in quotes.items()},
+        more, before))
 
 
 # --------------------------------------------------------------------- вход
@@ -347,23 +502,49 @@ async def authenticate(websocket):
 
 # ---------------------------------------------------------------- сообщения
 
+def conversation_of(message):
+    try:
+        return int(message.get("conversation") or storage.GENERAL_ID)
+    except (TypeError, ValueError):
+        return storage.GENERAL_ID
+
+
+def reply_of(message):
+    try:
+        value = message.get("reply_to")
+        return int(value) if value else None
+    except (TypeError, ValueError):
+        return None
+
+
 async def handle_text(websocket, user, message):
     text = str(message.get("text") or "").strip()[:MAX_TEXT]
     if not text:
         return
 
-    print(f"[Лог]: {user['name']}: {text}")
-    created_at = await storage.save_message(user["id"], user["name"], text)
+    conversation = conversation_of(message)
+    if not await allowed(websocket, user, conversation):
+        return
 
-    payload = {"type": "text", "nick": user["name"], "text": text, "at": created_at}
+    reply_to = reply_of(message)
+    message_id, created_at = await storage.save_message(
+        user["id"], user["name"], text, conversation, reply_to)
+    print(f"[Лог]: {user['name']} в переписку {conversation}: {text}")
+
+    payload = {"type": "text", "id": message_id, "nick": user["name"], "text": text,
+               "at": created_at, "conversation": conversation, "user": user["id"]}
+    if reply_to:
+        payload["reply_to"] = reply_to
     if user.get("avatar"):
         payload["avatar"] = user["avatar"]
-    await broadcast(protocol.encode(payload), websocket)
+    await send_to_conversation(conversation, protocol.encode(payload), websocket)
 
 
 async def handle_media(websocket, user, message):
     """Принимает описание вложения и следом за ним двоичный кадр."""
     name = clean_filename(message.get("name"))
+    conversation = conversation_of(message)
+    reply_to = reply_of(message)
 
     payload = await websocket.recv()
     if not isinstance(payload, (bytes, bytearray)):
@@ -375,6 +556,9 @@ async def handle_media(websocket, user, message):
             f"Файл больше {protocol.human_size(protocol.MAX_MEDIA_SIZE)}, не приняли."))
         return
 
+    if not await allowed(websocket, user, conversation):
+        return
+
     # Вид вложения определяем сами, присланному на слово не верим
     kind = protocol.kind_of(name)
 
@@ -384,18 +568,22 @@ async def handle_media(websocket, user, message):
     original_size = len(payload)
     name, packed = await asyncio.to_thread(media.compress, kind, name, bytes(payload))
 
-    media_id, created_at = await storage.save_media(user["id"], user["name"],
-                                                    kind, name, packed)
+    message_id, media_id, created_at = await storage.save_media(
+        user["id"], user["name"], kind, name, packed, conversation, reply_to)
     print(f"[Лог]: {user['name']} прислал {kind} '{name}' "
           f"({protocol.human_size(len(packed))}, {media.describe(original_size, len(packed))})")
 
     # Остальным уходит только описание — содержимое они запросят сами,
     # когда дойдут до отрисовки
-    frame = {"type": "media", "id": media_id, "nick": user["name"], "kind": kind,
-             "name": name, "size": len(packed), "at": created_at}
+    frame = {"type": "media", "id": message_id, "media": media_id,
+             "nick": user["name"], "kind": kind, "name": name,
+             "size": len(packed), "at": created_at, "conversation": conversation,
+             "user": user["id"]}
+    if reply_to:
+        frame["reply_to"] = reply_to
     if user.get("avatar"):
         frame["avatar"] = user["avatar"]
-    await broadcast(protocol.encode(frame), websocket)
+    await send_to_conversation(conversation, protocol.encode(frame), websocket)
 
 
 async def handle_fetch(websocket, message):
@@ -419,6 +607,9 @@ async def handle_profile(websocket, user, message):
     user.update(updated)
     print(f"[Сервер]: {user['login']} обновил профиль ({name})")
     await websocket.send(protocol.profile_message_result(updated))
+    # Имя и фото видны в списке участников, поэтому обновляем его у всех
+    await deliver_to(list(connected_clients), protocol.people_message(
+        await storage.people(), sorted(online)))
 
 
 async def handle_avatar(websocket, user, message):
@@ -460,11 +651,26 @@ async def chat_handler(websocket):
                                                       available_update()))
         # Историю отдаём до регистрации в connected_clients, иначе новые
         # сообщения чата могли бы вклиниться в середину выгрузки.
-        await websocket.send(protocol.history_message(await storage.last_messages()))
+        await websocket.send(protocol.conversations_message(
+            await storage.conversations(user["id"])))
+        await send_history(websocket, user, storage.GENERAL_ID)
     except websockets.exceptions.ConnectionClosed:
         return
 
     connected_clients.add(websocket)
+    appeared = register_online(user["id"], websocket)
+
+    try:
+        # Список участников отправляем уже после отметки в сети, иначе человек
+        # не увидит в нём самого себя
+        await send_people(websocket)
+    except websockets.exceptions.ConnectionClosed:
+        connected_clients.discard(websocket)
+        forget_online(user["id"], websocket)
+        return
+
+    if appeared:
+        await announce_presence(user["id"], True, websocket)
     print(f"[Сервер]: Вошёл {user['login']} ({user['name']}). "
           f"Активных: {len(connected_clients)}")
 
@@ -481,6 +687,18 @@ async def chat_handler(websocket):
                 await handle_media(websocket, user, message)
             elif kind == "fetch":
                 await handle_fetch(websocket, message)
+            elif kind == "open":
+                await handle_open(websocket, user, message)
+            elif kind == "direct":
+                await handle_direct(websocket, user, message)
+            elif kind == "delete":
+                await handle_delete(websocket, user, message)
+            elif kind == "search":
+                await handle_search(websocket, user, message)
+            elif kind == "typing":
+                await handle_typing(websocket, user, message)
+            elif kind == "people":
+                await send_people(websocket)
             elif kind == "profile":
                 await handle_profile(websocket, user, message)
             elif kind == "avatar":
@@ -497,6 +715,8 @@ async def chat_handler(websocket):
         pass
     finally:
         connected_clients.discard(websocket)
+        if forget_online(user["id"], websocket):
+            await announce_presence(user["id"], False)
         print(f"[Сервер]: Вышел {user['login']}. Активных: {len(connected_clients)}")
 
 
