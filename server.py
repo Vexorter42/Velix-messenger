@@ -670,7 +670,12 @@ async def chat_handler(websocket):
         return
 
     if appeared:
-        await announce_presence(user["id"], True, websocket)
+        # Рассылаем список целиком, а не только отметку о присутствии: человек
+        # мог только что зарегистрироваться, и остальные его ещё не знают
+        await deliver_to([client for client in connected_clients
+                          if client is not websocket],
+                         protocol.people_message(await storage.people(),
+                                                 sorted(online)))
     print(f"[Сервер]: Вошёл {user['login']} ({user['name']}). "
           f"Активных: {len(connected_clients)}")
 

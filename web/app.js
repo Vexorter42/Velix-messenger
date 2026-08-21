@@ -8,7 +8,7 @@ const AVATAR_COLORS = ["#e17076", "#faa774", "#a695e7", "#7bc862",
 const MAX_MEDIA = 25 * 1024 * 1024;
 
 const $ = (id) => document.getElementById(id);
-const screens = {auth: $("auth"), chat: $("chat"), profile: $("profile")};
+const screens = {auth: $("auth"), list: $("list"), chat: $("chat"), profile: $("profile")};
 
 let socket = null;
 let user = {};
@@ -16,8 +16,20 @@ let registerMode = false;
 let pendingHeader = null;      // описание вложения, ждущее свои байты
 let lastSender = null;
 let currentDate = null;
-const mediaSlots = new Map();  // id вложения -> куда его вставить
-const avatarSlots = new Map(); // id аватарки -> список элементов
+let conversation = 1;          // какая переписка открыта
+let conversations = [];
+let people = [];
+let online = new Set();
+let quotes = {};
+let replyTo = null;
+let pendingDirect = false;     // ждём номер только что созданной личной
+let oldest = null;
+let hasOlder = false;
+let typingTimer = null;
+let typingSent = 0;
+const rows = new Map();        // номер сообщения -> его ряд в ленте
+const mediaSlots = new Map();
+const avatarSlots = new Map();
 const avatarCache = new Map();
 
 function show(name) {
@@ -82,7 +94,7 @@ function connect(credentials) {
 
 function send(message, payload) {
   if (!socket || socket.readyState !== WebSocket.OPEN) return;
-  socket.send(JSON.stringify({v: 3, ...message}));
+  socket.send(JSON.stringify({v: 4, ...message}));
   if (payload) socket.send(payload);
 }
 
@@ -90,9 +102,15 @@ function handle(message) {
   switch (message.type) {
     case "welcome": onWelcome(message); break;
     case "authfail": onAuthFail(message.text); break;
-    case "history": (message.items || []).forEach(showItem); break;
+    case "conversations": onConversations(message.items || []); break;
+    case "people": onPeople(message); break;
+    case "presence": onPresence(message); break;
+    case "history": onHistory(message); break;
     case "text":
-    case "media": showItem(message); break;
+    case "media": onIncoming(message); break;
+    case "deleted": onDeleted(message); break;
+    case "typing": onTyping(message); break;
+    case "search": onSearch(message); break;
     case "profile": onProfile(message.user); break;
     case "system":
     case "error": service(message.text); break;
@@ -105,8 +123,7 @@ function handleBinary(buffer) {
   if (!header) return;
 
   const id = header.id;
-  const blob = new Blob([buffer]);
-  const url = URL.createObjectURL(blob);
+  const url = URL.createObjectURL(new Blob([buffer]));
 
   if (avatarSlots.has(id)) {
     avatarCache.set(id, url);
@@ -131,13 +148,15 @@ function onWelcome(message) {
   localStorage.setItem("velix.token", message.token || "");
   localStorage.setItem("velix.login", user.login || "");
 
-  $("messages").innerHTML = "";
-  lastSender = null;
-  currentDate = null;
-  $("status").textContent = `вы вошли как ${user.name}`;
+  conversation = 1;
+  conversations = [];
+  people = [];
+  online = new Set();
+  quotes = {};
+  clearMessages();
   $("primary").disabled = false;
   $("password").value = "";
-  show("chat");
+  show("list");
 }
 
 function onAuthFail(text) {
@@ -153,7 +172,111 @@ function onProfile(updated) {
   paintAvatar($("my-avatar"), user.name, user.avatar);
 }
 
+// -------------------------------------------------------- список переписок
+
+function onConversations(items) {
+  conversations = items;
+  drawList();
+}
+
+function onPeople(message) {
+  people = message.items || [];
+  online = new Set(message.online || []);
+  drawList();
+}
+
+function onPresence(message) {
+  if (message.online) online.add(message.user);
+  else online.delete(message.user);
+  drawList();
+}
+
+function drawList() {
+  const box = $("conversations");
+  box.innerHTML = "";
+
+  for (const item of conversations) {
+    const row = document.createElement("div");
+    row.className = "list-row";
+
+    const avatar = document.createElement("div");
+    avatar.className = "avatar";
+    paintAvatar(avatar, item.title || "Общий чат", item.avatar);
+    row.append(avatar);
+
+    const lines = document.createElement("div");
+    lines.className = "list-lines";
+
+    const title = document.createElement("strong");
+    title.textContent = item.title || "Общий чат";
+    lines.append(title);
+
+    const preview = document.createElement("span");
+    preview.className = "muted small";
+    if (item.last) {
+      const what = item.last.kind === "text" ? item.last.text : "вложение";
+      preview.textContent = `${item.last.nick || ""}: ${what}`.slice(0, 42);
+    } else {
+      preview.textContent = "нет сообщений";
+    }
+    lines.append(preview);
+    row.append(lines);
+
+    row.addEventListener("click", () => openConversation(item.id, item.title));
+    box.append(row);
+  }
+
+  const others = people.filter((person) => person.id !== user.id);
+  const peopleBox = $("people");
+  peopleBox.innerHTML = "";
+  $("people-title").hidden = others.length === 0;
+
+  for (const person of others) {
+    const row = document.createElement("div");
+    row.className = "list-row";
+
+    const avatar = document.createElement("div");
+    avatar.className = "avatar small";
+    paintAvatar(avatar, person.name, person.avatar);
+    row.append(avatar);
+
+    const name = document.createElement("div");
+    name.className = "list-lines";
+    name.textContent = person.name;
+    row.append(name);
+
+    const dot = document.createElement("span");
+    dot.className = online.has(person.id) ? "dot on" : "dot";
+    row.append(dot);
+
+    row.addEventListener("click", () => {
+      pendingDirect = true;
+      send({type: "direct", user: person.id});
+    });
+    peopleBox.append(row);
+  }
+}
+
+function openConversation(id, title) {
+  conversation = id;
+  cancelReply();
+  clearMessages();
+  $("chat-title").textContent = title || "Общий чат";
+  paintAvatar($("chat-avatar"), title || "Общий чат",
+              (conversations.find((c) => c.id === id) || {}).avatar);
+  show("chat");
+  send({type: "open", conversation: id});
+}
+
 // -------------------------------------------------------------- сообщения
+
+function clearMessages() {
+  $("messages").innerHTML = "";
+  rows.clear();
+  lastSender = null;
+  currentDate = null;
+  oldest = null;
+}
 
 function service(text) {
   const element = document.createElement("div");
@@ -174,28 +297,93 @@ function ensureDate(moment) {
   lastSender = null;
 }
 
+function onHistory(message) {
+  if (pendingDirect && message.conversation !== conversation) {
+    // Это история личной переписки, которую мы только что попросили
+    pendingDirect = false;
+    conversation = message.conversation;
+    const item = conversations.find((c) => c.id === conversation);
+    $("chat-title").textContent = (item || {}).title || "Личная переписка";
+    paintAvatar($("chat-avatar"), (item || {}).title, (item || {}).avatar);
+    show("chat");
+  } else if (message.conversation !== conversation) {
+    return;
+  }
+
+  Object.assign(quotes, message.quotes || {});
+  hasOlder = Boolean(message.more);
+  const items = message.items || [];
+
+  const previous = message.before ? [...loadedItems] : [];
+  loadedItems = message.before ? items.concat(previous) : items;
+
+  clearMessages();
+  if (hasOlder) {
+    const button = document.createElement("button");
+    button.className = "link";
+    button.textContent = "Показать более старые";
+    button.addEventListener("click", () => {
+      if (oldest) send({type: "open", conversation, before: oldest});
+    });
+    $("messages").append(button);
+  }
+  if (!loadedItems.length) service("Пока тихо. Напишите первым.");
+  for (const item of loadedItems) showItem(item);
+  if (loadedItems.length) oldest = loadedItems[0].id;
+}
+
+let loadedItems = [];
+
+function onIncoming(message) {
+  if (message.conversation !== conversation) {
+    bumpPreview(message);
+    return;
+  }
+  showItem(message);
+  bumpPreview(message);
+}
+
+function bumpPreview(message) {
+  for (const item of conversations) {
+    if (item.id === message.conversation) {
+      item.last = {text: message.text || "", kind: message.kind || "text",
+                   at: message.at, nick: message.nick};
+    }
+  }
+  if (!screens.list.hidden) drawList();
+}
+
 function showItem(item, localUrl) {
   const moment = item.at ? new Date(item.at) : new Date();
   ensureDate(moment);
 
-  const own = item.nick === user.name;
-  const grouped = lastSender === item.nick + own;
-  lastSender = item.nick + own;
+  const own = item.user === user.id || (item.user === undefined && item.own);
+  const grouped = lastSender === String(item.nick) + own;
+  lastSender = String(item.nick) + own;
 
   const row = document.createElement("div");
   row.className = `row${own ? " own" : ""}${grouped ? " grouped" : ""}`;
+  if (item.id) rows.set(item.id, row);
+
+  if (item.kind === "deleted") {
+    const gone = document.createElement("div");
+    gone.className = "muted small";
+    gone.textContent = "сообщение удалено";
+    row.append(gone);
+    $("messages").append(row);
+    scrollDown();
+    return;
+  }
 
   if (!own) {
+    const holder = document.createElement("div");
     if (grouped) {
-      const spacer = document.createElement("div");
-      spacer.className = "spacer";
-      row.append(spacer);
+      holder.className = "spacer";
     } else {
-      const avatar = document.createElement("div");
-      avatar.className = "avatar";
-      paintAvatar(avatar, item.nick, item.avatar);
-      row.append(avatar);
+      holder.className = "avatar";
+      paintAvatar(holder, item.nick, item.avatar);
     }
+    row.append(holder);
   }
 
   const bubble = document.createElement("div");
@@ -209,6 +397,15 @@ function showItem(item, localUrl) {
     bubble.append(sender);
   }
 
+  const quoted = quotes[String(item.reply_to)];
+  if (quoted) {
+    const strip = document.createElement("div");
+    strip.className = "quote";
+    strip.textContent = `${quoted.nick || ""}: ` +
+        (quoted.text || quoted.name || "вложение").slice(0, 60);
+    bubble.append(strip);
+  }
+
   if ((item.kind || "text") === "text") {
     const text = document.createElement("div");
     text.textContent = item.text || "";
@@ -216,16 +413,14 @@ function showItem(item, localUrl) {
   } else {
     const slot = document.createElement("div");
     bubble.append(slot);
-
     if (localUrl) {
-      // Своё вложение показываем сразу, не спрашивая сервер
       fillMedia(slot, item, localUrl);
     } else {
       slot.textContent = "загружаю…";
       slot.className = "muted small";
-      if (item.id) {
-        mediaSlots.set(item.id, slot);
-        send({type: "fetch", id: item.id});
+      if (item.media) {
+        mediaSlots.set(item.media, slot);
+        send({type: "fetch", id: item.media});
       }
     }
   }
@@ -236,9 +431,66 @@ function showItem(item, localUrl) {
       {hour: "2-digit", minute: "2-digit"});
   bubble.append(time);
 
+  // Долгое нажатие на пузыре — ответить или удалить своё
+  let timer = null;
+  bubble.addEventListener("pointerdown", () => {
+    timer = setTimeout(() => messageMenu(item, own), 500);
+  });
+  for (const event of ["pointerup", "pointercancel", "pointerleave"]) {
+    bubble.addEventListener(event, () => clearTimeout(timer));
+  }
+
   row.append(bubble);
   $("messages").append(row);
   scrollDown();
+}
+
+function messageMenu(item, own) {
+  if (own && item.id) {
+    if (confirm("Удалить это сообщение?")) {
+      send({type: "delete", id: item.id});
+      return;
+    }
+  }
+  startReply(item);
+}
+
+function startReply(item) {
+  replyTo = item.id || null;
+  if (!replyTo) return;
+  $("reply-text").textContent = `Ответ ${item.nick}: ` +
+      (item.text || item.name || "вложение").slice(0, 40);
+  $("reply-bar").hidden = false;
+}
+
+function cancelReply() {
+  replyTo = null;
+  $("reply-bar").hidden = true;
+}
+
+function onDeleted(message) {
+  const row = rows.get(message.id);
+  if (!row) return;
+  row.innerHTML = "";
+  const gone = document.createElement("div");
+  gone.className = "muted small";
+  gone.textContent = "сообщение удалено";
+  row.append(gone);
+}
+
+function onTyping(message) {
+  if (message.conversation !== conversation) return;
+  $("status").textContent = `${message.nick} печатает…`;
+  clearTimeout(typingTimer);
+  typingTimer = setTimeout(() => { $("status").textContent = ""; }, 3000);
+}
+
+function onSearch(message) {
+  const items = message.items || [];
+  clearMessages();
+  service(items.length ? `Найдено: ${items.length}`
+                       : `По запросу «${message.query}» ничего нет`);
+  for (const item of items) showItem(item);
 }
 
 function fillMedia(slot, header, url) {
@@ -291,11 +543,13 @@ async function sendFile(file) {
              : file.type === "image/gif" ? "gif"
              : file.type.startsWith("image/") ? "image" : "file";
 
-  send({type: "media", nick: user.name, kind, name: file.name, size: file.size},
-       buffer);
+  send({type: "media", nick: user.name, kind, name: file.name, size: file.size,
+        conversation, reply_to: replyTo}, buffer);
 
-  showItem({nick: user.name, kind, name: file.name, size: file.size,
-            at: new Date().toISOString()}, URL.createObjectURL(file));
+  showItem({nick: user.name, user: user.id, kind, name: file.name,
+            size: file.size, at: new Date().toISOString()},
+           URL.createObjectURL(file));
+  cancelReply();
 }
 
 // ---------------------------------------------------------------- события
@@ -335,13 +589,33 @@ $("composer").addEventListener("submit", (event) => {
   if (!text) return;
 
   field.value = "";
-  send({type: "text", nick: user.name, text});
-  showItem({nick: user.name, text, kind: "text", at: new Date().toISOString()});
+  send({type: "text", nick: user.name, text, conversation, reply_to: replyTo});
+  showItem({nick: user.name, user: user.id, text, kind: "text",
+            at: new Date().toISOString(), reply_to: replyTo});
+  cancelReply();
+});
+
+$("text").addEventListener("input", () => {
+  const now = Date.now();
+  if (now - typingSent < 2000) return;
+  typingSent = now;
+  send({type: "typing", conversation});
 });
 
 $("file").addEventListener("change", (event) => {
   sendFile(event.target.files[0]);
   event.target.value = "";
+});
+
+$("cancel-reply").addEventListener("click", cancelReply);
+$("back-to-list").addEventListener("click", () => { drawList(); show("list"); });
+
+$("search").addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  const query = $("search").value.trim();
+  if (query.length < 2) return;
+  show("chat");
+  send({type: "search", query});
 });
 
 $("profile-button").addEventListener("click", () => {
@@ -352,7 +626,7 @@ $("profile-button").addEventListener("click", () => {
   show("profile");
 });
 
-$("back-to-chat").addEventListener("click", () => show("chat"));
+$("back-to-chat").addEventListener("click", () => { drawList(); show("list"); });
 
 $("save-profile").addEventListener("click", () => {
   send({type: "profile", name: $("profile-name").value.trim(),

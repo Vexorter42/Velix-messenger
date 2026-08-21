@@ -15,6 +15,8 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
+import tkinter
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog
@@ -306,6 +308,19 @@ class VelixApp(ctk.CTk):
         self.available_update = None   # что сервер предлагает поставить
         self.secure = False            # идёт ли соединение по TLS
 
+        self.conversation = 1          # какая переписка открыта
+        self.conversations = []        # что показывать в списке слева
+        self.people = []               # все участники
+        self.online = set()            # кто сейчас в сети
+        self.reply_to = None           # на какое сообщение отвечаем
+        self.quotes = {}               # выжимки цитируемых сообщений
+        self.rows = {}                 # номер сообщения -> его ряд в ленте
+        self.oldest = None             # самое старое загруженное сообщение
+        self.has_older = False         # есть ли что подгружать выше
+        self.typing_until = 0          # до какого времени показывать «печатает»
+        self.pending_direct = False    # ждём номер только что созданной личной
+        self.loaded_items = []         # что сейчас показано в ленте
+
         # Файл, оставшийся от прошлого обновления, больше не нужен
         if updates.running_as_exe():
             updates.cleanup()
@@ -595,31 +610,19 @@ class VelixApp(ctk.CTk):
             text_color=MUTED, command=self._on_leave)
         self.leave_button.pack(side="left", expand=True, fill="x", padx=(4, 0))
 
-        # Единственный чат в списке — он же всегда открытый
-        item = ctk.CTkFrame(sidebar, fg_color=SIDEBAR_ACTIVE, corner_radius=10,
-                            height=68)
-        item.pack(fill="x", padx=8, pady=(2, 0))
-        item.pack_propagate(False)
+        self.search_entry = ctk.CTkEntry(
+            sidebar, placeholder_text="Поиск по переписке", height=34,
+            corner_radius=10, border_width=0, fg_color=INPUT_BG, text_color=TEXT,
+            placeholder_text_color=MUTED, font=self.font_small)
+        self.search_entry.pack(fill="x", padx=14, pady=(0, 8))
+        self.search_entry.bind("<Return>", lambda event: self._on_search())
+        self.search_entry.bind("<Control-KeyPress>", self._on_entry_shortcut)
 
-        ctk.CTkLabel(item, text="V", font=self.font_avatar, text_color=ON_ACCENT,
-                     fg_color=avatar_color("Velix"), corner_radius=25,
-                     width=50, height=50).pack(side="left", padx=(9, 10), pady=9)
-
-        lines = ctk.CTkFrame(item, fg_color="transparent")
-        lines.pack(side="left", fill="both", expand=True, pady=12, padx=(0, 10))
-
-        title_row = ctk.CTkFrame(lines, fg_color="transparent")
-        title_row.pack(fill="x")
-        ctk.CTkLabel(title_row, text="Общий чат", font=self.font_name,
-                     text_color=ON_ACCENT).pack(side="left")
-        self.chat_time = ctk.CTkLabel(title_row, text="", font=self.font_small,
-                                      text_color=ON_ACCENT)
-        self.chat_time.pack(side="right")
-
-        self.chat_preview = ctk.CTkLabel(lines, text="нет сообщений",
-                                         font=self.font_small, text_color=ON_ACCENT,
-                                         anchor="w")
-        self.chat_preview.pack(fill="x")
+        # Список переписок и участников: и то и другое живёт в одной колонке
+        self.side_list = ctk.CTkScrollableFrame(
+            sidebar, fg_color="transparent", corner_radius=0,
+            scrollbar_button_color=SEPARATOR, scrollbar_button_hover_color=MUTED)
+        self.side_list.pack(fill="both", expand=True, padx=4)
 
     def _build_conversation(self):
         main = ctk.CTkFrame(self.chat_view, fg_color=CHAT_BG, corner_radius=0)
@@ -632,14 +635,17 @@ class VelixApp(ctk.CTk):
         header.grid_propagate(False)
         header.grid_columnconfigure(1, weight=1)
 
-        ctk.CTkLabel(header, text="V", font=self.font_sender, text_color=ON_ACCENT,
-                     fg_color=avatar_color("Velix"), corner_radius=20,
-                     width=40, height=40).grid(row=0, column=0, padx=(18, 12), pady=11)
+        self.header_avatar = ctk.CTkLabel(header, text="V", font=self.font_sender,
+                                          text_color=ON_ACCENT,
+                                          fg_color=avatar_color("Velix"),
+                                          corner_radius=20, width=40, height=40)
+        self.header_avatar.grid(row=0, column=0, padx=(18, 12), pady=11)
 
         titles = ctk.CTkFrame(header, fg_color="transparent")
         titles.grid(row=0, column=1, sticky="w")
-        ctk.CTkLabel(titles, text="Общий чат", font=self.font_name,
-                     text_color=TEXT).pack(anchor="w")
+        self.header_title = ctk.CTkLabel(titles, text="Общий чат", font=self.font_name,
+                                         text_color=TEXT)
+        self.header_title.pack(anchor="w")
         self.header_subtitle = ctk.CTkLabel(titles, text="", font=self.font_small,
                                             text_color=MUTED)
         self.header_subtitle.pack(anchor="w")
@@ -653,8 +659,18 @@ class VelixApp(ctk.CTk):
             scrollbar_button_color=SEPARATOR, scrollbar_button_hover_color=MUTED)
         self.messages.grid(row=1, column=0, sticky="nsew")
 
+        # Полоска «отвечаем на …» появляется над строкой ввода
+        self.reply_bar = ctk.CTkFrame(main, fg_color=INPUT_BG, corner_radius=0)
+        self.reply_label = ctk.CTkLabel(self.reply_bar, text="", font=self.font_small,
+                                        text_color=MUTED, anchor="w")
+        self.reply_label.pack(side="left", padx=(18, 8), pady=6)
+        ctk.CTkButton(self.reply_bar, text="✕", width=28, height=24, corner_radius=8,
+                      font=self.font_small, fg_color="transparent",
+                      hover_color=SEPARATOR, text_color=MUTED,
+                      command=self._cancel_reply).pack(side="right", padx=(0, 18))
+
         composer = ctk.CTkFrame(main, fg_color=COMPOSER, corner_radius=0)
-        composer.grid(row=2, column=0, sticky="ew")
+        composer.grid(row=3, column=0, sticky="ew")
         composer.grid_columnconfigure(1, weight=1)
 
         self.attach_button = ctk.CTkButton(
@@ -672,6 +688,7 @@ class VelixApp(ctk.CTk):
         # Ctrl+V ловим по коду клавиши, а не по букве: при русской раскладке
         # событие <Control-v> просто не приходит
         self.message_entry.bind("<Control-KeyPress>", self._on_ctrl_key)
+        self.message_entry.bind("<KeyRelease>", self._notify_typing)
 
         self.send_button = ctk.CTkButton(
             composer, text="➤", width=44, height=44, corner_radius=22,
@@ -948,11 +965,17 @@ class VelixApp(ctk.CTk):
             return
 
         self.message_entry.delete(0, "end")
-        self.network.send(protocol.text_message(self.user.get("name", ""), text))
+        self.network.send(protocol.text_message(self.user.get("name", ""), text,
+                                                self.conversation, self.reply_to))
         now = datetime.now()
         self._ensure_date(now.strftime("%d.%m"))
         self._add_bubble(self.user.get("name", "Я"), text, own=True,
-                         time_text=now.strftime("%H:%M"))
+                         time_text=now.strftime("%H:%M"),
+                         item={"reply_to": self.reply_to})
+        self._bump_preview({"text": text, "kind": "text", "nick": "Вы",
+                            "at": now.astimezone().isoformat(),
+                            "conversation": self.conversation}, notify=False)
+        self._cancel_reply()
 
     def _on_attach(self):
         """Выбор файла для отправки."""
@@ -1095,13 +1118,16 @@ class VelixApp(ctk.CTk):
 
         kind = protocol.kind_of(name)
         self.network.send(protocol.media_header(self.user.get("name", ""), kind,
-                                                name, len(data)), data)
+                                                name, len(data), self.conversation,
+                                                self.reply_to), data)
 
         now = datetime.now()
         self._ensure_date(now.strftime("%d.%m"))
         self._add_media_bubble(self.user.get("name", "Я"), own=True, kind=kind,
                                media_id=None, name=name, size=len(data),
-                               time_text=now.strftime("%H:%M"), data=data)
+                               time_text=now.strftime("%H:%M"), data=data,
+                               item={"reply_to": self.reply_to})
+        self._cancel_reply()
 
     def _on_leave(self):
         """Возврат к выбору аккаунта — сессия сохраняется."""
@@ -1187,10 +1213,13 @@ class VelixApp(ctk.CTk):
                                self.user.get("name", ""), self.server, self.token)
         store.save(self.config_data)
 
-        for widget in self.messages.winfo_children():
-            widget.destroy()
-        self.last_sender = None
-        self.current_date = None
+        self.conversation = 1
+        self.conversations = []
+        self.people = []
+        self.online = set()
+        self.quotes = {}
+        self.loaded_items = []
+        self._clear_messages()
         self.pending_media.clear()
         self.avatar_waiters.clear()
         self.images.clear()
@@ -1227,10 +1256,25 @@ class VelixApp(ctk.CTk):
         elif kind == "authfail":
             self._on_authfail(message.get("text", ""))
         elif kind == "history":
-            for item in message.get("items", []):
-                self._show_item(item)
+            self._show_history(message)
+        elif kind == "conversations":
+            self.conversations = message.get("items") or []
+            self._refresh_side_list()
+            self._update_header()
+        elif kind == "people":
+            self.people = message.get("items") or []
+            self.online = set(message.get("online") or [])
+            self._refresh_side_list()
+        elif kind == "presence":
+            self._on_presence(message)
+        elif kind == "typing":
+            self._on_typing(message)
+        elif kind == "deleted":
+            self._on_deleted(message)
+        elif kind == "search":
+            self._show_search(message)
         elif kind in ("text", "media"):
-            self._show_item(message)
+            self._on_incoming(message)
         elif kind == "blob":
             self._fill_media(message)
         elif kind == "update_blob":
@@ -1263,6 +1307,32 @@ class VelixApp(ctk.CTk):
             self._show_form(register=False)
             self.auth_error.configure(text=text)
 
+    def _on_incoming(self, message):
+        """Сообщение из сети: показываем, если оно в открытой переписке."""
+        if message.get("conversation") not in (None, self.conversation):
+            # Пришло в другую переписку: ленту не трогаем, только
+            # обновляем строку в списке слева
+            self._bump_preview(message)
+            return
+        self._show_item(message)
+        self._bump_preview(message, notify=False)
+
+    def _bump_preview(self, message, notify=True):
+        """Обновляет строчку в списке слева, не открывая переписку.
+
+        Вызывается только для живых сообщений: во время загрузки истории
+        перерисовывать список полсотни раз незачем.
+        """
+        conversation = message.get("conversation") or self.conversation
+        for item in self.conversations:
+            if item["id"] == conversation:
+                item["last"] = {"text": message.get("text", ""),
+                                "kind": message.get("kind", "text"),
+                                "at": message.get("at"), "nick": message.get("nick")}
+        self._refresh_side_list()
+        if notify:
+            self._notify_if_hidden(message.get("nick", ""), message.get("text", ""))
+
     def _show_item(self, item):
         """Показывает одно сообщение — своё или чужое, текст или вложение."""
         moment = local_time(item.get("at"))
@@ -1270,17 +1340,37 @@ class VelixApp(ctk.CTk):
         nickname = item.get("nick", "?")
         time_text = moment.strftime("%H:%M")
         avatar = item.get("avatar")
+        own = item.get("user") == self.user.get("id")
+
+        if item.get("kind") == "deleted":
+            row = ctk.CTkFrame(self.messages, fg_color="transparent")
+            row.pack(fill="x", padx=22, pady=2)
+            ctk.CTkLabel(row, text="сообщение удалено", font=self.font_small,
+                         text_color=MUTED).pack(anchor="e" if own else "w")
+            if item.get("id"):
+                self.rows[item["id"]] = row
+            return
 
         if item.get("kind", "text") == "text":
-            self._add_bubble(nickname, item.get("text", ""), own=False,
-                             time_text=time_text, avatar=avatar)
-            self._notify_if_hidden(nickname, item.get("text", ""))
+            self._add_bubble(nickname, item.get("text", ""), own=own,
+                             time_text=time_text, avatar=avatar, item=item)
+            if not own:
+                self._notify_if_hidden(nickname, item.get("text", ""))
         else:
-            self._add_media_bubble(nickname, own=False, kind=item["kind"],
-                                   media_id=item.get("id"),
+            self._add_media_bubble(nickname, own=own, kind=item["kind"],
+                                   media_id=item.get("media"),
                                    name=item.get("name", "файл"),
                                    size=item.get("size", 0), time_text=time_text,
-                                   avatar=avatar)
+                                   avatar=avatar, item=item)
+
+    def _on_presence(self, message):
+        """Кто-то пришёл или ушёл."""
+        user_id = message.get("user")
+        if message.get("online"):
+            self.online.add(user_id)
+        else:
+            self.online.discard(user_id)
+        self._refresh_side_list()
 
     def _notify_if_hidden(self, nickname, text):
         """Пока окно в трее, о новых сообщениях сообщаем всплывашкой."""
@@ -1339,6 +1429,241 @@ class VelixApp(ctk.CTk):
                 label.configure(text="", image=image, fg_color="transparent")
 
     # ----------------------------------------------------------- сообщения
+
+    # ------------------------------------------------------------ переписки
+
+    def _refresh_side_list(self):
+        """Перерисовывает список переписок и участников."""
+        for widget in self.side_list.winfo_children():
+            widget.destroy()
+
+        for item in self.conversations:
+            self._conversation_row(item)
+
+        others = [person for person in self.people
+                  if person["id"] != self.user.get("id")]
+        if not others:
+            return
+
+        ctk.CTkLabel(self.side_list, text="УЧАСТНИКИ", font=self.font_small,
+                     text_color=MUTED, anchor="w").pack(fill="x", padx=10,
+                                                        pady=(14, 4))
+        for person in others:
+            self._person_row(person)
+
+    def _conversation_row(self, item):
+        active = item["id"] == self.conversation
+        row = ctk.CTkFrame(self.side_list,
+                           fg_color=SIDEBAR_ACTIVE if active else "transparent",
+                           corner_radius=10, height=60)
+        row.pack(fill="x", pady=2)
+        row.pack_propagate(False)
+
+        title = item.get("title") or "Общий чат"
+        colour = ON_ACCENT if active else TEXT
+        quiet = ON_ACCENT if active else MUTED
+
+        avatar = ctk.CTkLabel(row, text="", width=40, height=40, font=self.font_sender)
+        avatar.pack(side="left", padx=(8, 8), pady=10)
+        self._paint_avatar(avatar, title, item.get("avatar"), 40)
+
+        lines = ctk.CTkFrame(row, fg_color="transparent")
+        lines.pack(side="left", fill="both", expand=True, pady=10, padx=(0, 8))
+
+        top = ctk.CTkFrame(lines, fg_color="transparent")
+        top.pack(fill="x")
+        ctk.CTkLabel(top, text=title, font=self.font_name, text_color=colour,
+                     anchor="w").pack(side="left")
+
+        last = item.get("last")
+        if last:
+            moment = local_time(last.get("at"))
+            ctk.CTkLabel(top, text=moment.strftime("%H:%M"), font=self.font_small,
+                         text_color=quiet).pack(side="right")
+            preview = last.get("text") if last.get("kind") == "text" else "вложение"
+            preview = f"{last.get('nick') or ''}: {preview}".strip(": ")
+        else:
+            preview = "нет сообщений"
+
+        ctk.CTkLabel(lines, text=preview[:30], font=self.font_small,
+                     text_color=quiet, anchor="w").pack(fill="x")
+
+        for widget in (row, lines, avatar):
+            widget.bind("<Button-1>", lambda event, i=item["id"]: self._open(i))
+        for child in lines.winfo_children():
+            child.bind("<Button-1>", lambda event, i=item["id"]: self._open(i))
+
+    def _person_row(self, person):
+        row = ctk.CTkFrame(self.side_list, fg_color="transparent", height=46)
+        row.pack(fill="x", pady=1)
+        row.pack_propagate(False)
+
+        avatar = ctk.CTkLabel(row, text="", width=32, height=32, font=self.font_small)
+        avatar.pack(side="left", padx=(8, 8), pady=7)
+        self._paint_avatar(avatar, person["name"], person.get("avatar"), 32)
+
+        ctk.CTkLabel(row, text=person["name"], font=self.font_body, text_color=TEXT,
+                     anchor="w").pack(side="left", fill="x", expand=True)
+
+        ctk.CTkLabel(row, text="●", font=self.font_small,
+                     text_color=ONLINE if person["id"] in self.online else MUTED,
+                     width=14).pack(side="right", padx=(0, 10))
+
+        row.bind("<Button-1>", lambda event, i=person["id"]: self._start_direct(i))
+        for child in row.winfo_children():
+            child.bind("<Button-1>", lambda event, i=person["id"]: self._start_direct(i))
+
+    def _open(self, conversation_id):
+        """Открывает переписку и просит её историю."""
+        if conversation_id == self.conversation:
+            return
+        self.conversation = conversation_id
+        self._cancel_reply()
+        self._clear_messages()
+        self._refresh_side_list()
+        self._update_header()
+        self.network.send(protocol.open_request(conversation_id))
+
+    def _start_direct(self, user_id):
+        # Номер переписки знает только сервер, поэтому просто помечаем, что
+        # ждём её: пришедшую следом историю откроем, какой бы она ни была
+        self.pending_direct = True
+        self.network.send(protocol.direct_request(user_id))
+
+    def _update_header(self):
+        item = next((c for c in self.conversations if c["id"] == self.conversation),
+                    None)
+        title = (item or {}).get("title") or "Общий чат"
+        self.header_title.configure(text=title)
+        self._paint_avatar(self.header_avatar, title, (item or {}).get("avatar"), 40)
+
+    def _clear_messages(self):
+        for widget in self.messages.winfo_children():
+            widget.destroy()
+        self.rows.clear()
+        self.last_sender = None
+        self.current_date = None
+        self.oldest = None
+        self.empty_hint = None
+
+    def _show_history(self, message):
+        """Показывает пришедший кусок истории."""
+        if self.pending_direct and message.get("conversation") != self.conversation:
+            # Это история личной переписки, которую мы только что попросили
+            self.pending_direct = False
+            self.conversation = message.get("conversation")
+            self._cancel_reply()
+            self._refresh_side_list()
+            self._update_header()
+        elif message.get("conversation") != self.conversation:
+            return
+
+        self.quotes.update(message.get("quotes") or {})
+        self.has_older = bool(message.get("more"))
+        items = message.get("items") or []
+
+        if message.get("before"):
+            # Подгрузка старого: перерисовываем всё, чтобы порядок не сбился
+            already = self.loaded_items
+            self.loaded_items = items + already
+        else:
+            self.loaded_items = items
+
+        self._clear_messages()
+        if self.has_older:
+            self.older_button = ctk.CTkButton(
+                self.messages, text="Показать более старые", height=30,
+                corner_radius=10, font=self.font_small, fg_color=INPUT_BG,
+                hover_color=SEPARATOR, text_color=MUTED, command=self._load_older)
+            self.older_button.pack(pady=(8, 4))
+
+        if not self.loaded_items:
+            self.empty_hint = self._service_label("Пока тихо. Напишите первым.")
+        for item in self.loaded_items:
+            self._show_item(item)
+        if self.loaded_items:
+            self.oldest = self.loaded_items[0].get("id")
+
+    def _load_older(self):
+        if self.oldest:
+            self.network.send(protocol.open_request(self.conversation, self.oldest))
+
+    # --------------------------------------------------------- ответ и удаление
+
+    def _start_reply(self, item):
+        self.reply_to = item.get("id")
+        who = item.get("nick", "")
+        what = item.get("text") or item.get("name") or "вложение"
+        self.reply_label.configure(text=f"Ответ {who}: {what[:40]}")
+        self.reply_bar.grid(row=2, column=0, sticky="ew")
+        self.message_entry.focus_set()
+
+    def _cancel_reply(self):
+        self.reply_to = None
+        self.reply_bar.grid_forget()
+
+    def _delete_message(self, message_id):
+        self.network.send(protocol.delete_request(message_id))
+
+    def _message_menu(self, event, item, own):
+        """Правая кнопка на сообщении: ответить или удалить своё."""
+        menu = tkinter.Menu(self, tearoff=0)
+        menu.add_command(label="Ответить", command=lambda: self._start_reply(item))
+        if own and item.get("id"):
+            menu.add_command(label="Удалить",
+                             command=lambda: self._delete_message(item["id"]))
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _on_deleted(self, message):
+        """Сообщение убрали — гасим его на месте."""
+        row = self.rows.get(message.get("id"))
+        if row is not None and row.winfo_exists():
+            for widget in row.winfo_children():
+                widget.destroy()
+            ctk.CTkLabel(row, text="сообщение удалено", font=self.font_small,
+                         text_color=MUTED).pack(padx=13, pady=4)
+
+    # ------------------------------------------------------------------ поиск
+
+    def _on_search(self):
+        query = self.search_entry.get().strip()
+        if len(query) < 2:
+            return
+        self.network.send(protocol.search_request(query))
+
+    def _show_search(self, message):
+        items = message.get("items") or []
+        self._clear_messages()
+        self._service_label(f"Найдено: {len(items)}" if items
+                            else f"По запросу «{message.get('query')}» ничего нет")
+        for item in items:
+            self._show_item(item)
+
+    # -------------------------------------------------------------- печатает
+
+    def _on_typing(self, message):
+        if message.get("conversation") != self.conversation:
+            return
+        self.typing_until = time.monotonic() + 3
+        self.header_subtitle.configure(text=f"{message.get('nick')} печатает…")
+        self.after(3200, self._clear_typing)
+
+    def _clear_typing(self):
+        if time.monotonic() >= self.typing_until:
+            lock = "🔒 " if self.secure else "⚠ без шифрования · "
+            self.header_subtitle.configure(
+                text=f"{lock}вы вошли как {self.user.get('name')}")
+
+    def _notify_typing(self, event=None):
+        """Сообщаем собеседникам, что набираем текст, но не чаще раза в 2 секунды."""
+        now = time.monotonic()
+        if now - getattr(self, "typing_sent", 0) < 2:
+            return
+        self.typing_sent = now
+        self.network.send(protocol.typing_message(self.conversation))
 
     def _clear_hint(self):
         if self.empty_hint is not None:
@@ -1409,25 +1734,52 @@ class VelixApp(ctk.CTk):
                      text_color=TIME_OUT if own else TIME_IN, anchor="e").pack(
             fill="x", padx=13, pady=(0, 5))
 
-    def _add_bubble(self, nickname, text, own, time_text=None, avatar=None):
+    def _add_quote(self, bubble, item):
+        """Показывает, на что отвечает это сообщение."""
+        quoted = self.quotes.get(str(item.get("reply_to")))
+        if not quoted:
+            return
+        what = quoted.get("text") or quoted.get("name") or "вложение"
+        strip = ctk.CTkFrame(bubble, fg_color=SEPARATOR, corner_radius=6)
+        strip.pack(fill="x", padx=13, pady=(6, 2))
+        ctk.CTkLabel(strip, text=f"{quoted.get('nick', '')}: {what[:60]}",
+                     font=self.font_small, text_color=MUTED, anchor="w",
+                     wraplength=self.wrap_length - 30).pack(fill="x", padx=8, pady=4)
+
+    def _attach_menu(self, widgets, item, own):
+        """Вешает меню правой кнопки на пузырь и его начинку."""
+        for widget in widgets:
+            widget.bind("<Button-3>",
+                        lambda event, i=item, o=own: self._message_menu(event, i, o))
+
+    def _add_bubble(self, nickname, text, own, time_text=None, avatar=None, item=None):
         self._clear_hint()
         bubble, grouped = self._new_bubble(nickname, own, avatar)
+        item = item or {}
 
-        ctk.CTkLabel(bubble, text=text, font=self.font_body,
-                     text_color=TEXT_OUT if own else TEXT, justify="left",
-                     anchor="w", wraplength=self.wrap_length).pack(
-            fill="x", padx=13, pady=(3 if own or grouped else 1, 0))
+        if item.get("reply_to"):
+            self._add_quote(bubble, item)
+
+        label = ctk.CTkLabel(bubble, text=text, font=self.font_body,
+                             text_color=TEXT_OUT if own else TEXT, justify="left",
+                             anchor="w", wraplength=self.wrap_length)
+        label.pack(fill="x", padx=13, pady=(3 if own or grouped else 1, 0))
 
         self._add_time(bubble, own, time_text)
-        self._update_preview(nickname, text, time_text, own)
+        self._attach_menu((bubble, label), item, own)
+        if item.get("id"):
+            self.rows[item["id"]] = bubble.master
         self._scroll_to_bottom()
 
     # ----------------------------------------------------------- вложения
 
     def _add_media_bubble(self, nickname, own, kind, media_id, name, size,
-                          time_text=None, data=None, avatar=None):
+                          time_text=None, data=None, avatar=None, item=None):
         self._clear_hint()
         bubble, _ = self._new_bubble(nickname, own, avatar)
+        item = item or {}
+        if item.get("reply_to"):
+            self._add_quote(bubble, item)
 
         if kind in ("image", "gif"):
             holder = ctk.CTkLabel(bubble, text="загружаю картинку…",
@@ -1443,9 +1795,9 @@ class VelixApp(ctk.CTk):
             self._file_card(bubble, own, kind, media_id, name, size, data)
 
         self._add_time(bubble, own, time_text)
-        label = ("GIF" if kind == "gif" else "Фото") if kind in ("image", "gif") \
-            else f"{KIND_LABEL.get(kind, 'Файл')}: {name}"
-        self._update_preview(nickname, label, time_text, own)
+        self._attach_menu((bubble,), item, own)
+        if item.get("id"):
+            self.rows[item["id"]] = bubble.master
         self._scroll_to_bottom()
 
     def _file_card(self, bubble, own, kind, media_id, name, size, data):
@@ -1552,18 +1904,6 @@ class VelixApp(ctk.CTk):
             open_in_system(path)
         except OSError as error:
             self._service_label(f"Не удалось открыть файл: {error}")
-
-    def _update_preview(self, nickname, text, time_text, own):
-        """Последнее сообщение видно в списке чатов слева."""
-        author = "Вы" if own else nickname
-        preview = f"{author}: {text}".replace("\n", " ")
-        # Строка в списке чатов узкая — длинное сообщение обрезаем сами,
-        # иначе край текста просто уедет под границу панели
-        if len(preview) > 27:
-            preview = preview[:26] + "…"
-        self.chat_preview.configure(text=preview)
-        if time_text:
-            self.chat_time.configure(text=time_text)
 
     def _scroll_to_bottom(self):
         self.messages.update_idletasks()

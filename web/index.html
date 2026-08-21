@@ -33,18 +33,39 @@
   </div>
 </section>
 
-<!-- Экран чата -->
-<section id="chat" class="screen" hidden>
+<!-- Список переписок и участников -->
+<section id="list" class="screen" hidden>
   <header class="bar">
-    <div class="avatar" id="room-avatar">V</div>
-    <div class="bar-titles">
-      <strong>Общий чат</strong>
-      <span id="status" class="muted small">подключаюсь…</span>
-    </div>
+    <strong class="grow">Velix</strong>
     <button id="profile-button" class="icon-button" title="Профиль">⋯</button>
   </header>
 
+  <input id="search" class="search" type="text" placeholder="Поиск по переписке">
+
+  <main class="scroll">
+    <div id="conversations"></div>
+    <p id="people-title" class="muted small section" hidden>УЧАСТНИКИ</p>
+    <div id="people"></div>
+  </main>
+</section>
+
+<!-- Переписка -->
+<section id="chat" class="screen" hidden>
+  <header class="bar">
+    <button id="back-to-list" class="icon-button" title="Назад">‹</button>
+    <div class="avatar" id="chat-avatar">V</div>
+    <div class="bar-titles">
+      <strong id="chat-title">Общий чат</strong>
+      <span id="status" class="muted small"></span>
+    </div>
+  </header>
+
   <main id="messages"></main>
+
+  <div id="reply-bar" class="reply-bar" hidden>
+    <span id="reply-text" class="muted small grow"></span>
+    <button id="cancel-reply" class="icon-button small-button">✕</button>
+  </div>
 
   <form id="composer" autocomplete="off">
     <label class="icon-button" for="file">+</label>
@@ -68,7 +89,7 @@
     <p id="profile-hint" class="muted small"></p>
 
     <button id="save-profile" class="primary">Сохранить</button>
-    <button id="back-to-chat" class="link">Назад в чат</button>
+    <button id="back-to-chat" class="link">Назад</button>
     <button id="logout" class="link danger">Выйти из аккаунта</button>
   </div>
 </section>

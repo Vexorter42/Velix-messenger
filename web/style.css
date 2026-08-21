@@ -172,3 +172,55 @@ main {
   border-radius: 50%; font-size: 18px;
 }
 .send:disabled { opacity: .5; }
+
+/* --- список переписок и участников --- */
+
+.grow { flex: 1; min-width: 0; }
+
+.search {
+  margin: 0 12px 8px; width: calc(100% - 24px);
+  border-radius: 12px;
+}
+
+.scroll { flex: 1; overflow-y: auto; padding: 0 8px 12px; }
+
+.section { margin: 16px 10px 6px; letter-spacing: .04em; }
+
+.list-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px; border-radius: 12px; cursor: pointer;
+}
+.list-row:active { background: var(--input-bg); }
+
+.list-lines {
+  flex: 1; min-width: 0;
+  display: flex; flex-direction: column;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+.list-lines span { overflow: hidden; text-overflow: ellipsis; }
+
+.avatar.small { width: 36px; height: 36px; font-size: 14px; }
+
+.dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--muted); flex: none;
+}
+.dot.on { background: #4dc866; }
+
+/* --- ответ цитатой --- */
+
+.reply-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; background: var(--input-bg);
+}
+
+.quote {
+  margin: 2px 0 4px; padding: 6px 8px;
+  border-left: 3px solid var(--accent);
+  background: var(--separator); border-radius: 6px;
+  font-size: 13px; color: var(--muted);
+}
+
+.small-button { width: 32px; height: 32px; font-size: 16px; }
+
+main#messages button.link { align-self: center; width: auto; padding: 8px 16px; }
