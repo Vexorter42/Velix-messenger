@@ -96,15 +96,24 @@ def search_request(query):
     return encode({"type": "search", "query": query})
 
 
+def react_request(message_id, emoji):
+    return encode({"type": "react", "id": message_id, "emoji": emoji})
+
+
+def reactions_message(conversation, message_id, summary):
+    return encode({"type": "reactions", "conversation": conversation,
+                   "id": message_id, "reactions": summary})
+
+
 def typing_message(conversation):
     return encode({"type": "typing", "conversation": conversation})
 
 
-def history_page(conversation, items, quotes, more, before=None):
+def history_page(conversation, items, quotes, more, before=None, reactions=None):
     """Кусок истории переписки."""
     return encode({"type": "history", "conversation": conversation,
                    "items": items, "quotes": quotes, "more": more,
-                   "before": before})
+                   "before": before, "reactions": reactions or {}})
 
 
 def conversations_message(items):

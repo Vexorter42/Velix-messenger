@@ -73,6 +73,9 @@ MONTHS = ["января", "февраля", "марта", "апреля", "ма�
 
 KIND_LABEL = {"video": "Видео", "file": "Файл"}
 
+# Что можно поставить на сообщение — короткий набор, как в Telegram
+EMOJI = ["👍", "❤", "😂", "🔥", "😢", "👎"]
+
 DEFAULT_SETTINGS = {
     "theme": "dark",
     "tray": True,        # закрытие окна прячет его в трей, а не выходит
@@ -319,6 +322,8 @@ class VelixApp(ctk.CTk):
         self.has_older = False         # есть ли что подгружать выше
         self.typing_until = 0          # до какого времени показывать «печатает»
         self.pending_direct = False    # ждём номер только что созданной личной
+        self.reactions = {}            # номер сообщения -> {смайлик: [кто]}
+        self.reaction_rows = {}        # где рисовать реакции у сообщения
         self.loaded_items = []         # что сейчас показано в ленте
 
         # Файл, оставшийся от прошлого обновления, больше не нужен
@@ -1271,6 +1276,8 @@ class VelixApp(ctk.CTk):
             self._on_typing(message)
         elif kind == "deleted":
             self._on_deleted(message)
+        elif kind == "reactions":
+            self._on_reactions(message)
         elif kind == "search":
             self._show_search(message)
         elif kind in ("text", "media"):
@@ -1541,6 +1548,7 @@ class VelixApp(ctk.CTk):
         for widget in self.messages.winfo_children():
             widget.destroy()
         self.rows.clear()
+        self.reaction_rows.clear()
         self.last_sender = None
         self.current_date = None
         self.oldest = None
@@ -1559,6 +1567,8 @@ class VelixApp(ctk.CTk):
             return
 
         self.quotes.update(message.get("quotes") or {})
+        for key, value in (message.get("reactions") or {}).items():
+            self.reactions[int(key)] = value
         self.has_older = bool(message.get("more"))
         items = message.get("items") or []
 
@@ -1590,6 +1600,59 @@ class VelixApp(ctk.CTk):
 
     # --------------------------------------------------------- ответ и удаление
 
+    def _react(self, message_id, emoji):
+        self.network.send(protocol.react_request(message_id, emoji))
+
+    def _draw_reactions(self, message_id):
+        """Перерисовывает строку реакций под сообщением."""
+        holder = self.reaction_rows.get(message_id)
+        if holder is None or not holder.winfo_exists():
+            return
+
+        for widget in holder.winfo_children():
+            widget.destroy()
+
+        summary = self.reactions.get(message_id) or {}
+        if not summary:
+            holder.pack_forget()
+            return
+
+        holder.pack(fill="x", padx=13, pady=(0, 4))
+        for emoji, people in sorted(summary.items()):
+            mine = self.user.get("id") in people
+            ctk.CTkButton(
+                holder, text=f"{emoji} {len(people)}", width=44, height=24,
+                corner_radius=12, font=self.font_small,
+                fg_color=ACCENT if mine else SEPARATOR,
+                hover_color=ACCENT_HOVER if mine else MUTED,
+                text_color=ON_ACCENT if mine else TEXT,
+                command=lambda e=emoji, m=message_id: self._react(m, e)).pack(
+                side="left", padx=(0, 4))
+
+    def _on_reactions(self, message):
+        """Пришла обновлённая сводка реакций."""
+        message_id = message.get("id")
+        self.reactions[message_id] = message.get("reactions") or {}
+        self._draw_reactions(message_id)
+
+    def _emoji_menu(self, message_id):
+        """Маленькое окно с набором смайликов."""
+        picker = ctk.CTkToplevel(self)
+        picker.title("Реакция")
+        picker.geometry("260x70")
+        picker.transient(self)
+        picker.configure(fg_color=SIDEBAR)
+
+        row = ctk.CTkFrame(picker, fg_color="transparent")
+        row.pack(expand=True)
+        for emoji in EMOJI:
+            ctk.CTkButton(row, text=emoji, width=36, height=36, corner_radius=18,
+                          font=self.font_body, fg_color=INPUT_BG,
+                          hover_color=SEPARATOR, text_color=TEXT,
+                          command=lambda e=emoji: (self._react(message_id, e),
+                                                   picker.destroy())).pack(
+                side="left", padx=3)
+
     def _start_reply(self, item):
         self.reply_to = item.get("id")
         who = item.get("nick", "")
@@ -1609,6 +1672,9 @@ class VelixApp(ctk.CTk):
         """Правая кнопка на сообщении: ответить или удалить своё."""
         menu = tkinter.Menu(self, tearoff=0)
         menu.add_command(label="Ответить", command=lambda: self._start_reply(item))
+        if item.get("id"):
+            menu.add_command(label="Реакция",
+                             command=lambda: self._emoji_menu(item["id"]))
         if own and item.get("id"):
             menu.add_command(label="Удалить",
                              command=lambda: self._delete_message(item["id"]))
@@ -1727,12 +1793,18 @@ class VelixApp(ctk.CTk):
 
         return bubble, grouped
 
-    def _add_time(self, bubble, own, time_text):
-        if not time_text:
-            return
-        ctk.CTkLabel(bubble, text=time_text, font=self.font_small,
-                     text_color=TIME_OUT if own else TIME_IN, anchor="e").pack(
-            fill="x", padx=13, pady=(0, 5))
+    def _add_time(self, bubble, own, time_text, item=None):
+        if time_text:
+            ctk.CTkLabel(bubble, text=time_text, font=self.font_small,
+                         text_color=TIME_OUT if own else TIME_IN, anchor="e").pack(
+                fill="x", padx=13, pady=(0, 5))
+
+        # Полоска реакций живёт под сообщением и появляется, когда есть что показать
+        message_id = (item or {}).get("id")
+        if message_id:
+            holder = ctk.CTkFrame(bubble, fg_color="transparent")
+            self.reaction_rows[message_id] = holder
+            self._draw_reactions(message_id)
 
     def _add_quote(self, bubble, item):
         """Показывает, на что отвечает это сообщение."""
@@ -1765,7 +1837,7 @@ class VelixApp(ctk.CTk):
                              anchor="w", wraplength=self.wrap_length)
         label.pack(fill="x", padx=13, pady=(3 if own or grouped else 1, 0))
 
-        self._add_time(bubble, own, time_text)
+        self._add_time(bubble, own, time_text, item)
         self._attach_menu((bubble, label), item, own)
         if item.get("id"):
             self.rows[item["id"]] = bubble.master
@@ -1794,7 +1866,7 @@ class VelixApp(ctk.CTk):
         else:
             self._file_card(bubble, own, kind, media_id, name, size, data)
 
-        self._add_time(bubble, own, time_text)
+        self._add_time(bubble, own, time_text, item)
         self._attach_menu((bubble,), item, own)
         if item.get("id"):
             self.rows[item["id"]] = bubble.master

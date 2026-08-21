@@ -258,6 +258,32 @@ async def handle_delete(websocket, user, message):
     await send_to_conversation(conversation, frame, websocket)
 
 
+async def handle_react(websocket, user, message):
+    """Ставит или снимает реакцию на сообщение."""
+    try:
+        message_id = int(message.get("id"))
+    except (TypeError, ValueError):
+        return
+
+    emoji = str(message.get("emoji") or "").strip()[:8]
+    if not emoji:
+        return
+
+    result = await storage.toggle_reaction(message_id, user["id"], emoji)
+    if result is None:
+        await websocket.send(protocol.error_message("Сообщение не найдено."))
+        return
+
+    conversation, summary = result
+    if not await storage.is_member(conversation, user["id"]):
+        await websocket.send(protocol.error_message("Эта переписка вам недоступна."))
+        return
+
+    frame = protocol.reactions_message(conversation, message_id, summary)
+    await websocket.send(frame)
+    await send_to_conversation(conversation, frame, websocket)
+
+
 async def handle_search(websocket, user, message):
     """Ищет по переписке."""
     query = str(message.get("query") or "").strip()
@@ -355,11 +381,12 @@ async def send_history(websocket, user, conversation_id, before=None):
     items = await storage.messages(conversation_id, before=before)
     quotes = await storage.quoted({item["reply_to"] for item in items
                                    if item.get("reply_to")})
+    marks = await storage.reactions([item["id"] for item in items])
     # Если пришло ровно столько, сколько просили, вероятно есть и постарше
     more = len(items) >= storage.HISTORY_LIMIT
     await websocket.send(protocol.history_page(
         conversation_id, items, {str(key): value for key, value in quotes.items()},
-        more, before))
+        more, before, {str(key): value for key, value in marks.items()}))
 
 
 # --------------------------------------------------------------------- вход
@@ -698,6 +725,8 @@ async def chat_handler(websocket):
                 await handle_direct(websocket, user, message)
             elif kind == "delete":
                 await handle_delete(websocket, user, message)
+            elif kind == "react":
+                await handle_react(websocket, user, message)
             elif kind == "search":
                 await handle_search(websocket, user, message)
             elif kind == "typing":

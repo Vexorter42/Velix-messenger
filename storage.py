@@ -118,6 +118,16 @@ def _init_sync(path, media_dir):
         )
         _connection.execute(
             """
+            CREATE TABLE IF NOT EXISTS reactions (
+                message_id INTEGER NOT NULL,
+                user_id    INTEGER NOT NULL,
+                emoji      TEXT NOT NULL,
+                PRIMARY KEY (message_id, user_id, emoji)
+            )
+            """
+        )
+        _connection.execute(
+            """
             CREATE TABLE IF NOT EXISTS invites (
                 code       TEXT PRIMARY KEY,
                 created_at TEXT NOT NULL,
@@ -449,6 +459,50 @@ def _media_bytes_sync(media_id):
     return kind, name or "файл", matches[0].read_bytes()
 
 
+def _toggle_reaction_sync(message_id, user_id, emoji):
+    """Ставит или снимает реакцию. Возвращает (переписка, сводка) или None."""
+    with _lock:
+        row = _connection.execute(
+            "SELECT conversation_id FROM messages"
+            " WHERE id = ? AND deleted = 0 AND kind != 'avatar'",
+            (message_id,)).fetchone()
+        if row is None or row[0] is None:
+            return None
+
+        existing = _connection.execute(
+            "SELECT 1 FROM reactions WHERE message_id = ? AND user_id = ? AND emoji = ?",
+            (message_id, user_id, emoji)).fetchone()
+
+        if existing:
+            _connection.execute(
+                "DELETE FROM reactions WHERE message_id = ? AND user_id = ? AND emoji = ?",
+                (message_id, user_id, emoji))
+        else:
+            _connection.execute(
+                "INSERT INTO reactions (message_id, user_id, emoji) VALUES (?, ?, ?)",
+                (message_id, user_id, emoji))
+        _connection.commit()
+
+    return row[0], _reactions_sync([message_id]).get(message_id, {})
+
+
+def _reactions_sync(message_ids):
+    """Сводка реакций: сообщение -> {смайлик: [кто поставил]}."""
+    if not message_ids:
+        return {}
+    marks = ",".join("?" * len(message_ids))
+    with _lock:
+        rows = _connection.execute(
+            "SELECT message_id, emoji, user_id FROM reactions"
+            " WHERE message_id IN (" + marks + ")",
+            list(message_ids)).fetchall()
+
+    summary = {}
+    for message_id, emoji, user_id in rows:
+        summary.setdefault(message_id, {}).setdefault(emoji, []).append(user_id)
+    return summary
+
+
 def _row_to_item(row):
     """Одна строка из базы — в то, что понимает клиент."""
     (message_id, nickname, text, created_at, kind, media_id, media_name,
@@ -705,6 +759,16 @@ async def save_media(user_id, nickname, kind, name, data,
     """Сохраняет вложение файлом, возвращает (номер, идентификатор, время)."""
     return await asyncio.to_thread(_save_media_sync, user_id, nickname, kind, name,
                                    data, conversation_id, reply_to)
+
+
+async def toggle_reaction(message_id, user_id, emoji):
+    """Ставит или снимает реакцию, возвращает (переписка, сводка)."""
+    return await asyncio.to_thread(_toggle_reaction_sync, message_id, user_id, emoji)
+
+
+async def reactions(message_ids):
+    """Сводка реакций для списка сообщений."""
+    return await asyncio.to_thread(_reactions_sync, list(message_ids))
 
 
 async def messages(conversation_id, limit=HISTORY_LIMIT, before=None):

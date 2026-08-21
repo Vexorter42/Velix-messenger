@@ -6,6 +6,8 @@ const MONTHS = ["января", "февраля", "марта", "апреля", 
 const AVATAR_COLORS = ["#e17076", "#faa774", "#a695e7", "#7bc862",
                        "#6ec9cb", "#65aadd", "#ee7aae"];
 const MAX_MEDIA = 25 * 1024 * 1024;
+// Что можно поставить на сообщение — короткий набор, как в Telegram
+const EMOJI = ["👍", "❤", "😂", "🔥", "😢", "👎"];
 
 const $ = (id) => document.getElementById(id);
 const screens = {auth: $("auth"), list: $("list"), chat: $("chat"), profile: $("profile")};
@@ -28,6 +30,8 @@ let hasOlder = false;
 let typingTimer = null;
 let typingSent = 0;
 const rows = new Map();        // номер сообщения -> его ряд в ленте
+const reactions = new Map();   // номер сообщения -> {смайлик: [кто поставил]}
+const reactionRows = new Map();// куда рисовать реакции
 const mediaSlots = new Map();
 const avatarSlots = new Map();
 const avatarCache = new Map();
@@ -109,6 +113,7 @@ function handle(message) {
     case "text":
     case "media": onIncoming(message); break;
     case "deleted": onDeleted(message); break;
+    case "reactions": onReactions(message); break;
     case "typing": onTyping(message); break;
     case "search": onSearch(message); break;
     case "profile": onProfile(message.user); break;
@@ -273,6 +278,7 @@ function openConversation(id, title) {
 function clearMessages() {
   $("messages").innerHTML = "";
   rows.clear();
+  reactionRows.clear();
   lastSender = null;
   currentDate = null;
   oldest = null;
@@ -311,6 +317,9 @@ function onHistory(message) {
   }
 
   Object.assign(quotes, message.quotes || {});
+  for (const [key, value] of Object.entries(message.reactions || {})) {
+    reactions.set(Number(key), value);
+  }
   hasOlder = Boolean(message.more);
   const items = message.items || [];
 
@@ -440,19 +449,73 @@ function showItem(item, localUrl) {
     bubble.addEventListener(event, () => clearTimeout(timer));
   }
 
+  if (item.id) {
+    const marks = document.createElement("div");
+    marks.className = "reactions";
+    marks.hidden = true;
+    bubble.append(marks);
+    reactionRows.set(item.id, marks);
+    drawReactions(item.id);
+  }
+
   row.append(bubble);
   $("messages").append(row);
   scrollDown();
 }
 
-function messageMenu(item, own) {
-  if (own && item.id) {
-    if (confirm("Удалить это сообщение?")) {
-      send({type: "delete", id: item.id});
-      return;
-    }
+function drawReactions(messageId) {
+  const holder = reactionRows.get(messageId);
+  if (!holder) return;
+
+  holder.innerHTML = "";
+  const summary = reactions.get(messageId) || {};
+  const entries = Object.entries(summary).sort();
+  holder.hidden = entries.length === 0;
+
+  for (const [emoji, who] of entries) {
+    const button = document.createElement("button");
+    button.className = who.includes(user.id) ? "reaction mine" : "reaction";
+    button.textContent = `${emoji} ${who.length}`;
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      send({type: "react", id: messageId, emoji});
+    });
+    holder.append(button);
   }
-  startReply(item);
+}
+
+function onReactions(message) {
+  reactions.set(message.id, message.reactions || {});
+  drawReactions(message.id);
+}
+
+function pickEmoji(messageId) {
+  const sheet = document.createElement("div");
+  sheet.className = "sheet";
+  for (const emoji of EMOJI) {
+    const button = document.createElement("button");
+    button.className = "sheet-emoji";
+    button.textContent = emoji;
+    button.addEventListener("click", () => {
+      send({type: "react", id: messageId, emoji});
+      sheet.remove();
+    });
+    sheet.append(button);
+  }
+  sheet.addEventListener("click", (event) => {
+    if (event.target === sheet) sheet.remove();
+  });
+  document.body.append(sheet);
+}
+
+function messageMenu(item, own) {
+  if (!item.id) return;
+
+  const choice = prompt(
+      "1 — реакция, 2 — ответить" + (own ? ", 3 — удалить" : ""), "1");
+  if (choice === "1") pickEmoji(item.id);
+  else if (choice === "2") startReply(item);
+  else if (choice === "3" && own) send({type: "delete", id: item.id});
 }
 
 function startReply(item) {
