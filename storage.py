@@ -10,6 +10,7 @@
 """
 
 import asyncio
+import json
 import os
 import sqlite3
 import threading
@@ -113,6 +114,16 @@ def _init_sync(path, media_dir):
                 conversation_id INTEGER NOT NULL,
                 user_id         INTEGER NOT NULL,
                 PRIMARY KEY (conversation_id, user_id)
+            )
+            """
+        )
+        _connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS pushes (
+                endpoint   TEXT PRIMARY KEY,
+                user_id    INTEGER NOT NULL,
+                data       TEXT NOT NULL,
+                created_at TEXT NOT NULL
             )
             """
         )
@@ -459,6 +470,36 @@ def _media_bytes_sync(media_id):
     return kind, name or "файл", matches[0].read_bytes()
 
 
+def _add_push_sync(user_id, subscription):
+    endpoint = subscription.get("endpoint")
+    if not endpoint:
+        return False
+    with _lock:
+        _connection.execute(
+            "INSERT OR REPLACE INTO pushes (endpoint, user_id, data, created_at)"
+            " VALUES (?, ?, ?, ?)",
+            (endpoint, user_id, json.dumps(subscription, ensure_ascii=False), now()))
+        _connection.commit()
+    return True
+
+
+def _pushes_for_sync(user_ids):
+    if not user_ids:
+        return []
+    marks = ",".join("?" * len(user_ids))
+    with _lock:
+        rows = _connection.execute(
+            "SELECT user_id, data FROM pushes WHERE user_id IN (" + marks + ")",
+            list(user_ids)).fetchall()
+    return [(row[0], json.loads(row[1])) for row in rows]
+
+
+def _drop_push_sync(endpoint):
+    with _lock:
+        _connection.execute("DELETE FROM pushes WHERE endpoint = ?", (endpoint,))
+        _connection.commit()
+
+
 def _toggle_reaction_sync(message_id, user_id, emoji):
     """Ставит или снимает реакцию. Возвращает (переписка, сводка) или None."""
     with _lock:
@@ -759,6 +800,21 @@ async def save_media(user_id, nickname, kind, name, data,
     """Сохраняет вложение файлом, возвращает (номер, идентификатор, время)."""
     return await asyncio.to_thread(_save_media_sync, user_id, nickname, kind, name,
                                    data, conversation_id, reply_to)
+
+
+async def add_push(user_id, subscription):
+    """Запоминает подписку телефона на уведомления."""
+    return await asyncio.to_thread(_add_push_sync, user_id, subscription)
+
+
+async def pushes_for(user_ids):
+    """Подписки перечисленных людей."""
+    return await asyncio.to_thread(_pushes_for_sync, list(user_ids))
+
+
+async def drop_push(endpoint):
+    """Забывает протухшую подписку."""
+    await asyncio.to_thread(_drop_push_sync, endpoint)
 
 
 async def toggle_reaction(message_id, user_id, emoji):

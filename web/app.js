@@ -117,6 +117,7 @@ function handle(message) {
     case "typing": onTyping(message); break;
     case "search": onSearch(message); break;
     case "profile": onProfile(message.user); break;
+    case "push_key": subscribeToPush(message.key); break;
     case "system":
     case "error": service(message.text); break;
   }
@@ -162,6 +163,11 @@ function onWelcome(message) {
   $("primary").disabled = false;
   $("password").value = "";
   show("list");
+
+  // Уведомления спрашиваем один раз и только если человек их не запрещал
+  if ("Notification" in window && Notification.permission !== "denied") {
+    send({type: "push_key"});
+  }
 }
 
 function onAuthFail(text) {
@@ -590,6 +596,37 @@ function fillMedia(slot, header, url) {
 function scrollDown() {
   const messages = $("messages");
   messages.scrollTop = messages.scrollHeight;
+}
+
+// -------------------------------------------------------- уведомления
+
+function decodeKey(base64) {
+  // Ключ приходит в base64url, а браузеру нужен массив байтов
+  const padded = (base64 + "=".repeat((4 - base64.length % 4) % 4))
+      .replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(padded);
+  return Uint8Array.from(raw, (character) => character.charCodeAt(0));
+}
+
+async function subscribeToPush(key) {
+  if (!key || !("serviceWorker" in navigator) || !("PushManager" in window)) return;
+
+  try {
+    const permission = await Notification.requestPermission();
+    if (permission !== "granted") return;
+
+    const registration = await navigator.serviceWorker.ready;
+    const existing = await registration.pushManager.getSubscription();
+    const subscription = existing || await registration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: decodeKey(key),
+    });
+
+    send({type: "push_subscribe", subscription: subscription.toJSON()});
+  } catch (error) {
+    // Уведомления — приятное дополнение: не вышло, и ладно
+    console.warn("подписка на уведомления не удалась", error);
+  }
 }
 
 // -------------------------------------------------------------- отправка

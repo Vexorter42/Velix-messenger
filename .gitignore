@@ -31,3 +31,6 @@ dist/
 *.spec
 Velix.exe
 VelixSetup.exe
+
+# Ключи для уведомлений
+push-keys.json

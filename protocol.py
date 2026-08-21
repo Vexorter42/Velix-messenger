@@ -96,6 +96,18 @@ def search_request(query):
     return encode({"type": "search", "query": query})
 
 
+def push_key_request():
+    return encode({"type": "push_key"})
+
+
+def push_key_message(key):
+    return encode({"type": "push_key", "key": key})
+
+
+def push_subscribe(subscription):
+    return encode({"type": "push_subscribe", "subscription": subscription})
+
+
 def react_request(message_id, emoji):
     return encode({"type": "react", "id": message_id, "emoji": emoji})
 

@@ -12,6 +12,7 @@ from websockets.datastructures import Headers, MultipleValuesError
 import accounts
 import media
 import protocol
+import push
 import storage
 
 # Адрес и порт, на которых сервер принимает подключения.
@@ -256,6 +257,39 @@ async def handle_delete(websocket, user, message):
     frame = protocol.deleted_message(conversation, message_id)
     await websocket.send(frame)
     await send_to_conversation(conversation, frame, websocket)
+
+
+async def notify_absent(conversation_id, sender_id, title, body):
+    """Шлёт уведомления тем участникам, кого сейчас нет в сети.
+
+    Тем, кто сидит в чате, ничего не отправляем: они и так всё видят.
+    """
+    if not push.available():
+        return
+
+    if conversation_id == storage.GENERAL_ID:
+        people = [person["id"] for person in await storage.people()]
+    else:
+        people = await storage.members(conversation_id)
+
+    absent = [user_id for user_id in people
+              if user_id != sender_id and user_id not in online]
+    for user_id, subscription in await storage.pushes_for(absent):
+        problem = await asyncio.to_thread(push.send, subscription, title, body,
+                                          str(conversation_id))
+        if problem == "gone":
+            await storage.drop_push(subscription.get("endpoint"))
+        elif problem:
+            print(f"[Сервер]: Уведомление не ушло: {problem}")
+
+
+async def handle_push_subscribe(websocket, user, message):
+    """Запоминает подписку телефона."""
+    subscription = message.get("subscription")
+    if not isinstance(subscription, dict):
+        return
+    if await storage.add_push(user["id"], subscription):
+        print(f"[Сервер]: {user['login']} подписался на уведомления")
 
 
 async def handle_react(websocket, user, message):
@@ -565,6 +599,7 @@ async def handle_text(websocket, user, message):
     if user.get("avatar"):
         payload["avatar"] = user["avatar"]
     await send_to_conversation(conversation, protocol.encode(payload), websocket)
+    await notify_absent(conversation, user["id"], user["name"], text[:120])
 
 
 async def handle_media(websocket, user, message):
@@ -611,6 +646,8 @@ async def handle_media(websocket, user, message):
     if user.get("avatar"):
         frame["avatar"] = user["avatar"]
     await send_to_conversation(conversation, protocol.encode(frame), websocket)
+    await notify_absent(conversation, user["id"], user["name"],
+                        "прислал вложение")
 
 
 async def handle_fetch(websocket, message):
@@ -727,6 +764,10 @@ async def chat_handler(websocket):
                 await handle_delete(websocket, user, message)
             elif kind == "react":
                 await handle_react(websocket, user, message)
+            elif kind == "push_key":
+                await websocket.send(protocol.push_key_message(push.public_key()))
+            elif kind == "push_subscribe":
+                await handle_push_subscribe(websocket, user, message)
             elif kind == "search":
                 await handle_search(websocket, user, message)
             elif kind == "typing":
@@ -796,6 +837,8 @@ async def main():
                   else "ВНИМАНИЕ: регистрация открыта всем подряд")
             if WEB_DIR.is_dir():
                 print(f"Веб-клиент раздаётся из {WEB_DIR}")
+            print("Уведомления на телефон: включены" if push.public_key()
+                  else "Уведомления на телефон: недоступны")
             update = available_update()
             print(f"Раздаём обновление {update['version']}" if update
                   else "Обновление для раздачи не найдено")
