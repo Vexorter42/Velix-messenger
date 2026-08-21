@@ -10,6 +10,7 @@ import asyncio
 import io
 import os
 import queue
+import socket
 import ssl
 import subprocess
 import sys
@@ -182,6 +183,30 @@ def circular(data, side):
     return picture
 
 
+def short(text, limit):
+    """Укорачивает строку для списка чатов, как в Telegram.
+
+    Заодно склеивает переводы строк: в строке списка помещается одна,
+    а многострочное сообщение растянуло бы её по высоте.
+    """
+    text = " ".join((text or "").split())
+    if len(text) <= limit:
+        return text
+    return text[:limit - 1].rstrip() + "…"
+
+
+def drop_placeholder(entry):
+    """Гасит подсказку в поле, куда мы вставляем текст сами.
+
+    CustomTkinter убирает подсказку по щелчку в поле. Мы же пишем прямо во
+    внутреннее поле Tk, и обёртка об этом не узнаёт: на экране текст есть, а
+    get() возвращает пустую строку — и на сервер уходит пустой адрес.
+    """
+    field = getattr(entry, "master", None)
+    if getattr(field, "_placeholder_text_active", False):
+        field._deactivate_placeholder()
+
+
 class Network:
     """Подключение к серверу в фоновом потоке."""
 
@@ -227,14 +252,27 @@ class Network:
 
     async def _try_all(self, uris):
         """Пробует адреса по очереди: сначала защищённый, потом обычный."""
-        for index, uri in enumerate(uris):
-            last = index == len(uris) - 1
-            handled = await self._session(uri, report_failure=last)
+        problems = []
+        for uri in uris:
+            handled, problem = await self._session(uri)
             if handled:
                 return
+            if problem is not None:
+                problems.append(problem)
 
-    async def _session(self, uri, report_failure=True):
-        """Одна попытка. Возвращает True, если до сервера достучались."""
+        if problems:
+            # Показываем самую внятную причину, а не последнюю: защищённая
+            # попытка обычно уже объяснила, что не так с адресом, а обычная
+            # спотыкается о невнятное «сервер ответил не по-человечески»
+            problems.sort(key=lambda problem: problem[0])
+            self.events.put(("error", problems[0][1]))
+
+    async def _session(self, uri):
+        """Одна попытка. Возвращает (достучались ли, причину отказа).
+
+        Причина — пара «насколько понятная, текст»: из нескольких неудач
+        показываем ту, что объясняет человеку больше.
+        """
         connection = None
         secure = uri.startswith("wss://")
         try:
@@ -253,18 +291,16 @@ class Network:
                     self.events.put(("message", message))
 
         except ConnectionRefusedError:
-            if report_failure:
-                self.events.put(("error", "Сервер недоступен. Проверьте, запущен ли он."))
-            return False
+            return False, (0, "Сервер недоступен. Проверьте, запущен ли он.")
+        except ssl.SSLCertVerificationError:
+            return False, (0, "Сертификат сервера выписан на другое имя. "
+                              "Проверьте, правильно ли введён адрес.")
         except ssl.SSLError:
-            # Сервер не умеет TLS или сертификат не подошёл — пробуем дальше
-            if report_failure:
-                self.events.put(("error", "Сервер не принял защищённое соединение."))
-            return False
+            return False, (1, "Сервер не принял защищённое соединение.")
+        except socket.gaierror:
+            return False, (0, "Не удалось найти сервер по этому адресу.")
         except OSError as error:
-            if report_failure:
-                self.events.put(("error", f"Не удалось подключиться: {error}"))
-            return False
+            return False, (2, f"Не удалось подключиться: {error}")
         except websockets.exceptions.ConnectionClosed:
             pass
         except websockets.exceptions.InvalidStatus as error:
@@ -274,18 +310,19 @@ class Network:
                                           "адресу. Проверьте, что он введён точно."))
             else:
                 self.events.put(("error", f"Сервер ответил кодом {error.response.status_code}."))
-            return True
+            return True, None
+        except websockets.exceptions.InvalidMessage:
+            return False, (1, "По этому адресу отвечает не Velix. "
+                              "Проверьте адрес и порт.")
         except websockets.exceptions.WebSocketException as error:
-            if report_failure:
-                self.events.put(("error", f"Ошибка соединения: {error}"))
-            return False
+            return False, (2, f"Ошибка соединения: {error}")
         finally:
             # Сбрасываем только своё подключение, чужое не трогаем
             if self.websocket is connection:
                 self.websocket = None
 
         self.events.put(("disconnected", None))
-        return True
+        return True, None
 
 
 class VelixApp(ctk.CTk):
@@ -1073,6 +1110,7 @@ class VelixApp(ctk.CTk):
         except Exception:
             return "break"
 
+        drop_placeholder(entry)
         try:
             entry.delete("sel.first", "sel.last")
         except Exception:
@@ -1492,7 +1530,7 @@ class VelixApp(ctk.CTk):
         else:
             preview = "нет сообщений"
 
-        ctk.CTkLabel(lines, text=preview[:30], font=self.font_small,
+        ctk.CTkLabel(lines, text=short(preview, 30), font=self.font_small,
                      text_color=quiet, anchor="w").pack(fill="x")
 
         for widget in (row, lines, avatar):

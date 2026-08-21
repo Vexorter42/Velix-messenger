@@ -67,18 +67,22 @@ def build_uri(address):
 async def open_connection(address):
     """Открывает соединение, пробуя адреса по очереди."""
     uris = connection_uris(address)
-    last_error = None
-    for index, uri in enumerate(uris):
+    problems = []
+    for uri in uris:
         try:
             websocket = await websockets.connect(uri, max_size=protocol.MAX_FRAME_SIZE)
             if not uri.startswith("wss://"):
                 print("[Система]: соединение без шифрования, переписку можно перехватить.")
             return websocket
         except (OSError, ssl.SSLError, websockets.exceptions.WebSocketException) as error:
-            last_error = error
-            if index == len(uris) - 1:
-                raise
-    raise last_error
+            problems.append(error)
+
+    # Ошибка защищённой попытки понятнее: она прямо говорит, что имя в
+    # сертификате другое, а обычная спотыкается уже о невнятный ответ
+    for error in problems:
+        if isinstance(error, ssl.SSLCertVerificationError):
+            raise error
+    raise problems[-1]
 
 
 def format_item(item):
@@ -257,6 +261,9 @@ async def main():
 
     except ConnectionRefusedError:
         print("\n[Ошибка]: Сервер недоступен. Проверьте, запущен ли он.")
+    except ssl.SSLCertVerificationError:
+        print("\n[Ошибка]: Сертификат сервера выписан на другое имя. "
+              "Проверьте, правильно ли введён адрес.")
     except OSError as error:
         # Неверный адрес, недоступная сеть и прочие сетевые проблемы
         print(f"\n[Ошибка]: Не удалось подключиться к {uri}: {error}")
