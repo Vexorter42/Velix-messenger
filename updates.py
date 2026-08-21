@@ -15,6 +15,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from i18n import t
+
 OLD_SUFFIX = ".old"
 
 
@@ -54,7 +56,7 @@ def swap(current, data):
     try:
         fresh.write_bytes(data)
     except OSError as error:
-        return f"не удалось записать новый файл: {error}"
+        return t("не удалось записать новый файл: {error}", error=error)
 
     try:
         if retired.exists():
@@ -66,13 +68,14 @@ def swap(current, data):
         os.replace(current, retired)
     except OSError as error:
         fresh.unlink(missing_ok=True)
-        return f"не удалось освободить место под новую версию: {error}"
+        return t("не удалось освободить место под новую версию: {error}",
+                 error=error)
 
     try:
         os.replace(fresh, current)
     except OSError as error:
         os.replace(retired, current)  # возвращаем как было
-        return f"не удалось поставить новую версию: {error}"
+        return t("не удалось поставить новую версию: {error}", error=error)
 
     return None
 
@@ -83,5 +86,6 @@ def restart(path=None):
     try:
         subprocess.Popen([str(path)], close_fds=True)
     except OSError as error:
-        return f"новая версия установлена, но не запустилась: {error}"
+        return t("новая версия установлена, но не запустилась: {error}",
+                 error=error)
     return None

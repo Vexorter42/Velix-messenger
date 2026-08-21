@@ -10,6 +10,7 @@ from websockets.http11 import Response
 from websockets.datastructures import Headers, MultipleValuesError
 
 import accounts
+import i18n
 import media
 import protocol
 import push
@@ -196,7 +197,7 @@ async def handle_update(websocket):
     """Отдаёт клиенту свежую сборку."""
     update = available_update()
     if update is None:
-        await websocket.send(protocol.error_message("Обновление недоступно."))
+        await websocket.send(protocol.error_message("Обновление недоступно.", "update_unavailable"))
         return
 
     data = await asyncio.to_thread((UPDATES_DIR / "Velix.exe").read_bytes)
@@ -223,10 +224,10 @@ async def handle_direct(websocket, user, message):
         return
 
     if other == user["id"]:
-        await websocket.send(protocol.error_message("Написать самому себе не выйдет."))
+        await websocket.send(protocol.error_message("Написать самому себе не выйдет.", "self_dm"))
         return
     if await storage.user_by_id(other) is None:
-        await websocket.send(protocol.error_message("Такого человека нет."))
+        await websocket.send(protocol.error_message("Такого человека нет.", "no_such_person"))
         return
 
     conversation = await storage.direct_id(user["id"], other)
@@ -250,7 +251,7 @@ async def handle_delete(websocket, user, message):
     conversation = await storage.delete_message(message_id, user["id"])
     if conversation is None:
         await websocket.send(protocol.error_message(
-            "Удалить можно только своё сообщение."))
+            "Удалить можно только своё сообщение.", "not_your_message"))
         return
 
     print(f"[Лог]: {user['name']} удалил сообщение {message_id}")
@@ -275,7 +276,10 @@ async def notify_absent(conversation_id, sender_id, title, body):
     absent = [user_id for user_id in people
               if user_id != sender_id and user_id not in online]
     for user_id, subscription in await storage.pushes_for(absent):
-        problem = await asyncio.to_thread(push.send, subscription, title, body,
+        # Язык подписчик прислал вместе с подпиской: на телефоне
+        # уведомление должно быть на том же языке, что и приложение
+        spoken = i18n.in_language(subscription.get("language"), body)
+        problem = await asyncio.to_thread(push.send, subscription, title, spoken,
                                           str(conversation_id))
         if problem == "gone":
             await storage.drop_push(subscription.get("endpoint"))
@@ -305,12 +309,12 @@ async def handle_react(websocket, user, message):
 
     result = await storage.toggle_reaction(message_id, user["id"], emoji)
     if result is None:
-        await websocket.send(protocol.error_message("Сообщение не найдено."))
+        await websocket.send(protocol.error_message("Сообщение не найдено.", "message_not_found"))
         return
 
     conversation, summary = result
     if not await storage.is_member(conversation, user["id"]):
-        await websocket.send(protocol.error_message("Эта переписка вам недоступна."))
+        await websocket.send(protocol.error_message("Эта переписка вам недоступна.", "no_access"))
         return
 
     frame = protocol.reactions_message(conversation, message_id, summary)
@@ -406,7 +410,7 @@ async def allowed(websocket, user, conversation_id):
     """Проверяет, что человеку вообще есть дело до этой переписки."""
     if await storage.is_member(conversation_id, user["id"]):
         return True
-    await websocket.send(protocol.error_message("Эта переписка вам недоступна."))
+    await websocket.send(protocol.error_message("Эта переписка вам недоступна.", "no_access"))
     return False
 
 
@@ -453,18 +457,21 @@ async def handle_register(websocket, message):
 
     problem = accounts.check_login(login) or accounts.check_password(password)
     if problem:
-        await websocket.send(protocol.authfail_message(problem))
+        code, args = accounts.code_for(problem)
+        await websocket.send(protocol.authfail_message(problem, code, **args))
         return None
 
     invite = accounts.clean_invite(message.get("invite"))
     if not OPEN_REGISTRATION:
         if not invite:
             await websocket.send(protocol.authfail_message(
-                "Нужен код приглашения — попросите его у того, кто держит чат."))
+                "Нужен код приглашения — попросите его у того, кто держит чат.",
+                "invite_required"))
             return None
         if not await storage.invite_exists(invite):
             await websocket.send(protocol.authfail_message(
-                "Код приглашения не подошёл: его либо нет, либо им уже воспользовались."))
+                "Код приглашения не подошёл: его либо нет, либо им уже воспользовались.",
+                "invite_bad"))
             return None
 
     name = accounts.clean_name(message.get("name"), login)
@@ -474,13 +481,13 @@ async def handle_register(websocket, message):
 
     user = await storage.create_user(login, password_hash, name)
     if user is None:
-        await websocket.send(protocol.authfail_message("Такой логин уже занят."))
+        await websocket.send(protocol.authfail_message("Такой логин уже занят.", "login_taken"))
         return None
 
     if not OPEN_REGISTRATION and not await storage.take_invite(invite, user["id"]):
         # Кто-то успел воспользоваться кодом, пока считался хеш пароля
         await websocket.send(protocol.authfail_message(
-            "Код приглашения только что заняли. Попросите новый."))
+            "Код приглашения только что заняли. Попросите новый.", "invite_taken"))
         return None
 
     print(f"[Сервер]: Зарегистрирован {login} ({name})")
@@ -495,7 +502,8 @@ async def handle_login(websocket, message):
     waiting = locked_for(login.lower())
     if waiting:
         await websocket.send(protocol.authfail_message(
-            f"Слишком много неудачных попыток. Попробуйте через {waiting // 60 + 1} мин."))
+            f"Слишком много неудачных попыток. Попробуйте через {waiting // 60 + 1} мин.",
+            "locked_out", minutes=waiting // 60 + 1))
         return None
 
     user, password_hash = await storage.user_with_hash(login)
@@ -504,7 +512,7 @@ async def handle_login(websocket, message):
         # понять, существует такой логин или нет
         await asyncio.to_thread(accounts.hash_password, str(password or ""))
         note_failure(login.lower())
-        await websocket.send(protocol.authfail_message("Неверный логин или пароль."))
+        await websocket.send(protocol.authfail_message("Неверный логин или пароль.", "bad_credentials"))
         return None
 
     correct = await asyncio.to_thread(accounts.verify_password,
@@ -512,7 +520,7 @@ async def handle_login(websocket, message):
     if not correct:
         note_failure(login.lower())
         print(f"[Сервер]: Неудачный вход в {login}")
-        await websocket.send(protocol.authfail_message("Неверный логин или пароль."))
+        await websocket.send(protocol.authfail_message("Неверный логин или пароль.", "bad_credentials"))
         return None
 
     note_success(login.lower())
@@ -527,7 +535,8 @@ async def authenticate(websocket):
 
         if message is None:
             await websocket.send(protocol.error_message(
-                "Клиент устарел: обновите Velix, этот сервер говорит на новом языке."))
+                "Клиент устарел: обновите Velix, этот сервер говорит на новом языке.",
+                "client_too_old"))
             continue
 
         kind = message.get("type")
@@ -541,13 +550,13 @@ async def authenticate(websocket):
             user = await storage.user_by_token(str(message.get("token") or ""))
             if user is None:
                 await websocket.send(protocol.authfail_message(
-                    "Сессия больше не действует, войдите заново."))
+                    "Сессия больше не действует, войдите заново.", "session_expired"))
         else:
             # Сюда попадает и клиент прошлой версии: он сразу шлёт сообщение,
             # не зная, что теперь нужно войти
             await websocket.send(protocol.authfail_message(
                 "Сначала нужно войти в аккаунт. Если у вас старая версия"
-                " Velix — обновите её."))
+                " Velix — обновите её.", "login_required"))
 
         if user is None:
             continue
@@ -610,12 +619,14 @@ async def handle_media(websocket, user, message):
 
     payload = await websocket.recv()
     if not isinstance(payload, (bytes, bytearray)):
-        await websocket.send(protocol.error_message("Ожидались данные файла."))
+        await websocket.send(protocol.error_message("Ожидались данные файла.", "expected_file"))
         return
 
     if len(payload) > protocol.MAX_MEDIA_SIZE:
         await websocket.send(protocol.error_message(
-            f"Файл больше {protocol.human_size(protocol.MAX_MEDIA_SIZE)}, не приняли."))
+            f"Файл больше {protocol.human_size(protocol.MAX_MEDIA_SIZE)}, не приняли.",
+            "file_too_big",
+            limit=protocol.human_size(protocol.MAX_MEDIA_SIZE)))
         return
 
     if not await allowed(websocket, user, conversation):
@@ -654,7 +665,7 @@ async def handle_fetch(websocket, message):
     """Отдаёт содержимое вложения по запросу клиента."""
     found = await storage.media_bytes(str(message.get("id") or ""))
     if found is None:
-        await websocket.send(protocol.error_message("Вложение не найдено."))
+        await websocket.send(protocol.error_message("Вложение не найдено.", "attachment_missing"))
         return
 
     kind, name, data = found
@@ -682,12 +693,13 @@ async def handle_avatar(websocket, user, message):
 
     payload = await websocket.recv()
     if not isinstance(payload, (bytes, bytearray)):
-        await websocket.send(protocol.error_message("Ожидались данные картинки."))
+        await websocket.send(protocol.error_message("Ожидались данные картинки.", "expected_image"))
         return
 
     if len(payload) > MAX_AVATAR_SIZE:
         await websocket.send(protocol.error_message(
-            f"Аватарка больше {protocol.human_size(MAX_AVATAR_SIZE)}, не приняли."))
+            f"Аватарка больше {protocol.human_size(MAX_AVATAR_SIZE)}, не приняли.",
+            "avatar_too_big", limit=protocol.human_size(MAX_AVATAR_SIZE)))
         return
 
     # Аватарку сжимаем той же дорогой, что и обычные картинки

@@ -79,6 +79,20 @@ def clean_invite(code):
     return "-".join(letters[index:index + 4] for index in range(0, len(letters), 4))
 
 
+# Коды ошибок для клиента: тот же текст он покажет на своём языке
+def code_for(problem):
+    """Код и подстановки для текста проверки логина или пароля."""
+    if problem is None:
+        return None, {}
+    if problem.startswith("Логин"):
+        return "bad_login", {}
+    if "не короче" in problem:
+        return "short_password", {"least": MIN_PASSWORD}
+    if "длиннее" in problem:
+        return "long_password", {"most": MAX_PASSWORD}
+    return None, {}
+
+
 def check_login(login):
     """Возвращает текст ошибки или None, если логин годится."""
     if not LOGIN_PATTERN.match(login or ""):

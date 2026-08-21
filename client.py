@@ -14,11 +14,33 @@ from datetime import datetime
 
 import websockets
 
+import i18n
 import protocol
+import store
+from i18n import t
 
 PORT = 8765
 
-KIND_LABEL = {"image": "фото", "gif": "гифку", "video": "видео", "file": "файл"}
+
+def kind_label(kind):
+    """Как назвать вложение в строке чата."""
+    if kind == "image":
+        return t("фото")
+    if kind == "gif":
+        return t("гифку")
+    if kind == "video":
+        return t("видео")
+    return t("файл")
+
+
+def system(text):
+    """Строка от самой программы, а не от человека."""
+    return t("[Система]: {text}", text=text)
+
+
+def problem(text):
+    """Ошибка отдельным абзацем."""
+    print("\n" + t("[Ошибка]: {text}", text=text))
 
 
 def host_and_port(address):
@@ -72,7 +94,8 @@ async def open_connection(address):
         try:
             websocket = await websockets.connect(uri, max_size=protocol.MAX_FRAME_SIZE)
             if not uri.startswith("wss://"):
-                print("[Система]: соединение без шифрования, переписку можно перехватить.")
+                print(t("[Система]: соединение без шифрования, "
+                        "переписку можно перехватить."))
             return websocket
         except (OSError, ssl.SSLError, websockets.exceptions.WebSocketException) as error:
             problems.append(error)
@@ -96,10 +119,13 @@ def format_item(item):
     if item.get("kind", "text") == "text":
         return f"[{stamp}] {nickname}: {item.get('text', '')}"
 
-    label = KIND_LABEL.get(item.get("kind"), "файл")
+    label = kind_label(item.get("kind"))
     size = protocol.human_size(item.get("size") or 0)
-    return (f"[{stamp}] {nickname} прислал {label}: {item.get('name', 'без имени')}"
-            f" ({size}) — открыть можно в оконном клиенте")
+    body = t("{nick} прислал {label}: {name} ({size})"
+             " — открыть можно в оконном клиенте",
+             nick=nickname, label=label, size=size,
+             name=item.get("name") or t("без имени"))
+    return f"[{stamp}] {body}"
 
 
 def show(line):
@@ -141,23 +167,23 @@ async def receive_messages(websocket, stop_event):
             if kind == "history":
                 items = message.get("items", [])
                 if items:
-                    show("--- последние сообщения ---")
+                    show(t("--- последние сообщения ---"))
                     for item in items:
                         show(format_item(item))
-                    show("--- конец истории ---")
+                    show(t("--- конец истории ---"))
             elif kind in ("text", "media"):
                 show(format_item(message))
             elif kind in ("system", "error"):
-                show(f"[Система]: {message.get('text', '')}")
+                show(system(i18n.from_server(message)))
             elif kind == "profile":
-                show("[Система]: профиль обновлён")
+                show(t("[Система]: профиль обновлён"))
             elif kind == "blob":
                 # Содержимое вложений консольному клиенту не нужно,
                 # но кадр с данными идёт следом и его надо вычитать
                 await websocket.recv()
 
     except websockets.exceptions.ConnectionClosed:
-        print("\n[Система]: Соединение с сервером потеряно.")
+        print("\n" + t("[Система]: Соединение с сервером потеряно."))
     finally:
         # Из корутины нельзя просто выйти из процесса: вторая задача ждёт ввод
         # в другом потоке. Поэтому сообщаем main(), что пора завершаться.
@@ -172,26 +198,28 @@ async def send_messages(websocket, nickname, outgoing, stop_event):
 
             # None приходит, когда stdin закончился (Ctrl+D / конец файла)
             if message is None or message.lower() in ["/exit", "/quit"]:
-                print("Выход из Velix...")
+                print(t("Выход из Velix..."))
                 return
 
             if message.strip():
                 try:
                     await websocket.send(protocol.text_message(nickname, message))
                 except websockets.exceptions.ConnectionClosed:
-                    print("\n[Система]: Сообщение не отправлено, соединение закрыто.")
+                    print("\n" + t("[Система]: Сообщение не отправлено, "
+                                    "соединение закрыто."))
                     return
     finally:
         stop_event.set()
 
 
-def ask_password(prompt="Пароль: "):
+def ask_password(prompt=None):
     """Спрашивает пароль, не показывая его на экране.
 
     Когда ввод перенаправлен из файла или конвейера, getpass на Windows всё
     равно читает прямо с консоли и виснет насмерть — в этом случае читаем
     обычным input().
     """
+    prompt = prompt or t("Пароль: ")
     if sys.stdin is None or not sys.stdin.isatty():
         return input(prompt)
     return getpass.getpass(prompt)
@@ -211,25 +239,30 @@ async def sign_in(websocket, login, password, name, register, invite=""):
         if answer.get("type") == "welcome":
             return answer["user"]
         if answer.get("type") in ("authfail", "error"):
-            print(f"\n[Ошибка]: {answer.get('text', 'не пустили в чат')}")
+            problem(i18n.from_server(answer) or t("не пустили в чат"))
             return None
 
 
 async def main():
-    print("--- Добро пожаловать в Velix ---")
+    settings = store.load().get("settings", {})
+    i18n.set_language(settings.get("language", i18n.DEFAULT))
 
-    server_ip = input("Адрес сервера, можно с портом (Enter — localhost): ").strip()
+    print(t("--- Добро пожаловать в Velix ---"))
+
+    server_ip = input(t("Адрес сервера, можно с портом "
+                        "(Enter — localhost): ")).strip()
     if not server_ip:
         server_ip = "localhost"
 
-    register = input("Создать новый аккаунт? (y/N): ").strip().lower() in ("y", "д", "да")
-    login = input("Логин: ").strip()
+    register = input(t("Создать новый аккаунт? (y/N): ")
+                     ).strip().lower() in ("y", "д", "да")
+    login = input(t("Логин: ")).strip()
     password = ask_password()
-    name = input("Как вас зовут: ").strip() if register else ""
-    invite = input("Код приглашения: ").strip() if register else ""
+    name = input(t("Как вас зовут: ")).strip() if register else ""
+    invite = input(t("Код приглашения: ")).strip() if register else ""
 
     uri = build_uri(server_ip)
-    print(f"Подключение к {server_ip}...")
+    print(t("Подключение к {server}...", server=server_ip))
 
     try:
         async with await open_connection(server_ip) as websocket:
@@ -237,7 +270,9 @@ async def main():
             if user is None:
                 return
             nickname = user.get("name", login)
-            print(f"[Система]: Успешно подключено как {nickname}! Можно писать сообщения. (для выхода введите /exit)\n")
+            print(t("[Система]: Успешно подключено как {name}! "
+                    "Можно писать сообщения. (для выхода введите /exit)",
+                    name=nickname) + "\n")
 
             stop_event = asyncio.Event()
             outgoing = asyncio.Queue()
@@ -260,26 +295,27 @@ async def main():
             await asyncio.gather(receive_task, send_task, return_exceptions=True)
 
     except ConnectionRefusedError:
-        print("\n[Ошибка]: Сервер недоступен. Проверьте, запущен ли он.")
+        problem(t("Сервер недоступен. Проверьте, запущен ли он."))
     except ssl.SSLCertVerificationError:
-        print("\n[Ошибка]: Сертификат сервера выписан на другое имя. "
-              "Проверьте, правильно ли введён адрес.")
+        problem(t("Сертификат сервера выписан на другое имя. "
+                  "Проверьте, правильно ли введён адрес."))
     except OSError as error:
         # Неверный адрес, недоступная сеть и прочие сетевые проблемы
-        print(f"\n[Ошибка]: Не удалось подключиться к {uri}: {error}")
+        problem(t("Не удалось подключиться к {uri}: {error}", uri=uri, error=error))
     except websockets.exceptions.InvalidStatus as error:
         # Сервер может пускать только по определённому имени и отвечать 403
         if error.response.status_code == 403:
-            print("\n[Ошибка]: Сервер не принимает подключение по этому адресу."
-                  " Проверьте, что он введён точно.")
+            problem(t("Сервер не принимает подключение по этому адресу. "
+                      "Проверьте, что он введён точно."))
         else:
-            print(f"\n[Ошибка]: Сервер ответил кодом {error.response.status_code}.")
+            problem(t("Сервер ответил кодом {code}.",
+                      code=error.response.status_code))
     except websockets.exceptions.WebSocketException as error:
-        print(f"\n[Ошибка]: Не удалось установить WebSocket-соединение: {error}")
+        problem(t("Ошибка соединения: {error}", error=error))
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\nВыход из Velix...")
+        print("\n" + t("Выход из Velix..."))

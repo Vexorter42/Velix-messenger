@@ -27,11 +27,13 @@ import websockets
 from PIL import Image, ImageDraw, ImageSequence
 
 import autostart
+import i18n
 import protocol
 import store
 import tray as tray_module
 import updates
 import version
+from i18n import t
 
 PORT = 8765
 
@@ -69,15 +71,11 @@ OFFLINE = ("#d1435b", "#ec5f75")
 AVATAR_COLORS = ["#e17076", "#faa774", "#a695e7", "#7bc862",
                  "#6ec9cb", "#65aadd", "#ee7aae"]
 
-MONTHS = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля",
-          "августа", "сентября", "октября", "ноября", "декабря"]
-
-KIND_LABEL = {"video": "Видео", "file": "Файл"}
-
 # Что можно поставить на сообщение — короткий набор, как в Telegram
 EMOJI = ["👍", "❤", "😂", "🔥", "😢", "👎"]
 
 DEFAULT_SETTINGS = {
+    "language": i18n.DEFAULT,  # английский, пока не выбрали другой
     "theme": "dark",
     "tray": True,        # закрытие окна прячет его в трей, а не выходит
     "autostart": False,  # запуск вместе с Windows
@@ -291,31 +289,32 @@ class Network:
                     self.events.put(("message", message))
 
         except ConnectionRefusedError:
-            return False, (0, "Сервер недоступен. Проверьте, запущен ли он.")
+            return False, (0, t("Сервер недоступен. Проверьте, запущен ли он."))
         except ssl.SSLCertVerificationError:
-            return False, (0, "Сертификат сервера выписан на другое имя. "
-                              "Проверьте, правильно ли введён адрес.")
+            return False, (0, t("Сертификат сервера выписан на другое имя. "
+                                "Проверьте, правильно ли введён адрес."))
         except ssl.SSLError:
-            return False, (1, "Сервер не принял защищённое соединение.")
+            return False, (1, t("Сервер не принял защищённое соединение."))
         except socket.gaierror:
-            return False, (0, "Не удалось найти сервер по этому адресу.")
+            return False, (0, t("Не удалось найти сервер по этому адресу."))
         except OSError as error:
-            return False, (2, f"Не удалось подключиться: {error}")
+            return False, (2, t("Не удалось подключиться: {error}", error=error))
         except websockets.exceptions.ConnectionClosed:
             pass
         except websockets.exceptions.InvalidStatus as error:
             # Сервер может пускать только по определённому имени и отвечать 403
             if error.response.status_code == 403:
-                self.events.put(("error", "Сервер не принимает подключение по этому "
-                                          "адресу. Проверьте, что он введён точно."))
+                self.events.put(("error", t("Сервер не принимает подключение по этому "
+                                            "адресу. Проверьте, что он введён точно.")))
             else:
-                self.events.put(("error", f"Сервер ответил кодом {error.response.status_code}."))
+                self.events.put(("error", t("Сервер ответил кодом {code}.",
+                                            code=error.response.status_code)))
             return True, None
         except websockets.exceptions.InvalidMessage:
-            return False, (1, "По этому адресу отвечает не Velix. "
-                              "Проверьте адрес и порт.")
+            return False, (1, t("По этому адресу отвечает не Velix. "
+                                "Проверьте адрес и порт."))
         except websockets.exceptions.WebSocketException as error:
-            return False, (2, f"Ошибка соединения: {error}")
+            return False, (2, t("Ошибка соединения: {error}", error=error))
         finally:
             # Сбрасываем только своё подключение, чужое не трогаем
             if self.websocket is connection:
@@ -338,7 +337,8 @@ class VelixApp(ctk.CTk):
         self.network = Network(self.events)
         self.config_data = store.load()
         self.settings = dict(DEFAULT_SETTINGS, **self.config_data.get("settings", {}))
-        # Тему поднимаем из настроек до того, как построим экраны
+        # Язык и тему поднимаем из настроек до того, как построим экраны
+        i18n.set_language(self.settings.get("language", i18n.DEFAULT))
         ctk.set_appearance_mode(self.settings.get("theme", "dark"))
 
         self.tray = tray_module.Tray(on_open=lambda: self.events.put(("tray_open", None)),
@@ -443,24 +443,24 @@ class VelixApp(ctk.CTk):
         self.form = ctk.CTkFrame(card, fg_color="transparent")
         self.form.pack(padx=48, fill="x")
 
-        self.server_entry = self._entry(self.form, "Адрес сервера")
-        self.login_entry = self._entry(self.form, "Логин")
-        self.password_entry = self._entry(self.form, "Пароль", show="•")
-        self.name_entry = self._entry(self.form, "Как вас зовут")
-        self.invite_entry = self._entry(self.form, "Код приглашения")
+        self.server_entry = self._entry(self.form, t("Адрес сервера"))
+        self.login_entry = self._entry(self.form, t("Логин"))
+        self.password_entry = self._entry(self.form, t("Пароль"), show="•")
+        self.name_entry = self._entry(self.form, t("Как вас зовут"))
+        self.invite_entry = self._entry(self.form, t("Код приглашения"))
 
         self.primary_button = ctk.CTkButton(
-            self.form, text="ВОЙТИ", width=300, height=46, corner_radius=10,
+            self.form, text=t("ВОЙТИ"), width=300, height=46, corner_radius=10,
             font=self.font_button, fg_color=ACCENT, hover_color=ACCENT_HOVER,
             text_color=ON_ACCENT, command=self._on_primary)
 
         self.switch_button = ctk.CTkButton(
-            self.form, text="Создать аккаунт", width=300, height=32,
+            self.form, text=t("Создать аккаунт"), width=300, height=32,
             corner_radius=8, font=self.font_small, fg_color="transparent",
             hover_color=INPUT_BG, text_color=ACCENT, command=self._toggle_mode)
 
         self.back_button = ctk.CTkButton(
-            card, text="К списку аккаунтов", width=300, height=32,
+            card, text=t("К списку аккаунтов"), width=300, height=32,
             corner_radius=8, font=self.font_small, fg_color="transparent",
             hover_color=INPUT_BG, text_color=MUTED,
             command=lambda: self._show_auth())
@@ -506,12 +506,12 @@ class VelixApp(ctk.CTk):
         # before= обязателен: повторный pack иначе отправляет рамку в конец
         # очереди, ниже пустой строки ошибки, и в карточке зияет дыра
         self.saved_box.pack(padx=48, fill="x", before=self.auth_error)
-        self.auth_subtitle.configure(text="Выберите аккаунт")
+        self.auth_subtitle.configure(text=t("Выберите аккаунт"))
 
         for account in accounts[:6]:
             self._account_row(account)
 
-        ctk.CTkButton(self.saved_box, text="Войти в другой аккаунт", width=300,
+        ctk.CTkButton(self.saved_box, text=t("Войти в другой аккаунт"), width=300,
                       height=38, corner_radius=10, font=self.font_small,
                       fg_color="transparent", hover_color=INPUT_BG,
                       text_color=ACCENT,
@@ -565,14 +565,15 @@ class VelixApp(ctk.CTk):
             self.name_entry.pack(pady=(0, 10))
             self.invite_entry.pack(pady=(0, 10))
 
-        self.primary_button.configure(text="СОЗДАТЬ АККАУНТ" if register else "ВОЙТИ")
+        self.primary_button.configure(
+            text=t("СОЗДАТЬ АККАУНТ") if register else t("ВОЙТИ"))
         self.primary_button.pack(pady=(6, 6))
-        self.switch_button.configure(text="У меня уже есть аккаунт" if register
-                                     else "Создать аккаунт")
+        self.switch_button.configure(text=t("У меня уже есть аккаунт") if register
+                                     else t("Создать аккаунт"))
         self.switch_button.pack()
 
         self.auth_subtitle.configure(
-            text="Нужен код приглашения" if register else "Вход в аккаунт")
+            text=t("Нужен код приглашения") if register else t("Вход в аккаунт"))
         self.auth_error.configure(text="")
 
         if self.config_data.get("accounts"):
@@ -635,25 +636,25 @@ class VelixApp(ctk.CTk):
         buttons.pack(fill="x", padx=14, pady=(0, 10))
 
         self.profile_button = ctk.CTkButton(
-            buttons, text="Профиль", width=70, height=30, corner_radius=8,
+            buttons, text=t("Профиль"), width=70, height=30, corner_radius=8,
             font=self.font_small, fg_color=INPUT_BG, hover_color=SEPARATOR,
             text_color=MUTED, command=self._show_profile)
         self.profile_button.pack(side="left", expand=True, fill="x", padx=(0, 4))
 
         self.settings_button = ctk.CTkButton(
-            buttons, text="Настройки", width=70, height=30, corner_radius=8,
+            buttons, text=t("Настройки"), width=70, height=30, corner_radius=8,
             font=self.font_small, fg_color=INPUT_BG, hover_color=SEPARATOR,
             text_color=MUTED, command=self._show_settings)
         self.settings_button.pack(side="left", expand=True, fill="x", padx=4)
 
         self.leave_button = ctk.CTkButton(
-            buttons, text="Сменить", width=70, height=30, corner_radius=8,
+            buttons, text=t("Сменить"), width=70, height=30, corner_radius=8,
             font=self.font_small, fg_color=INPUT_BG, hover_color=SEPARATOR,
             text_color=MUTED, command=self._on_leave)
         self.leave_button.pack(side="left", expand=True, fill="x", padx=(4, 0))
 
         self.search_entry = ctk.CTkEntry(
-            sidebar, placeholder_text="Поиск по переписке", height=34,
+            sidebar, placeholder_text=t("Поиск по переписке"), height=34,
             corner_radius=10, border_width=0, fg_color=INPUT_BG, text_color=TEXT,
             placeholder_text_color=MUTED, font=self.font_small)
         self.search_entry.pack(fill="x", padx=14, pady=(0, 8))
@@ -685,7 +686,7 @@ class VelixApp(ctk.CTk):
 
         titles = ctk.CTkFrame(header, fg_color="transparent")
         titles.grid(row=0, column=1, sticky="w")
-        self.header_title = ctk.CTkLabel(titles, text="Общий чат", font=self.font_name,
+        self.header_title = ctk.CTkLabel(titles, text=t("Общий чат"), font=self.font_name,
                                          text_color=TEXT)
         self.header_title.pack(anchor="w")
         self.header_subtitle = ctk.CTkLabel(titles, text="", font=self.font_small,
@@ -722,7 +723,7 @@ class VelixApp(ctk.CTk):
         self.attach_button.grid(row=0, column=0, padx=(18, 8), pady=13)
 
         self.message_entry = ctk.CTkEntry(
-            composer, placeholder_text="Написать сообщение…", height=44,
+            composer, placeholder_text=t("Написать сообщение…"), height=44,
             corner_radius=22, border_width=0, fg_color=INPUT_BG, text_color=TEXT,
             placeholder_text_color=MUTED, font=self.font_body)
         self.message_entry.grid(row=0, column=1, sticky="ew", padx=(0, 10), pady=13)
@@ -744,7 +745,7 @@ class VelixApp(ctk.CTk):
         card = ctk.CTkFrame(self.profile_view, fg_color=SIDEBAR, corner_radius=16)
         card.place(relx=0.5, rely=0.5, anchor="center")
 
-        ctk.CTkLabel(card, text="Профиль", font=self.font_title,
+        ctk.CTkLabel(card, text=t("Профиль"), font=self.font_title,
                      text_color=TEXT).pack(padx=48, pady=(32, 18))
 
         self.profile_avatar = ctk.CTkLabel(
@@ -754,12 +755,12 @@ class VelixApp(ctk.CTk):
         self.profile_avatar.pack(padx=48)
         self.profile_avatar.bind("<Button-1>", lambda event: self._choose_avatar())
 
-        ctk.CTkButton(card, text="Сменить фото", width=300, height=32,
+        ctk.CTkButton(card, text=t("Сменить фото"), width=300, height=32,
                       corner_radius=8, font=self.font_small, fg_color="transparent",
                       hover_color=INPUT_BG, text_color=ACCENT,
                       command=self._choose_avatar).pack(padx=48, pady=(8, 16))
 
-        self.profile_name = self._entry(card, "Как вас зовут")
+        self.profile_name = self._entry(card, t("Как вас зовут"))
         self.profile_name.pack(padx=48, pady=(0, 10))
         self.profile_name.bind("<Control-KeyPress>", self._on_entry_shortcut)
 
@@ -769,16 +770,16 @@ class VelixApp(ctk.CTk):
             font=self.font_body, wrap="word")
         self.profile_bio.pack(padx=48, pady=(0, 4))
 
-        self.profile_hint = ctk.CTkLabel(card, text="Пара слов о себе",
+        self.profile_hint = ctk.CTkLabel(card, text=t("Пара слов о себе"),
                                          font=self.font_small, text_color=MUTED)
         self.profile_hint.pack(padx=48, pady=(0, 14))
 
-        ctk.CTkButton(card, text="СОХРАНИТЬ", width=300, height=46,
+        ctk.CTkButton(card, text=t("СОХРАНИТЬ"), width=300, height=46,
                       corner_radius=10, font=self.font_button, fg_color=ACCENT,
                       hover_color=ACCENT_HOVER, text_color=ON_ACCENT,
                       command=self._save_profile).pack(padx=48)
 
-        ctk.CTkButton(card, text="Назад в чат", width=300, height=32,
+        ctk.CTkButton(card, text=t("Назад в чат"), width=300, height=32,
                       corner_radius=8, font=self.font_small, fg_color="transparent",
                       hover_color=INPUT_BG, text_color=MUTED,
                       command=self._show_chat).pack(padx=48, pady=(8, 30))
@@ -789,13 +790,28 @@ class VelixApp(ctk.CTk):
         card = ctk.CTkFrame(self.settings_view, fg_color=SIDEBAR, corner_radius=16)
         card.place(relx=0.5, rely=0.5, anchor="center")
 
-        ctk.CTkLabel(card, text="Настройки", font=self.font_title,
+        ctk.CTkLabel(card, text=t("Настройки"), font=self.font_title,
                      text_color=TEXT).pack(padx=48, pady=(32, 22))
 
-        self.theme_switch = self._switch(card, "Тёмное оформление", self._on_theme_switch)
-        self.tray_switch = self._switch(card, "Прятать в трей при закрытии",
+        language_row = ctk.CTkFrame(card, fg_color="transparent", width=300)
+        language_row.pack(padx=48, pady=(0, 14), fill="x")
+        ctk.CTkLabel(language_row, text=t("Язык"), font=self.font_body,
+                     text_color=TEXT).pack(side="left")
+        self.language_picker = ctk.CTkSegmentedButton(
+            language_row, values=[i18n.NAMES[code] for code in i18n.LANGUAGES],
+            font=self.font_small, height=28, corner_radius=8,
+            fg_color=INPUT_BG, selected_color=ACCENT,
+            selected_hover_color=ACCENT_HOVER, unselected_color=INPUT_BG,
+            unselected_hover_color=SEPARATOR, text_color=TEXT,
+            command=self._on_language)
+        self.language_picker.set(i18n.NAMES[i18n.language()])
+        self.language_picker.pack(side="right")
+
+        self.theme_switch = self._switch(card, t("Тёмное оформление"),
+                                         self._on_theme_switch)
+        self.tray_switch = self._switch(card, t("Прятать в трей при закрытии"),
                                         self._on_tray_switch)
-        self.autostart_switch = self._switch(card, "Запускать вместе с Windows",
+        self.autostart_switch = self._switch(card, t("Запускать вместе с Windows"),
                                              self._on_autostart_switch)
 
         self.settings_hint = ctk.CTkLabel(card, text="", font=self.font_small,
@@ -806,17 +822,17 @@ class VelixApp(ctk.CTk):
         ctk.CTkFrame(card, height=2, corner_radius=0, fg_color=SEPARATOR).pack(
             fill="x", padx=48, pady=(0, 12))
 
-        self.version_label = ctk.CTkLabel(card, text=f"Версия {version.VERSION}",
+        self.version_label = ctk.CTkLabel(card, text=t("Версия {version}", version=version.VERSION),
                                           font=self.font_small, text_color=MUTED)
         self.version_label.pack(padx=48)
 
         self.update_button = ctk.CTkButton(
-            card, text="Обновлений нет", width=300, height=38, corner_radius=10,
+            card, text=t("Обновлений нет"), width=300, height=38, corner_radius=10,
             font=self.font_small, fg_color=INPUT_BG, hover_color=SEPARATOR,
             text_color=MUTED, state="disabled", command=self._on_update)
         self.update_button.pack(padx=48, pady=(8, 4))
 
-        ctk.CTkButton(card, text="Назад в чат", width=300, height=32,
+        ctk.CTkButton(card, text=t("Назад в чат"), width=300, height=32,
                       corner_radius=8, font=self.font_small, fg_color="transparent",
                       hover_color=INPUT_BG, text_color=MUTED,
                       command=self._show_chat).pack(padx=48, pady=(0, 30))
@@ -851,10 +867,10 @@ class VelixApp(ctk.CTk):
 
     def _settings_hint(self):
         if not self.tray.available:
-            return "Значок в трее недоступен: не установлен pystray."
+            return t("Значок в трее недоступен: не установлен pystray.")
         if not autostart.supported():
-            return "Автозапуск настраивается только в Windows."
-        return "Настройки сохраняются сразу."
+            return t("Автозапуск настраивается только в Windows.")
+        return t("Настройки сохраняются сразу.")
 
     def _set_switch(self, switch, on):
         switch.select() if on else switch.deselect()
@@ -865,7 +881,7 @@ class VelixApp(ctk.CTk):
         """Приводит кнопку к тому, что сейчас предлагает сервер."""
         offer = self.available_update
         if not offer or not version.is_newer(offer.get("version")):
-            self.update_button.configure(text="У вас последняя версия",
+            self.update_button.configure(text=t("У вас последняя версия"),
                                          state="disabled", fg_color=INPUT_BG,
                                          text_color=MUTED)
             return
@@ -873,21 +889,23 @@ class VelixApp(ctk.CTk):
         size = protocol.human_size(offer.get("size") or 0)
         if not updates.running_as_exe():
             self.update_button.configure(
-                text=f"Есть версия {offer['version']} — обновитесь через git",
+                text=t("Есть версия {version}", version=offer["version"])
+                     + t(" — обновитесь через git"),
                 state="disabled", fg_color=INPUT_BG, text_color=MUTED)
             return
 
-        self.update_button.configure(text=f"Обновить до {offer['version']} · {size}",
+        self.update_button.configure(
+            text=t("Обновить до {version}", version=offer["version"]) + f" · {size}",
                                      state="normal", fg_color=ACCENT,
                                      text_color=ON_ACCENT)
 
     def _on_update(self):
         """Просит у сервера свежую сборку."""
         if self.network.websocket is None:
-            self.settings_hint.configure(text="Нет связи с сервером.",
+            self.settings_hint.configure(text=t("Нет связи с сервером."),
                                          text_color=OFFLINE)
             return
-        self.update_button.configure(text="Загружаю…", state="disabled",
+        self.update_button.configure(text=t("Загружаю…"), state="disabled",
                                      fg_color=INPUT_BG, text_color=MUTED)
         self.network.send(protocol.update_request())
 
@@ -895,7 +913,7 @@ class VelixApp(ctk.CTk):
         """Пришла новая сборка — подменяем себя и перезапускаемся."""
         data = message.get("data") or b""
         if not data:
-            self.settings_hint.configure(text="Сервер прислал пустой файл.",
+            self.settings_hint.configure(text=t("Сервер прислал пустой файл."),
                                          text_color=OFFLINE)
             self._refresh_update_button()
             return
@@ -906,9 +924,9 @@ class VelixApp(ctk.CTk):
             self._refresh_update_button()
             return
 
-        self.settings_hint.configure(text="Обновление установлено, перезапускаюсь…",
+        self.settings_hint.configure(text=t("Обновление установлено, перезапускаюсь…"),
                                      text_color=ONLINE)
-        self.update_button.configure(text="Перезапуск…", state="disabled")
+        self.update_button.configure(text=t("Перезапуск…"), state="disabled")
         self.update()
 
         problem = updates.restart()
@@ -920,6 +938,66 @@ class VelixApp(ctk.CTk):
     def _save_settings(self):
         self.config_data["settings"] = self.settings
         store.save(self.config_data)
+
+    def _on_language(self, choice):
+        """Переключает язык интерфейса и пересобирает окно."""
+        code = next((item for item in i18n.LANGUAGES
+                     if i18n.NAMES[item] == choice), i18n.DEFAULT)
+        if code == i18n.language():
+            return
+
+        self.settings["language"] = code
+        self._save_settings()
+        i18n.set_language(code)
+        self._rebuild()
+
+    def _rebuild(self):
+        """Собирает экраны заново — на новом языке, но с прежним состоянием.
+
+        Так проще и надёжнее, чем помнить, у какой надписи какой ключ:
+        сеть живёт отдельно от виджетов, а лента и списки рисуются из
+        того, что уже загружено.
+        """
+        was_chat = self.chat_view.winfo_ismapped()
+        was_settings = self.settings_view.winfo_ismapped()
+        was_profile = self.profile_view.winfo_ismapped()
+        items = self.loaded_items
+
+        for view in (self.auth_view, self.chat_view, self.profile_view,
+                     self.settings_view):
+            view.destroy()
+
+        # Всё, что помнило старые виджеты, забываем: их больше нет
+        self.rows = {}
+        self.reaction_rows = {}
+        self.avatar_waiters = {}
+        self.pending_media = {}
+        self.images = []
+        self.animations = {}
+        self.empty_hint = None
+        self.last_sender = None
+        self.current_date = None
+        self.loaded_items = []
+
+        self._build_auth_view()
+        self._build_chat_view()
+        self._build_profile_view()
+        self._build_settings_view()
+
+        if not (was_chat or was_settings or was_profile):
+            self._show_auth()
+            return
+
+        self._show_chat()
+        self._refresh_me()
+        self._refresh_side_list()
+        self._update_header()
+        self._show_history({"conversation": self.conversation, "items": items,
+                            "more": self.has_older})
+        if was_settings:
+            self._show_settings()
+        elif was_profile:
+            self._show_profile()
 
     def _on_theme_switch(self):
         theme = "dark" if self.theme_switch.get() else "light"
@@ -943,8 +1021,8 @@ class VelixApp(ctk.CTk):
         self.settings["autostart"] = wanted
         self._save_settings()
         self.settings_hint.configure(
-            text="Velix будет запускаться при входе в Windows." if wanted
-            else "Автозапуск выключен.", text_color=MUTED)
+            text=t("Velix будет запускаться при входе в Windows.") if wanted
+            else t("Автозапуск выключен."), text_color=MUTED)
 
     def _show_chat(self):
         self.auth_view.pack_forget()
@@ -965,7 +1043,7 @@ class VelixApp(ctk.CTk):
         self.profile_bio.insert("1.0", self.user.get("bio", ""))
         self._paint_avatar(self.profile_avatar, self.user.get("name", "?"),
                            self.user.get("avatar"), AVATAR_LARGE)
-        self.profile_hint.configure(text="Пара слов о себе", text_color=MUTED)
+        self.profile_hint.configure(text=t("Пара слов о себе"), text_color=MUTED)
 
     # ------------------------------------------------------------ действия
 
@@ -976,7 +1054,7 @@ class VelixApp(ctk.CTk):
         password = self.password_entry.get()
 
         if not login or not password:
-            self.auth_error.configure(text="Заполните логин и пароль.")
+            self.auth_error.configure(text=t("Заполните логин и пароль."))
             return
 
         if self.register_mode:
@@ -989,7 +1067,7 @@ class VelixApp(ctk.CTk):
         self.server = server
         self.login = login
         self.auth_error.configure(text="")
-        self.primary_button.configure(text="ПОДКЛЮЧЕНИЕ…", state="disabled")
+        self.primary_button.configure(text=t("ПОДКЛЮЧЕНИЕ…"), state="disabled")
         self.network.connect(connection_uris(server))
 
     def _enter_saved(self, account):
@@ -998,7 +1076,8 @@ class VelixApp(ctk.CTk):
         self.login = account.get("login", "")
         self.pending_login = protocol.auth_message(account.get("token", ""))
         self.auth_error.configure(text="")
-        self.auth_subtitle.configure(text=f"Входим как {account.get('name')}…")
+        self.auth_subtitle.configure(
+            text=t("Входим как {name}…", name=account.get("name")))
         self.network.connect(connection_uris(self.server))
 
     def _on_send(self):
@@ -1010,11 +1089,18 @@ class VelixApp(ctk.CTk):
         self.network.send(protocol.text_message(self.user.get("name", ""), text,
                                                 self.conversation, self.reply_to))
         now = datetime.now()
+        item = {"text": text, "kind": "text",
+                "nick": self.user.get("name", t("Я")),
+                "user": self.user.get("id"),
+                "at": now.astimezone().isoformat(),
+                "conversation": self.conversation, "reply_to": self.reply_to}
+        # Своё сообщение сервер обратно не присылает, поэтому кладём его
+        # в ленту сами: иначе оно пропадёт при следующей перерисовке
+        self.loaded_items.append(item)
         self._ensure_date(now.strftime("%d.%m"))
-        self._add_bubble(self.user.get("name", "Я"), text, own=True,
-                         time_text=now.strftime("%H:%M"),
-                         item={"reply_to": self.reply_to})
-        self._bump_preview({"text": text, "kind": "text", "nick": "Вы",
+        self._add_bubble(self.user.get("name", t("Я")), text, own=True,
+                         time_text=now.strftime("%H:%M"), item=item)
+        self._bump_preview({"text": text, "kind": "text", "nick": t("Вы"),
                             "at": now.astimezone().isoformat(),
                             "conversation": self.conversation}, notify=False)
         self._cancel_reply()
@@ -1025,13 +1111,13 @@ class VelixApp(ctk.CTk):
             return
 
         path = filedialog.askopenfilename(
-            title="Что отправляем?",
+            title=t("Что отправляем?"),
             filetypes=[
-                ("Картинки и видео", "*.png *.jpg *.jpeg *.webp *.bmp *.gif "
+                (t("Картинки и видео"), "*.png *.jpg *.jpeg *.webp *.bmp *.gif "
                                      "*.mp4 *.mov *.webm *.mkv *.avi *.m4v"),
-                ("Картинки", "*.png *.jpg *.jpeg *.webp *.bmp *.gif"),
-                ("Видео", "*.mp4 *.mov *.webm *.mkv *.avi *.m4v"),
-                ("Все файлы", "*.*"),
+                (t("Картинки"), "*.png *.jpg *.jpeg *.webp *.bmp *.gif"),
+                (t("Видео"), "*.mp4 *.mov *.webm *.mkv *.avi *.m4v"),
+                (t("Все файлы"), "*.*"),
             ])
         if path:
             self._send_file(Path(path))
@@ -1039,31 +1125,32 @@ class VelixApp(ctk.CTk):
     def _choose_avatar(self):
         """Выбор картинки для профиля."""
         path = filedialog.askopenfilename(
-            title="Выберите фото",
-            filetypes=[("Картинки", "*.png *.jpg *.jpeg *.webp *.bmp"),
-                       ("Все файлы", "*.*")])
+            title=t("Выберите фото"),
+            filetypes=[(t("Картинки"), "*.png *.jpg *.jpeg *.webp *.bmp"),
+                       (t("Все файлы"), "*.*")])
         if not path:
             return
 
         try:
             data = Path(path).read_bytes()
         except OSError as error:
-            self.profile_hint.configure(text=f"Не прочитать файл: {error}",
+            self.profile_hint.configure(
+                text=t("Не удалось прочитать файл: {error}", error=error),
                                         text_color=OFFLINE)
             return
 
-        self.profile_hint.configure(text="Отправляем фото…", text_color=MUTED)
+        self.profile_hint.configure(text=t("Отправляем фото…"), text_color=MUTED)
         self.network.send(protocol.avatar_header(Path(path).name, len(data)), data)
 
     def _save_profile(self):
         name = self.profile_name.get().strip()
         bio = self.profile_bio.get("1.0", "end").strip()
         if not name:
-            self.profile_hint.configure(text="Имя не может быть пустым.",
+            self.profile_hint.configure(text=t("Имя не может быть пустым."),
                                         text_color=OFFLINE)
             return
         self.network.send(protocol.profile_message(name, bio))
-        self.profile_hint.configure(text="Сохраняем…", text_color=MUTED)
+        self.profile_hint.configure(text=t("Сохраняем…"), text_color=MUTED)
 
     def _on_ctrl_key(self, event):
         """Ctrl+V в поле сообщения: сначала пробуем картинку из буфера."""
@@ -1132,7 +1219,7 @@ class VelixApp(ctk.CTk):
         if isinstance(content, Image.Image):
             buffer = io.BytesIO()
             content.save(buffer, "PNG")
-            self._send_bytes("вставка.png", buffer.getvalue())
+            self._send_bytes(t("вставка.png"), buffer.getvalue())
             return "break"
 
         if isinstance(content, list) and content:
@@ -1148,15 +1235,16 @@ class VelixApp(ctk.CTk):
         try:
             data = path.read_bytes()
         except OSError as error:
-            self._service_label(f"Не удалось прочитать файл: {error}")
+            self._service_label(t("Не удалось прочитать файл: {error}", error=error))
             return
         self._send_bytes(path.name, data)
 
     def _send_bytes(self, name, data):
         if len(data) > protocol.MAX_MEDIA_SIZE:
-            self._service_label(
-                f"«{name}» весит {protocol.human_size(len(data))}, а больше "
-                f"{protocol.human_size(protocol.MAX_MEDIA_SIZE)} сервер не принимает.")
+            self._service_label(t(
+                "«{name}» весит {size}, а больше {limit} сервер не принимает.",
+                name=name, size=protocol.human_size(len(data)),
+                limit=protocol.human_size(protocol.MAX_MEDIA_SIZE)))
             return
 
         kind = protocol.kind_of(name)
@@ -1166,7 +1254,12 @@ class VelixApp(ctk.CTk):
 
         now = datetime.now()
         self._ensure_date(now.strftime("%d.%m"))
-        self._add_media_bubble(self.user.get("name", "Я"), own=True, kind=kind,
+        self.loaded_items.append({"kind": kind, "name": name, "size": len(data),
+                                  "nick": self.user.get("name", t("Я")),
+                                  "user": self.user.get("id"),
+                                  "at": datetime.now().astimezone().isoformat(),
+                                  "conversation": self.conversation})
+        self._add_media_bubble(self.user.get("name", t("Я")), own=True, kind=kind,
                                media_id=None, name=name, size=len(data),
                                time_text=now.strftime("%H:%M"), data=data,
                                item={"reply_to": self.reply_to})
@@ -1175,7 +1268,7 @@ class VelixApp(ctk.CTk):
     def _on_leave(self):
         """Возврат к выбору аккаунта — сессия сохраняется."""
         self.network.disconnect()
-        self.primary_button.configure(text="ВОЙТИ", state="normal")
+        self.primary_button.configure(text=t("ВОЙТИ"), state="normal")
         self.password_entry.delete(0, "end")
         self._show_auth()
 
@@ -1189,9 +1282,10 @@ class VelixApp(ctk.CTk):
             self.withdraw()
             self.tray.show()
             if not self.hidden_notice_shown:
-                self.tray.notify("Velix свернулся в трей",
-                                 "Программа продолжает работать. "
-                                 "Значок рядом с часами открывает окно обратно.")
+                self.tray.notify(
+                    t("Velix свернулся в трей"),
+                    t("Программа продолжает работать. "
+                      "Значок рядом с часами открывает окно обратно."))
                 self.hidden_notice_shown = True
             return
         self._quit()
@@ -1267,20 +1361,21 @@ class VelixApp(ctk.CTk):
         self.avatar_waiters.clear()
         self.images.clear()
         self.animations.clear()
-        self.empty_hint = self._service_label("Пока тихо. Напишите первым.")
+        self.empty_hint = self._service_label(t("Пока тихо. Напишите первым."))
 
         self._refresh_me()
         self.status_dot.configure(text_color=ONLINE)
-        lock = "🔒 " if self.secure else "⚠ без шифрования · "
+        lock = "🔒 " if self.secure else t("⚠ без шифрования · ")
         self.header_subtitle.configure(
-            text=f"{lock}вы вошли как {self.user.get('name')}")
+            text=lock + t("вы вошли как {name}", name=self.user.get("name")))
         if not self.secure:
-            self._service_label("Соединение без шифрования: сервер не умеет wss://. "
-                                "Переписку в такой сети можно перехватить.")
+            self._service_label(
+                t("Соединение без шифрования: сервер не умеет wss://. "
+                  "Переписку в такой сети можно перехватить."))
         self.message_entry.configure(state="normal")
         self.send_button.configure(state="normal")
         self.attach_button.configure(state="normal")
-        self.primary_button.configure(text="ВОЙТИ", state="normal")
+        self.primary_button.configure(text=t("ВОЙТИ"), state="normal")
         self.password_entry.delete(0, "end")
         self._show_chat()
 
@@ -1297,7 +1392,7 @@ class VelixApp(ctk.CTk):
         if kind == "welcome":
             self._on_welcome(message)
         elif kind == "authfail":
-            self._on_authfail(message.get("text", ""))
+            self._on_authfail(i18n.from_server(message))
         elif kind == "history":
             self._show_history(message)
         elif kind == "conversations":
@@ -1327,7 +1422,7 @@ class VelixApp(ctk.CTk):
         elif kind == "profile":
             self._on_profile(message)
         elif kind in ("system", "error"):
-            self._service_label(message.get("text", ""))
+            self._service_label(i18n.from_server(message))
 
     def _on_profile(self, message):
         user = message.get("user") or {}
@@ -1339,12 +1434,12 @@ class VelixApp(ctk.CTk):
         if self.profile_view.winfo_ismapped():
             self._paint_avatar(self.profile_avatar, self.user.get("name", "?"),
                                self.user.get("avatar"), AVATAR_LARGE)
-            self.profile_hint.configure(text="Сохранено", text_color=ONLINE)
+            self.profile_hint.configure(text=t("Сохранено"), text_color=ONLINE)
 
     def _on_authfail(self, text):
         self.pending_login = None
         self.network.disconnect()
-        self.primary_button.configure(text="ВОЙТИ", state="normal")
+        self.primary_button.configure(text=t("ВОЙТИ"), state="normal")
         self.auth_view.pack(fill="both", expand=True)
         self.chat_view.pack_forget()
         self.auth_error.configure(text=text)
@@ -1359,6 +1454,7 @@ class VelixApp(ctk.CTk):
             # обновляем строку в списке слева
             self._bump_preview(message)
             return
+        self.loaded_items.append(message)
         self._show_item(message)
         self._bump_preview(message, notify=False)
 
@@ -1390,7 +1486,7 @@ class VelixApp(ctk.CTk):
         if item.get("kind") == "deleted":
             row = ctk.CTkFrame(self.messages, fg_color="transparent")
             row.pack(fill="x", padx=22, pady=2)
-            ctk.CTkLabel(row, text="сообщение удалено", font=self.font_small,
+            ctk.CTkLabel(row, text=t("сообщение удалено"), font=self.font_small,
                          text_color=MUTED).pack(anchor="e" if own else "w")
             if item.get("id"):
                 self.rows[item["id"]] = row
@@ -1404,7 +1500,7 @@ class VelixApp(ctk.CTk):
         else:
             self._add_media_bubble(nickname, own=own, kind=item["kind"],
                                    media_id=item.get("media"),
-                                   name=item.get("name", "файл"),
+                                   name=item.get("name", t("файл")),
                                    size=item.get("size", 0), time_text=time_text,
                                    avatar=avatar, item=item)
 
@@ -1424,16 +1520,17 @@ class VelixApp(ctk.CTk):
 
     def _on_disconnected(self):
         self.status_dot.configure(text_color=OFFLINE)
-        self.header_subtitle.configure(text="нет связи с сервером")
+        self.header_subtitle.configure(text=t("нет связи с сервером"))
         self.message_entry.configure(state="disabled")
         self.send_button.configure(state="disabled")
         self.attach_button.configure(state="disabled")
         if self.chat_view.winfo_ismapped():
-            self._service_label("Соединение потеряно. Нажмите «Сменить», чтобы войти заново.")
+            self._service_label(
+                t("Соединение потеряно. Нажмите «Сменить», чтобы войти заново."))
 
     def _on_error(self, text):
         self.pending_login = None
-        self.primary_button.configure(text="ВОЙТИ", state="normal")
+        self.primary_button.configure(text=t("ВОЙТИ"), state="normal")
         self.auth_error.configure(text=text)
         if not self.auth_view.winfo_ismapped():
             self._show_auth()
@@ -1490,11 +1587,22 @@ class VelixApp(ctk.CTk):
         if not others:
             return
 
-        ctk.CTkLabel(self.side_list, text="УЧАСТНИКИ", font=self.font_small,
+        ctk.CTkLabel(self.side_list, text=t("УЧАСТНИКИ"), font=self.font_small,
                      text_color=MUTED, anchor="w").pack(fill="x", padx=10,
                                                         pady=(14, 4))
         for person in others:
             self._person_row(person)
+
+    def _title_of(self, item):
+        """Название переписки.
+
+        Общий чат заведён на сервере с русским названием, но человеку его
+        нужно показать на своём языке.
+        """
+        item = item or {}
+        if item.get("id") == protocol.GENERAL_ID:
+            return t("Общий чат")
+        return item.get("title") or t("Общий чат")
 
     def _conversation_row(self, item):
         active = item["id"] == self.conversation
@@ -1504,7 +1612,7 @@ class VelixApp(ctk.CTk):
         row.pack(fill="x", pady=2)
         row.pack_propagate(False)
 
-        title = item.get("title") or "Общий чат"
+        title = self._title_of(item)
         colour = ON_ACCENT if active else TEXT
         quiet = ON_ACCENT if active else MUTED
 
@@ -1525,10 +1633,10 @@ class VelixApp(ctk.CTk):
             moment = local_time(last.get("at"))
             ctk.CTkLabel(top, text=moment.strftime("%H:%M"), font=self.font_small,
                          text_color=quiet).pack(side="right")
-            preview = last.get("text") if last.get("kind") == "text" else "вложение"
+            preview = last.get("text") if last.get("kind") == "text" else t("вложение")
             preview = f"{last.get('nick') or ''}: {preview}".strip(": ")
         else:
-            preview = "нет сообщений"
+            preview = t("нет сообщений")
 
         ctk.CTkLabel(lines, text=short(preview, 30), font=self.font_small,
                      text_color=quiet, anchor="w").pack(fill="x")
@@ -1578,7 +1686,7 @@ class VelixApp(ctk.CTk):
     def _update_header(self):
         item = next((c for c in self.conversations if c["id"] == self.conversation),
                     None)
-        title = (item or {}).get("title") or "Общий чат"
+        title = self._title_of(item)
         self.header_title.configure(text=title)
         self._paint_avatar(self.header_avatar, title, (item or {}).get("avatar"), 40)
 
@@ -1620,13 +1728,13 @@ class VelixApp(ctk.CTk):
         self._clear_messages()
         if self.has_older:
             self.older_button = ctk.CTkButton(
-                self.messages, text="Показать более старые", height=30,
+                self.messages, text=t("Показать более старые"), height=30,
                 corner_radius=10, font=self.font_small, fg_color=INPUT_BG,
                 hover_color=SEPARATOR, text_color=MUTED, command=self._load_older)
             self.older_button.pack(pady=(8, 4))
 
         if not self.loaded_items:
-            self.empty_hint = self._service_label("Пока тихо. Напишите первым.")
+            self.empty_hint = self._service_label(t("Пока тихо. Напишите первым."))
         for item in self.loaded_items:
             self._show_item(item)
         if self.loaded_items:
@@ -1676,7 +1784,7 @@ class VelixApp(ctk.CTk):
     def _emoji_menu(self, message_id):
         """Маленькое окно с набором смайликов."""
         picker = ctk.CTkToplevel(self)
-        picker.title("Реакция")
+        picker.title(t("Реакция"))
         picker.geometry("260x70")
         picker.transient(self)
         picker.configure(fg_color=SIDEBAR)
@@ -1694,8 +1802,9 @@ class VelixApp(ctk.CTk):
     def _start_reply(self, item):
         self.reply_to = item.get("id")
         who = item.get("nick", "")
-        what = item.get("text") or item.get("name") or "вложение"
-        self.reply_label.configure(text=f"Ответ {who}: {what[:40]}")
+        what = item.get("text") or item.get("name") or t("вложение")
+        self.reply_label.configure(
+            text=t("Ответ {name}: {text}", name=who, text=what[:40]))
         self.reply_bar.grid(row=2, column=0, sticky="ew")
         self.message_entry.focus_set()
 
@@ -1709,12 +1818,12 @@ class VelixApp(ctk.CTk):
     def _message_menu(self, event, item, own):
         """Правая кнопка на сообщении: ответить или удалить своё."""
         menu = tkinter.Menu(self, tearoff=0)
-        menu.add_command(label="Ответить", command=lambda: self._start_reply(item))
+        menu.add_command(label=t("Ответить"), command=lambda: self._start_reply(item))
         if item.get("id"):
-            menu.add_command(label="Реакция",
+            menu.add_command(label=t("Реакция"),
                              command=lambda: self._emoji_menu(item["id"]))
         if own and item.get("id"):
-            menu.add_command(label="Удалить",
+            menu.add_command(label=t("Удалить"),
                              command=lambda: self._delete_message(item["id"]))
         try:
             menu.tk_popup(event.x_root, event.y_root)
@@ -1727,7 +1836,7 @@ class VelixApp(ctk.CTk):
         if row is not None and row.winfo_exists():
             for widget in row.winfo_children():
                 widget.destroy()
-            ctk.CTkLabel(row, text="сообщение удалено", font=self.font_small,
+            ctk.CTkLabel(row, text=t("сообщение удалено"), font=self.font_small,
                          text_color=MUTED).pack(padx=13, pady=4)
 
     # ------------------------------------------------------------------ поиск
@@ -1741,8 +1850,9 @@ class VelixApp(ctk.CTk):
     def _show_search(self, message):
         items = message.get("items") or []
         self._clear_messages()
-        self._service_label(f"Найдено: {len(items)}" if items
-                            else f"По запросу «{message.get('query')}» ничего нет")
+        self._service_label(
+            t("Найдено: {count}", count=len(items)) if items
+            else t("По запросу «{query}» ничего нет", query=message.get("query")))
         for item in items:
             self._show_item(item)
 
@@ -1752,14 +1862,15 @@ class VelixApp(ctk.CTk):
         if message.get("conversation") != self.conversation:
             return
         self.typing_until = time.monotonic() + 3
-        self.header_subtitle.configure(text=f"{message.get('nick')} печатает…")
+        self.header_subtitle.configure(
+            text=t("{name} печатает…", name=message.get("nick")))
         self.after(3200, self._clear_typing)
 
     def _clear_typing(self):
         if time.monotonic() >= self.typing_until:
-            lock = "🔒 " if self.secure else "⚠ без шифрования · "
+            lock = "🔒 " if self.secure else t("⚠ без шифрования · ")
             self.header_subtitle.configure(
-                text=f"{lock}вы вошли как {self.user.get('name')}")
+                text=lock + t("вы вошли как {name}", name=self.user.get("name")))
 
     def _notify_typing(self, event=None):
         """Сообщаем собеседникам, что набираем текст, но не чаще раза в 2 секунды."""
@@ -1782,9 +1893,9 @@ class VelixApp(ctk.CTk):
 
         day, month = date_text.split(".")
         if date_text == datetime.now().strftime("%d.%m"):
-            caption = "Сегодня"
+            caption = t("Сегодня")
         else:
-            caption = f"{int(day)} {MONTHS[int(month) - 1]}"
+            caption = i18n.month_day(int(day), int(month))
 
         self._service_label(caption)
         self.last_sender = None
@@ -1849,7 +1960,7 @@ class VelixApp(ctk.CTk):
         quoted = self.quotes.get(str(item.get("reply_to")))
         if not quoted:
             return
-        what = quoted.get("text") or quoted.get("name") or "вложение"
+        what = quoted.get("text") or quoted.get("name") or t("вложение")
         strip = ctk.CTkFrame(bubble, fg_color=SEPARATOR, corner_radius=6)
         strip.pack(fill="x", padx=13, pady=(6, 2))
         ctk.CTkLabel(strip, text=f"{quoted.get('nick', '')}: {what[:60]}",
@@ -1892,7 +2003,7 @@ class VelixApp(ctk.CTk):
             self._add_quote(bubble, item)
 
         if kind in ("image", "gif"):
-            holder = ctk.CTkLabel(bubble, text="загружаю картинку…",
+            holder = ctk.CTkLabel(bubble, text=t("загружаю картинку…"),
                                   font=self.font_small, text_color=MUTED)
             holder.pack(padx=6, pady=(6, 2))
 
@@ -1901,6 +2012,10 @@ class VelixApp(ctk.CTk):
             elif media_id:
                 self.pending_media[media_id] = ("picture", holder, kind)
                 self.network.send(protocol.fetch_request(media_id))
+            else:
+                # Своё вложение, номер которого мы ещё не знаем: сервер
+                # отправителю его не подтверждает
+                holder.configure(text=name)
         else:
             self._file_card(bubble, own, kind, media_id, name, size, data)
 
@@ -1915,14 +2030,14 @@ class VelixApp(ctk.CTk):
         card = ctk.CTkFrame(bubble, fg_color="transparent")
         card.pack(padx=13, pady=(4, 2))
 
-        caption = KIND_LABEL.get(kind, "Файл")
+        caption = t("Видео") if kind == "video" else t("Файл")
         ctk.CTkLabel(card, text=f"{caption} · {name}", font=self.font_body,
                      text_color=TEXT_OUT if own else TEXT, anchor="w",
                      wraplength=self.wrap_length - 40).pack(fill="x")
         ctk.CTkLabel(card, text=protocol.human_size(size or 0), font=self.font_small,
                      text_color=TIME_OUT if own else TIME_IN, anchor="w").pack(fill="x")
 
-        button = ctk.CTkButton(card, text="Открыть", height=30, corner_radius=8,
+        button = ctk.CTkButton(card, text=t("Открыть"), height=30, corner_radius=8,
                                font=self.font_small, fg_color=ACCENT,
                                hover_color=ACCENT_HOVER, text_color=ON_ACCENT)
         button.pack(fill="x", pady=(6, 2))
@@ -1931,7 +2046,7 @@ class VelixApp(ctk.CTk):
             button.configure(command=lambda: self._open_media(name, data))
         elif media_id:
             def request():
-                button.configure(text="Загружаю…", state="disabled")
+                button.configure(text=t("Загружаю…"), state="disabled")
                 self.pending_media[media_id] = ("file", button, name)
                 self.network.send(protocol.fetch_request(media_id))
             button.configure(command=request)
@@ -1957,7 +2072,7 @@ class VelixApp(ctk.CTk):
         if mode == "picture":
             self._show_picture(widget, extra, data)
         else:
-            widget.configure(text="Открыть", state="normal",
+            widget.configure(text=t("Открыть"), state="normal",
                              command=lambda: self._open_media(extra, data))
             self._open_media(extra, data)
 
@@ -1967,7 +2082,8 @@ class VelixApp(ctk.CTk):
             image = Image.open(io.BytesIO(data))
             frames = self._prepare_frames(image, kind)
         except Exception as error:
-            holder.configure(text=f"не удалось показать картинку: {error}")
+            holder.configure(
+                text=t("не удалось показать картинку: {error}", error=error))
             return
 
         self.images.extend(frames)
@@ -2013,7 +2129,7 @@ class VelixApp(ctk.CTk):
             path.write_bytes(data)
             open_in_system(path)
         except OSError as error:
-            self._service_label(f"Не удалось открыть файл: {error}")
+            self._service_label(t("Не удалось открыть файл: {error}", error=error))
 
     def _scroll_to_bottom(self):
         self.messages.update_idletasks()

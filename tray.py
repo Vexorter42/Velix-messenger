@@ -7,6 +7,8 @@ pystray держит свой цикл событий, поэтому значо
 
 import threading
 
+from i18n import t
+
 try:
     import pystray
     from PIL import Image, ImageDraw
@@ -51,8 +53,9 @@ class Tray:
             return
 
         menu = pystray.Menu(
-            pystray.MenuItem("Открыть Velix", lambda *_: self.on_open(), default=True),
-            pystray.MenuItem("Выйти", lambda *_: self.on_quit()),
+            pystray.MenuItem(t("Открыть Velix"), lambda *_: self.on_open(),
+                             default=True),
+            pystray.MenuItem(t("Выйти"), lambda *_: self.on_quit()),
         )
         self.icon = pystray.Icon("velix", make_icon_image(self.icon_path),
                                  "Velix", menu)

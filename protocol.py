@@ -10,6 +10,9 @@ from pathlib import Path
 
 VERSION = 4
 
+# Общий чат заведён на сервере первым и есть у всех
+GENERAL_ID = 1
+
 # Больше этого файлы не принимаем — и сокет не забьётся, и малина цела
 MAX_MEDIA_SIZE = 25 * 1024 * 1024
 
@@ -191,8 +194,22 @@ def update_header(version, size):
     return encode({"type": "update_blob", "version": version, "size": size})
 
 
-def authfail_message(text):
-    return encode({"type": "authfail", "text": text})
+def _trouble(kind, text, code, args):
+    """Кадр с ошибкой.
+
+    Текст остаётся русским — его поймёт и старый клиент. Новый смотрит
+    на код и подставляет свой перевод.
+    """
+    frame = {"type": kind, "text": text}
+    if code:
+        frame["code"] = code
+        if args:
+            frame["args"] = args
+    return encode(frame)
+
+
+def authfail_message(text, code=None, **args):
+    return _trouble("authfail", text, code, args)
 
 
 def profile_message_result(user):
@@ -205,8 +222,8 @@ def system_message(text):
     return encode({"type": "system", "text": text})
 
 
-def error_message(text):
-    return encode({"type": "error", "text": text})
+def error_message(text, code=None, **args):
+    return _trouble("error", text, code, args)
 
 
 def blob_header(media_id, kind, name):

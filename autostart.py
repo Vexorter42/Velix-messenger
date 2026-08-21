@@ -11,6 +11,8 @@ HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run. Права админи
 import sys
 from pathlib import Path
 
+from i18n import t
+
 VALUE_NAME = "Velix"
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
@@ -54,12 +56,12 @@ def is_enabled(key_path=RUN_KEY):
 def enable(key_path=RUN_KEY):
     """Добавляет Velix в автозапуск. Возвращает текст ошибки или None."""
     if not WINDOWS:
-        return "Автозапуск умеет настраиваться только в Windows."
+        return t("Автозапуск умеет настраиваться только в Windows.")
     try:
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path) as key:
             winreg.SetValueEx(key, VALUE_NAME, 0, winreg.REG_SZ, command())
     except OSError as error:
-        return f"Не удалось прописать автозапуск: {error}"
+        return t("Не удалось прописать автозапуск: {error}", error=error)
     return None
 
 
@@ -74,7 +76,7 @@ def disable(key_path=RUN_KEY):
     except FileNotFoundError:
         return None  # уже не прописан, всё в порядке
     except OSError as error:
-        return f"Не удалось убрать автозапуск: {error}"
+        return t("Не удалось убрать автозапуск: {error}", error=error)
     return None
 
 
