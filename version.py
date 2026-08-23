@@ -3,7 +3,7 @@
 При выпуске новой версии число меняется здесь и в installer.iss.
 """
 
-VERSION = "1.7.1"
+VERSION = "1.8.0"
 
 
 def as_tuple(text):
