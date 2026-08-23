@@ -7,6 +7,7 @@
 
 import asyncio
 import getpass
+import os
 import ssl
 import sys
 import threading
@@ -244,8 +245,11 @@ async def sign_in(websocket, login, password, name, register, invite=""):
 
 
 async def main():
+    # Язык берём из настроек оконного клиента, но VELIX_LANG важнее:
+    # консольный клиент часто запускают на чужой машине
     settings = store.load().get("settings", {})
-    i18n.set_language(settings.get("language", i18n.DEFAULT))
+    i18n.set_language(os.environ.get("VELIX_LANG")
+                      or settings.get("language", i18n.DEFAULT))
 
     print(t("--- Добро пожаловать в Velix ---"))
 
