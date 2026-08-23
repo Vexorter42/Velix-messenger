@@ -1,8 +1,6 @@
 // Мобильный клиент Velix. Говорит с сервером тем же протоколом, что и
 // оконный: JSON-кадры, а содержимое файлов — отдельным двоичным кадром следом.
 
-const MONTHS = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля",
-                "августа", "сентября", "октября", "ноября", "декабря"];
 const AVATAR_COLORS = ["#e17076", "#faa774", "#a695e7", "#7bc862",
                        "#6ec9cb", "#65aadd", "#ee7aae"];
 const MAX_MEDIA = 25 * 1024 * 1024;
@@ -35,6 +33,21 @@ const reactionRows = new Map();// куда рисовать реакции
 const mediaSlots = new Map();
 const avatarSlots = new Map();
 const avatarCache = new Map();
+
+function titleOf(item) {
+  // Общий чат заведён на сервере с русским названием, а показывать его
+  // надо на языке человека
+  if ((item || {}).id === 1) return t("Общий чат");
+  return (item || {}).title || t("Общий чат");
+}
+
+function drawAuthMode() {
+  $("primary").textContent = registerMode ? t("Создать аккаунт") : t("Войти");
+  $("switch-mode").textContent = registerMode ? t("У меня уже есть аккаунт")
+                                              : t("Создать аккаунт");
+  $("auth-subtitle").textContent = registerMode ? t("Нужен код приглашения")
+                                                : t("Вход в аккаунт");
+}
 
 function show(name) {
   for (const [key, element] of Object.entries(screens)) element.hidden = key !== name;
@@ -86,12 +99,12 @@ function connect(credentials) {
   };
 
   socket.onclose = () => {
-    $("status").textContent = "нет связи";
-    if (!screens.chat.hidden) service("Соединение потеряно. Обновите страницу.");
+    $("status").textContent = t("нет связи");
+    if (!screens.chat.hidden) service(t("Соединение потеряно. Обновите страницу."));
   };
 
   socket.onerror = () => {
-    $("auth-error").textContent = "Не удалось связаться с сервером.";
+    $("auth-error").textContent = t("Не удалось связаться с сервером.");
     $("primary").disabled = false;
   };
 }
@@ -105,7 +118,7 @@ function send(message, payload) {
 function handle(message) {
   switch (message.type) {
     case "welcome": onWelcome(message); break;
-    case "authfail": onAuthFail(message.text); break;
+    case "authfail": onAuthFail(fromServer(message)); break;
     case "conversations": onConversations(message.items || []); break;
     case "people": onPeople(message); break;
     case "presence": onPresence(message); break;
@@ -119,7 +132,7 @@ function handle(message) {
     case "profile": onProfile(message.user); break;
     case "push_key": subscribeToPush(message.key); break;
     case "system":
-    case "error": service(message.text); break;
+    case "error": service(fromServer(message)); break;
   }
 }
 
@@ -172,14 +185,14 @@ function onWelcome(message) {
 
 function onAuthFail(text) {
   localStorage.removeItem("velix.token");
-  $("auth-error").textContent = text || "Не пустили в чат.";
+  $("auth-error").textContent = text || t("Не пустили в чат.");
   $("primary").disabled = false;
   show("auth");
 }
 
 function onProfile(updated) {
   user = {...user, ...updated};
-  $("profile-hint").textContent = "Сохранено";
+  $("profile-hint").textContent = t("Сохранено");
   paintAvatar($("my-avatar"), user.name, user.avatar);
 }
 
@@ -212,28 +225,28 @@ function drawList() {
 
     const avatar = document.createElement("div");
     avatar.className = "avatar";
-    paintAvatar(avatar, item.title || "Общий чат", item.avatar);
+    paintAvatar(avatar, titleOf(item), item.avatar);
     row.append(avatar);
 
     const lines = document.createElement("div");
     lines.className = "list-lines";
 
     const title = document.createElement("strong");
-    title.textContent = item.title || "Общий чат";
+    title.textContent = titleOf(item);
     lines.append(title);
 
     const preview = document.createElement("span");
     preview.className = "muted small";
     if (item.last) {
-      const what = item.last.kind === "text" ? item.last.text : "вложение";
+      const what = item.last.kind === "text" ? item.last.text : t("вложение");
       preview.textContent = `${item.last.nick || ""}: ${what}`.slice(0, 42);
     } else {
-      preview.textContent = "нет сообщений";
+      preview.textContent = t("нет сообщений");
     }
     lines.append(preview);
     row.append(lines);
 
-    row.addEventListener("click", () => openConversation(item.id, item.title));
+    row.addEventListener("click", () => openConversation(item.id, titleOf(item)));
     box.append(row);
   }
 
@@ -272,8 +285,8 @@ function openConversation(id, title) {
   conversation = id;
   cancelReply();
   clearMessages();
-  $("chat-title").textContent = title || "Общий чат";
-  paintAvatar($("chat-avatar"), title || "Общий чат",
+  $("chat-title").textContent = title || t("Общий чат");
+  paintAvatar($("chat-avatar"), title || t("Общий чат"),
               (conversations.find((c) => c.id === id) || {}).avatar);
   show("chat");
   send({type: "open", conversation: id});
@@ -299,13 +312,12 @@ function service(text) {
 }
 
 function ensureDate(moment) {
-  const date = moment.toLocaleDateString("ru-RU");
+  const date = moment.toDateString();
   if (date === currentDate) return;
   currentDate = date;
 
-  const today = new Date().toLocaleDateString("ru-RU");
-  service(date === today ? "Сегодня"
-                         : `${moment.getDate()} ${MONTHS[moment.getMonth()]}`);
+  const today = new Date().toDateString();
+  service(date === today ? t("Сегодня") : monthDay(moment));
   lastSender = null;
 }
 
@@ -315,7 +327,7 @@ function onHistory(message) {
     pendingDirect = false;
     conversation = message.conversation;
     const item = conversations.find((c) => c.id === conversation);
-    $("chat-title").textContent = (item || {}).title || "Личная переписка";
+    $("chat-title").textContent = (item || {}).title || t("Личная переписка");
     paintAvatar($("chat-avatar"), (item || {}).title, (item || {}).avatar);
     show("chat");
   } else if (message.conversation !== conversation) {
@@ -336,13 +348,13 @@ function onHistory(message) {
   if (hasOlder) {
     const button = document.createElement("button");
     button.className = "link";
-    button.textContent = "Показать более старые";
+    button.textContent = t("Показать более старые");
     button.addEventListener("click", () => {
       if (oldest) send({type: "open", conversation, before: oldest});
     });
     $("messages").append(button);
   }
-  if (!loadedItems.length) service("Пока тихо. Напишите первым.");
+  if (!loadedItems.length) service(t("Пока тихо. Напишите первым."));
   for (const item of loadedItems) showItem(item);
   if (loadedItems.length) oldest = loadedItems[0].id;
 }
@@ -383,7 +395,7 @@ function showItem(item, localUrl) {
   if (item.kind === "deleted") {
     const gone = document.createElement("div");
     gone.className = "muted small";
-    gone.textContent = "сообщение удалено";
+    gone.textContent = t("сообщение удалено");
     row.append(gone);
     $("messages").append(row);
     scrollDown();
@@ -417,7 +429,7 @@ function showItem(item, localUrl) {
     const strip = document.createElement("div");
     strip.className = "quote";
     strip.textContent = `${quoted.nick || ""}: ` +
-        (quoted.text || quoted.name || "вложение").slice(0, 60);
+        (quoted.text || quoted.name || t("вложение")).slice(0, 60);
     bubble.append(strip);
   }
 
@@ -431,7 +443,7 @@ function showItem(item, localUrl) {
     if (localUrl) {
       fillMedia(slot, item, localUrl);
     } else {
-      slot.textContent = "загружаю…";
+      slot.textContent = t("загружаю…");
       slot.className = "muted small";
       if (item.media) {
         mediaSlots.set(item.media, slot);
@@ -518,7 +530,7 @@ function messageMenu(item, own) {
   if (!item.id) return;
 
   const choice = prompt(
-      "1 — реакция, 2 — ответить" + (own ? ", 3 — удалить" : ""), "1");
+      t("1 — реакция, 2 — ответить") + (own ? t(", 3 — удалить") : ""), "1");
   if (choice === "1") pickEmoji(item.id);
   else if (choice === "2") startReply(item);
   else if (choice === "3" && own) send({type: "delete", id: item.id});
@@ -527,8 +539,8 @@ function messageMenu(item, own) {
 function startReply(item) {
   replyTo = item.id || null;
   if (!replyTo) return;
-  $("reply-text").textContent = `Ответ ${item.nick}: ` +
-      (item.text || item.name || "вложение").slice(0, 40);
+  $("reply-text").textContent = t("Ответ {name}: ", {name: item.nick}) +
+      (item.text || item.name || t("вложение")).slice(0, 40);
   $("reply-bar").hidden = false;
 }
 
@@ -543,13 +555,13 @@ function onDeleted(message) {
   row.innerHTML = "";
   const gone = document.createElement("div");
   gone.className = "muted small";
-  gone.textContent = "сообщение удалено";
+  gone.textContent = t("сообщение удалено");
   row.append(gone);
 }
 
 function onTyping(message) {
   if (message.conversation !== conversation) return;
-  $("status").textContent = `${message.nick} печатает…`;
+  $("status").textContent = t("{name} печатает…", {name: message.nick});
   clearTimeout(typingTimer);
   typingTimer = setTimeout(() => { $("status").textContent = ""; }, 3000);
 }
@@ -557,8 +569,8 @@ function onTyping(message) {
 function onSearch(message) {
   const items = message.items || [];
   clearMessages();
-  service(items.length ? `Найдено: ${items.length}`
-                       : `По запросу «${message.query}» ничего нет`);
+  service(items.length ? t("Найдено: {count}", {count: items.length})
+                       : t("По запросу «{query}» ничего нет", {query: message.query}));
   for (const item of items) showItem(item);
 }
 
@@ -588,8 +600,8 @@ function fillMedia(slot, header, url) {
   const link = document.createElement("a");
   link.className = "file";
   link.href = url;
-  link.download = header.name || "файл";
-  link.textContent = `Скачать ${header.name || "файл"}`;
+  link.download = header.name || t("файл");
+  link.textContent = t("Скачать {name}", {name: header.name || t("файл")});
   slot.append(link);
 }
 
@@ -622,7 +634,10 @@ async function subscribeToPush(key) {
       applicationServerKey: decodeKey(key),
     });
 
-    send({type: "push_subscribe", subscription: subscription.toJSON()});
+    // Язык кладём в подписку: уведомление придёт на том же языке,
+    // на котором человек читает приложение
+    send({type: "push_subscribe",
+          subscription: {...subscription.toJSON(), language}});
   } catch (error) {
     // Уведомления — приятное дополнение: не вышло, и ладно
     console.warn("подписка на уведомления не удалась", error);
@@ -634,7 +649,8 @@ async function subscribeToPush(key) {
 async function sendFile(file) {
   if (!file) return;
   if (file.size > MAX_MEDIA) {
-    service(`«${file.name}» больше 25 МБ, сервер такое не принимает.`);
+    service(t("«{name}» больше 25 МБ, сервер такое не принимает.",
+              {name: file.name}));
     return;
   }
 
@@ -658,11 +674,7 @@ $("switch-mode").addEventListener("click", () => {
   registerMode = !registerMode;
   $("name").hidden = !registerMode;
   $("invite").hidden = !registerMode;
-  $("primary").textContent = registerMode ? "Создать аккаунт" : "Войти";
-  $("switch-mode").textContent = registerMode ? "У меня уже есть аккаунт"
-                                              : "Создать аккаунт";
-  $("auth-subtitle").textContent = registerMode ? "Нужен код приглашения"
-                                                : "Вход в аккаунт";
+  drawAuthMode();
   $("auth-error").textContent = "";
 });
 
@@ -670,7 +682,7 @@ $("primary").addEventListener("click", () => {
   const login = $("login").value.trim();
   const password = $("password").value;
   if (!login || !password) {
-    $("auth-error").textContent = "Заполните логин и пароль.";
+    $("auth-error").textContent = t("Заполните логин и пароль.");
     return;
   }
 
@@ -731,14 +743,14 @@ $("back-to-chat").addEventListener("click", () => { drawList(); show("list"); })
 $("save-profile").addEventListener("click", () => {
   send({type: "profile", name: $("profile-name").value.trim(),
         bio: $("profile-bio").value.trim()});
-  $("profile-hint").textContent = "Сохраняем…";
+  $("profile-hint").textContent = t("Сохраняем…");
 });
 
 $("avatar-file").addEventListener("change", async (event) => {
   const file = event.target.files[0];
   event.target.value = "";
   if (!file) return;
-  $("profile-hint").textContent = "Отправляем фото…";
+  $("profile-hint").textContent = t("Отправляем фото…");
   send({type: "avatar", name: file.name, size: file.size}, await file.arrayBuffer());
 });
 
@@ -748,6 +760,28 @@ $("logout").addEventListener("click", () => {
   if (socket) socket.close();
   show("auth");
 });
+
+$("language").value = language;
+$("language").addEventListener("change", (event) => {
+  setLanguage(event.target.value);
+  applyLanguage();
+  drawAuthMode();
+  drawList();
+  if (loadedItems.length || !screens.chat.hidden) {
+    const item = conversations.find((c) => c.id === conversation);
+    $("chat-title").textContent = titleOf(item);
+    onHistory({conversation, items: loadedItems, more: hasOlder});
+  }
+  // Подписку пересылаем: сервер должен знать новый язык уведомлений
+  if ("Notification" in window && Notification.permission === "granted") {
+    send({type: "push_key"});
+  }
+});
+
+applyLanguage();
+drawAuthMode();
+// Заголовок переписки живёт отдельно: он меняется по ходу дела
+$("chat-title").textContent = t("Общий чат");
 
 // Сохранённый токен пускает без пароля
 const savedToken = localStorage.getItem("velix.token");

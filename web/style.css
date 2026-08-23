@@ -246,3 +246,22 @@ main#messages button.link { align-self: center; width: auto; padding: 8px 16px; 
   width: 48px; height: 48px; font-size: 22px;
   background: var(--sidebar); border-radius: 50%;
 }
+
+/* Строка настройки в профиле: подпись слева, выбор справа */
+.setting {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 6px 0 10px;
+}
+
+.setting select {
+  padding: 10px 12px;
+  border: none;
+  border-radius: 10px;
+  background: var(--input-bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 15px;
+}

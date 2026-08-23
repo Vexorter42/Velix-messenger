@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ru">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -17,18 +17,20 @@
   <div class="card">
     <div class="logo">V</div>
     <h1>Velix</h1>
-    <p id="auth-subtitle" class="muted">Вход в аккаунт</p>
+    <p id="auth-subtitle" class="muted" data-t="Вход в аккаунт">Вход в аккаунт</p>
 
-    <input id="login" type="text" placeholder="Логин" autocomplete="username"
-           autocapitalize="none" autocorrect="off">
-    <input id="password" type="password" placeholder="Пароль"
+    <input id="login" type="text" data-t-placeholder="Логин" placeholder="Логин"
+           autocomplete="username" autocapitalize="none" autocorrect="off">
+    <input id="password" type="password" data-t-placeholder="Пароль" placeholder="Пароль"
            autocomplete="current-password">
-    <input id="name" type="text" placeholder="Как вас зовут" hidden>
-    <input id="invite" type="text" placeholder="Код приглашения" hidden
+    <input id="name" type="text" data-t-placeholder="Как вас зовут"
+           placeholder="Как вас зовут" hidden>
+    <input id="invite" type="text" data-t-placeholder="Код приглашения"
+           placeholder="Код приглашения" hidden
            autocapitalize="characters" autocorrect="off">
 
-    <button id="primary" class="primary">Войти</button>
-    <button id="switch-mode" class="link">Создать аккаунт</button>
+    <button id="primary" class="primary" data-t="Войти">Войти</button>
+    <button id="switch-mode" class="link" data-t="Создать аккаунт">Создать аккаунт</button>
     <p id="auth-error" class="error"></p>
   </div>
 </section>
@@ -37,14 +39,16 @@
 <section id="list" class="screen" hidden>
   <header class="bar">
     <strong class="grow">Velix</strong>
-    <button id="profile-button" class="icon-button" title="Профиль">⋯</button>
+    <button id="profile-button" class="icon-button" data-t-title="Профиль"
+            title="Профиль">⋯</button>
   </header>
 
-  <input id="search" class="search" type="text" placeholder="Поиск по переписке">
+  <input id="search" class="search" type="text" data-t-placeholder="Поиск по переписке"
+         placeholder="Поиск по переписке">
 
   <main class="scroll">
     <div id="conversations"></div>
-    <p id="people-title" class="muted small section" hidden>УЧАСТНИКИ</p>
+    <p id="people-title" class="muted small section" data-t="УЧАСТНИКИ" hidden>УЧАСТНИКИ</p>
     <div id="people"></div>
   </main>
 </section>
@@ -52,7 +56,7 @@
 <!-- Переписка -->
 <section id="chat" class="screen" hidden>
   <header class="bar">
-    <button id="back-to-list" class="icon-button" title="Назад">‹</button>
+    <button id="back-to-list" class="icon-button" data-t-title="Назад" title="Назад">‹</button>
     <div class="avatar" id="chat-avatar">V</div>
     <div class="bar-titles">
       <strong id="chat-title">Общий чат</strong>
@@ -70,8 +74,8 @@
   <form id="composer" autocomplete="off">
     <label class="icon-button" for="file">+</label>
     <input id="file" type="file" accept="image/*,video/*" hidden>
-    <input id="text" type="text" placeholder="Написать сообщение…"
-           autocomplete="off">
+    <input id="text" type="text" data-t-placeholder="Написать сообщение…"
+           placeholder="Написать сообщение…" autocomplete="off">
     <button id="send" class="send" type="submit">➤</button>
   </form>
 </section>
@@ -79,21 +83,32 @@
 <!-- Профиль -->
 <section id="profile" class="screen" hidden>
   <div class="card">
-    <h1>Профиль</h1>
+    <h1 data-t="Профиль">Профиль</h1>
     <div class="avatar big" id="my-avatar">?</div>
-    <label class="link" for="avatar-file">Сменить фото</label>
+    <label class="link" for="avatar-file" data-t="Сменить фото">Сменить фото</label>
     <input id="avatar-file" type="file" accept="image/*" hidden>
 
-    <input id="profile-name" type="text" placeholder="Как вас зовут">
-    <textarea id="profile-bio" rows="3" placeholder="Пара слов о себе"></textarea>
+    <input id="profile-name" type="text" data-t-placeholder="Как вас зовут"
+           placeholder="Как вас зовут">
+    <textarea id="profile-bio" rows="3" data-t-placeholder="Пара слов о себе"
+              placeholder="Пара слов о себе"></textarea>
     <p id="profile-hint" class="muted small"></p>
 
-    <button id="save-profile" class="primary">Сохранить</button>
-    <button id="back-to-chat" class="link">Назад</button>
-    <button id="logout" class="link danger">Выйти из аккаунта</button>
+    <div class="setting">
+      <span class="muted small" data-t="Язык">Язык</span>
+      <select id="language">
+        <option value="en">English</option>
+        <option value="ru">Русский</option>
+      </select>
+    </div>
+
+    <button id="save-profile" class="primary" data-t="Сохранить">Сохранить</button>
+    <button id="back-to-chat" class="link" data-t="Назад">Назад</button>
+    <button id="logout" class="link danger" data-t="Выйти из аккаунта">Выйти из аккаунта</button>
   </div>
 </section>
 
+<script src="i18n.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

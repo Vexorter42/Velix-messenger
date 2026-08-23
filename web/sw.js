@@ -5,7 +5,8 @@ self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim()));
 
 self.addEventListener("push", (event) => {
-  let payload = {title: "Velix", body: "Новое сообщение"};
+  // Текст уведомления присылает сервер — уже на языке подписчика
+  let payload = {title: "Velix", body: ""};
   try {
     payload = {...payload, ...event.data.json()};
   } catch (error) {
