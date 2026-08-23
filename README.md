@@ -1,408 +1,278 @@
+<div align="center">
+
 # Velix
 
-Простой консольный мессенджер на WebSocket: один сервер ретранслирует сообщения
-всем подключённым клиентам.
+**A self-hosted messenger you can actually run yourself.**
+One small Python server, a Windows desktop app, and a mobile web client — all speaking the same WebSocket protocol.
 
-## Требования
+[![Python](https://img.shields.io/badge/python-3.9%2B-3776ab?logo=python&logoColor=white)](https://www.python.org/)
+[![Windows](https://img.shields.io/badge/desktop-Windows-0078d6?logo=windows&logoColor=white)](#windows-app)
+[![Mobile](https://img.shields.io/badge/mobile-PWA-5288c1?logo=pwa&logoColor=white)](#mobile-app)
+[![TLS](https://img.shields.io/badge/transport-TLS%201.3-31a24c)](#encryption)
+[![Languages](https://img.shields.io/badge/interface-EN%20%2F%20RU-a695e7)](#interface-language)
 
-- Python 3.9+
-- Библиотека `websockets`
+English · [Русский](README.ru.md)
+
+<img src="docs/screenshot-chat.png" alt="Velix desktop client" width="760">
+
+</div>
+
+---
+
+## What it is
+
+Velix is a private chat for a handful of people who know each other: a family, a
+group of friends, a small team. You run the server yourself — on a Raspberry Pi
+at home, on a VPS, on any machine that stays on — and nobody else holds your
+messages.
+
+Everything is deliberately small and boring: one SQLite file for history, plain
+files for attachments, no message queue, no container stack, no cloud account.
+The server is a single `python server.py` away.
+
+**What you get**
+
+| | |
+|---|---|
+| 💬 **Conversations** | A main chat everyone shares, plus one-to-one direct chats. Reply quotes, reactions, delete-your-own, full-text search, typing indicator, who-is-online. |
+| 📷 **Attachments** | Photos, GIFs (animated in place), video and any other file. Paste a screenshot straight from the clipboard. Images are compressed server-side — a 7.5 MB phone photo lands at ~400 KB. |
+| 👤 **Accounts** | Invite-only registration, scrypt password hashing, session tokens, brute-force lockout. Profile with a name, a bio and a photo. |
+| 🔒 **Encryption** | TLS 1.3 (`wss://`) with a Let's Encrypt certificate. The client falls back to plain `ws://` only if the server has no certificate — and says so on screen. |
+| 📱 **Phones** | The server serves a mobile web client at the same address and port. Add it to the home screen and it behaves like an app, push notifications included. |
+| 🔄 **Updates** | A button in Settings. The server hands out the fresh build, the client swaps itself and restarts — no reinstall. |
+| 🌍 **Two languages** | English and Russian, switched in Settings, applied instantly. |
+
+## Quick start
 
 ```bash
 pip install -r requirements.txt
-```
-
-Для оконного клиента нужны ещё `customtkinter` и `Pillow` — они в том же
-файле зависимостей. Консольному клиенту хватает `websockets`, а серверу он нужен вместе с
-`Pillow` — тем сжимаются картинки.
-
-## Запуск
-
-Сервер (на машине, которая будет хостом чата):
-
-```bash
 python server.py
 ```
 
-Он слушает порт 8765 на всех сетевых интерфейсах, по IPv4 и по IPv6 — то есть
-принимает подключения и с этой же машины, и из локальной сети.
+The server listens on port 8765 over both IPv4 and IPv6, so it accepts
+connections from the same machine and from the local network.
 
-Клиент — на каждой машине-участнике. Их два, оба говорят с сервером
-одинаково, так что за одним столом могут сидеть и оконный, и консольный.
-
-Окно:
+Then start a client — the desktop app:
 
 ```bash
 python gui.py
 ```
 
-Оформление сделано по мотивам Telegram: слева список чатов с аватаркой и
-последним сообщением, справа переписка — пузыри с именем отправителя и
-временем, свои сообщения справа, разделители по датам, круглая кнопка
-отправки. Enter отправляет сообщение, «Выйти» возвращает к экрану
-подключения, «Тема» переключает светлое и тёмное оформление.
-
-Терминал:
+…or the terminal one, which speaks the same protocol:
 
 ```bash
 python client.py
 ```
 
-Тоже спросит никнейм и адрес сервера. Enter вместо адреса — подключение к
-`localhost`. Дальше просто пишите сообщения; `/exit` или `/quit` — выход.
+In the address field you can type a bare host (`velix.example.org`,
+`192.168.0.225`) or a host with a port (`velix.example.org:9000`). Without a
+port, 8765 is assumed. The client tries `wss://` first and falls back to `ws://`.
 
-В поле адреса можно указать и просто имя хоста (`vexorter.duckdns.org`, `192.168.0.225`),
-и хост с портом через двоеточие (`vexorter.duckdns.org:9000`) — это нужно, если
-наружу проброшен нестандартный порт. Без порта подставляется 8765.
+Registration needs an invite code — mint one on the server:
 
-Порт, который слушает сервер, задаётся константой `PORT` в начале `server.py`.
-Если чат поднимается не в локальной сети, этот порт нужно пробросить на роутере
-и открыть в файрволе.
+```bash
+python invite.py "for Maria"    # issue a code
+python invite.py --list         # see who used what
+```
 
-## Как это устроено
+<div align="center">
+<img src="docs/screenshot-signin.png" alt="Sign-in screen" width="420">
+<img src="docs/screenshot-settings.png" alt="Settings" width="420">
+</div>
 
-- `server.py` — держит множество активных подключений, каждое входящее
-  сообщение сохраняет в базу и рассылает всем, кроме отправителя. Логирует
-  подключения и трафик в консоль.
-- `client.py` — консольный клиент: две параллельные задачи, приём сообщений от
-  сервера и отправка того, что набрано с клавиатуры. Никнейм подставляется в
-  текст сообщения в формате `[ник]: текст`.
-- `gui.py` — оконный клиент на CustomTkinter в телеграмном оформлении. Сеть
-  живёт в отдельном потоке со своим циклом asyncio и общается с интерфейсом
-  через очередь: Tkinter нельзя трогать из чужого потока. Аватарка и её цвет
-  считаются из никнейма, сообщения одного автора подряд группируются под одной
-  подписью.
-- `protocol.py` — общий язык клиента и сервера: JSON-кадры, виды вложений,
-  размерные лимиты.
-- `accounts.py` — пароли, проверки логинов, токены сессий.
-- `store.py` — что клиент помнит между запусками: список аккаунтов и токены.
-- `autostart.py` — запуск вместе с Windows.
-- `tray.py` — значок в области уведомлений.
-- `backup.sh` — резервные копии переписки на сервере.
-- `updates.py`, `version.py` — обновление клиента на месте.
-- `publish-update.sh`, `test-server.sh` — выложить сборку и поднять тестовый
-  сервер рядом с боевым.
-- `invite.py` — коды приглашений.
-- `web/` — мобильный веб-клиент.
-- `push.py` — уведомления на телефон.
-- `media.py` — сжатие картинок на сервере.
-- `storage.py` — история сообщений в SQLite, вложения файлами в каталоге
-  `media` рядом с базой.
+## Windows app
 
-## Сборка приложения для Windows
+The published `Velix.exe` is a single file with Python inside — nothing to
+install alongside it. Ready-made builds live on the
+[Releases](https://github.com/Vexorter42/Velix-messenger/releases) page:
+`VelixSetup.exe` installs into the user profile, so it never asks for
+administrator rights, creates Start-menu and desktop shortcuts, and uninstalls
+the normal way.
 
-Собранный `Velix.exe` — один файл со встроенным Python, зависимости
-пользователю ставить не нужно. Сборка (нужен `pip install pyinstaller`):
+Building it yourself needs `pip install pyinstaller`:
 
 ```bash
 python -m PyInstaller --noconfirm --onefile --windowed --name Velix --icon icon.ico --add-data "icon.ico;." --collect-all customtkinter --collect-all darkdetect gui.py
 ```
 
-Готовый файл появится в `dist/Velix.exe`. Первый запуск занимает несколько
-секунд: однофайловая сборка распаковывается во временный каталог.
-
-Установщик собирается из `installer.iss` компилятором Inno Setup 6 — рядом с
-`installer.iss` должен лежать собранный `Velix.exe`:
+The installer is compiled from `installer.iss` with Inno Setup 6, with the built
+`Velix.exe` sitting next to it:
 
 ```bash
 "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" installer.iss
 ```
 
-Получится `VelixSetup.exe`: ставит программу в профиль пользователя, поэтому
-прав администратора не просит, делает ярлыки в меню «Пуск» и на рабочем столе
-и умеет удаляться штатным способом.
+The binaries are not committed — they are 30-odd megabytes and rebuildable. The
+version lives in `version.py` and must match `AppVersion` in `installer.iss`.
 
-Иконка лежит в `icon.ico` (и `icon.png` для превью). Приложение подхватывает её
-и когда запущено из исходников, и внутри собранного exe.
+## Mobile app
 
-Сами `Velix.exe` и `VelixSetup.exe` в репозиторий не коммитятся — они
-собираются из исходников и весят три десятка мегабайт. Готовые сборки
-выкладываются в разделе Releases:
+Nothing to install on the phone: the server hands out the web client at the same
+address and port as the chat itself.
+
+```
+https://velix.example.org:8765/
+```
+
+It opens in any browser on Android and iPhone. Through the browser menu ("Add to
+home screen") the page installs like a normal app — its own icon, no address
+bar. The session token is remembered, so the password is asked once.
+
+It does what the desktop client does: history, avatars, photos and video from
+the gallery or straight from the camera, profile, reactions, replies, search —
+and push notifications when the app is closed.
+
+The pages live in `web/` and are served from `server.py` itself, so there is no
+second web server and no second port to forward. A plain GET returns a file; a
+request carrying `Upgrade: websocket` goes to the chat.
+
+## Interface language
+
+The interface ships in **English by default** and switches to Russian in
+Settings (desktop) or in the profile screen (mobile). The choice is remembered
+and applied immediately — no restart.
+
+Server-side messages carry a code alongside the Russian text, so an error the
+server generated is shown in the language the reader chose. Push notifications
+follow the language the phone subscribed with.
+
+Translations live in `i18n.py` (desktop, console) and `web/i18n.js` (mobile).
+The key of a translation is the Russian source string, which keeps the code
+readable and makes a missing translation obvious.
+
+## Self-hosting
+
+### Encryption
+
+The server speaks `wss://` — the same TLS that protects banking sites. Point it
+at a certificate and a key:
 
 ```bash
-gh release create v1.0.0 Velix.exe VelixSetup.exe --title "Velix 1.0.0" --notes "Что нового"
+VELIX_CERT=/path/fullchain.pem VELIX_KEY=/path/privkey.pem python server.py
 ```
 
-Версия в `installer.iss` (`AppVersion`) должна совпадать с номером релиза.
+Without those variables it starts on plain `ws://` and says so in the log. The
+client shows an "not encrypted" mark in the chat header in that case.
 
-## Фото, гифки и видео
-
-Отправить вложение можно тремя способами: кнопкой «+» слева от поля ввода,
-перетащив путь через обычный выбор файла, или вставкой из буфера обмена по
-Ctrl+V — работает и снимок экрана, и файл, скопированный в проводнике.
-
-Как что показывается:
-
-- **Картинки** (`png`, `jpg`, `webp`, `bmp`) — прямо в пузыре, ужатые до 360
-  пикселей по большей стороне.
-- **Гифки** — там же и сразу проигрываются, по кругу.
-- **Видео** и всё остальное — карточкой с именем, размером и кнопкой
-  «Открыть»: файл сохраняется во временный каталог и запускается тем
-  проигрывателем, который стоит в системе. Встроенного плеера нет намеренно,
-  он утянул бы за собой десятки мегабайт зависимостей.
-
-### Сжатие
-
-Картинки сервер ужимает один раз при получении: уменьшает до 1600 пикселей по
-большей стороне и перекодирует в JPEG качества 85. Снимок с телефона на 7.5 МБ
-после этого весит около 400 КБ — минус 95% места, на глаз разница не видна.
-Оригинал не сохраняется. На Raspberry Pi 4 такая обработка занимает около
-секунды и идёт в отдельном потоке, так что чат не подвисает.
-
-Что не трогается: гифки (перекодирование лишило бы их анимации), видео и
-прочие файлы (для них нужен ffmpeg), картинки с прозрачностью остаются PNG, а
-если сжатие не дало выигрыша — сохраняется исходный файл. Настройки лежат в
-начале `media.py`, без Pillow сервер просто не сжимает.
-
-Больше 25 МБ сервер не принимает — лимит задан в `protocol.py`. Содержимое
-вложений не летит клиенту само: в истории приходит только описание, а байты
-запрашиваются отдельно, когда доходит очередь показывать. Видео и вовсе
-скачивается только по нажатию кнопки — иначе открытие чата тянуло бы все
-ролики разом.
-
-Файлы лежат на сервере в каталоге `media`, в базе остаётся только ссылка.
-
-## Аккаунты
-
-Войти в чат можно только со своей учётной записью: логин, пароль и имя, под
-которым вас видят собеседники. Имя подставляет сервер, поэтому подписаться
-чужим больше нельзя.
-
-Пароль на сервере не хранится — только результат scrypt со случайной солью.
-После входа сервер выдаёт токен сессии, и клиент запоминает именно его:
-токен можно отозвать кнопкой выхода, пароль так не отзовёшь.
-
-Оконный клиент помнит несколько аккаунтов сразу и показывает их списком при
-запуске — вход в сохранённый аккаунт проходит без пароля, по токену. Кнопка
-«Сменить» возвращает к этому списку, крестик убирает запись. Файл со списком
-лежит в `%APPDATA%\Velix\velix.json`, паролей в нём нет.
-
-В профиле («Профиль» в панели слева) меняются имя, рассказ о себе и фото.
-Аватарка сжимается тем же путём, что и обычные картинки, и показывается
-кружком рядом с сообщениями. Прежнее фото при замене удаляется с сервера.
-
-Консольный клиент спрашивает логин и пароль при запуске и умеет заводить
-новый аккаунт.
-
-## Настройки, трей и автозапуск
-
-Кнопка «Настройки» в панели слева открывает три переключателя:
-
-- **Тёмное оформление** — светлая и тёмная темы.
-- **Прятать в трей при закрытии** — крестик убирает окно к часам, а не
-  выходит из программы. Значок открывает окно обратно, в его меню есть
-  «Выйти». Пока окно спрятано, о новых сообщениях сообщают всплывашки.
-- **Запускать вместе с Windows** — строка в ветке реестра
-  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. Прав администратора
-  не требует, снимается тем же переключателем. Состояние читается из реестра,
-  так что галочка не соврёт, если автозапуск убрали мимо программы.
-
-Настройки сохраняются сразу, рядом со списком аккаунтов. Значку в трее нужен
-пакет `pystray`; без него клиент работает, но закрытие окна означает выход.
-
-## Обновление одной кнопкой
-
-В настройках клиента есть строка с версией и кнопка «Обновить». Свежую сборку
-раздаёт сам сервер: он держит рядом с собой `updates/Velix.exe` и
-`updates/version.txt` с номером версии и сообщает её клиенту при входе. Клиент
-сравнивает с собственной и, если сервер предлагает новее, показывает кнопку.
-
-Выложить новую сборку:
+For a DuckDNS domain the certificate is issued over a DNS challenge, so port 80
+does not need to be free:
 
 ```bash
-~/velix/publish-update.sh /путь/к/Velix.exe 1.4.0
-sudo systemctl restart velix
+sudo certbot certonly --manual --preferred-challenges dns \
+  --manual-auth-hook /usr/local/lib/velix/duckdns-auth.sh \
+  --manual-cleanup-hook /usr/local/lib/velix/duckdns-cleanup.sh \
+  --deploy-hook /usr/local/lib/velix/velix-deploy.sh \
+  -d '*.yourname.duckdns.org'
 ```
 
-Подмена работает так: запущенный exe перезаписать нельзя, зато можно
-переименовать. Старый файл отъезжает под именем `Velix.exe.old`, новый встаёт
-на его место, программа перезапускается и при следующем старте подчищает
-отложенный файл. Если что-то срывается на полпути, старый файл возвращается
-обратно — остаться без программы нельзя.
+Ask for the wildcard only — a domain and its wildcard need the same TXT record,
+and DuckDNS stores just one, so the second request overwrites the first. The
+wildcard covers every subdomain anyway.
 
-Из исходников кнопка не работает и честно об этом пишет: там обновляются
-через git. Версия задаётся в `version.py`, и её же нужно указать в
-`installer.iss`.
+### Who may connect
 
-## Тестовый сервер
-
-Пути к базе и порт задаются переменными окружения, поэтому на одной машине
-уживаются боевой сервер и тестовый, каждый со своими данными:
-
-```bash
-VELIX_PORT=8766 VELIX_DB=~/velix-test/velix.db VELIX_MEDIA=~/velix-test/media python server.py
-```
-
-Проверять что-либо на боевом сервере не нужно: тестовый поднимается рядом и
-живой переписки не касается. На малине для этого лежит `test-server.sh`.
-
-## Резервные копии
-
-`backup.sh` снимает копию базы через `sqlite3 .backup` — снимок получается
-целостным, даже если в этот момент кто-то пишет сообщение. Вложения
-копируются жёсткими ссылками, поэтому место занимают один раз. Копии лежат в
-`~/velix-backups`, хранятся последние 14. Раз в сутки запускается из cron:
-
-```bash
-30 4 * * * $HOME/velix/backup.sh >> $HOME/velix-backups/backup.log 2>&1
-```
-
-## Шифрование
-
-Сервер умеет `wss://` — тот же TLS, которым защищены банковские сайты.
-Достаточно указать сертификат и ключ:
-
-```bash
-VELIX_CERT=/путь/fullchain.pem VELIX_KEY=/путь/privkey.pem python server.py
-```
-
-Без этих переменных сервер поднимается по открытому `ws://` и честно пишет
-об этом в лог.
-
-Клиент сначала пробует `wss://`, и только если сервер его не принял —
-откатывается на `ws://`, показывая в шапке чата пометку «без шифрования» и
-предупреждение в переписке. Схему можно задать и явно: `wss://velix.example.org`.
-
-Сертификат для домена на DuckDNS выпускается через проверку DNS — порт 80 для
-этого не нужен, что удобно, если он занят чем-то ещё:
-
-```bash
-sudo certbot certonly --manual --preferred-challenges dns   --manual-auth-hook /usr/local/lib/velix/duckdns-auth.sh   --manual-cleanup-hook /usr/local/lib/velix/duckdns-cleanup.sh   --deploy-hook /usr/local/lib/velix/velix-deploy.sh   -d '*.вашдомен.duckdns.org'
-```
-
-Просить сертификат сразу и на домен, и на маску нельзя: обеим проверкам нужна
-одна и та же TXT-запись, а DuckDNS хранит только одну — вторая затрёт первую.
-Маски достаточно, она покрывает все поддомены.
-
-Обновляется сертификат сам, таймером certbot. После обновления deploy-hook
-кладёт свежие файлы туда, где их читает сервер, и перезапускает службу.
-
-Чего тут нет: сквозного шифрования. Сообщения защищены в пути, но на сервере
-лежат в открытом виде — тот, у кого есть доступ к малине, их прочитает.
-
-## Переписки
-
-Общий чат есть у всех и всегда. Кроме него бывают личные диалоги на двоих:
-щёлкните по человеку в списке участников — переписка заведётся сама, а
-собеседник увидит её у себя. Чужие личные переписки недоступны ни на чтение,
-ни на запись.
-
-Рядом со списком переписок видно, кто сейчас в сети. История подгружается
-кусками по пятьдесят сообщений, кнопка «Показать более старые» достаёт то,
-что выше.
-
-Что умеет каждое сообщение:
-
-- **Ответ цитатой** — в окне правой кнопкой, на телефоне долгим нажатием.
-- **Удаление** — только своего; вложение при этом стирается с диска сервера.
-- **Реакции** — короткий набор смайликов, повторное нажатие снимает свой.
-- **Поиск** по тексту, только в доступных вам переписках.
-
-Пока человек набирает текст, собеседники видят «печатает…».
-
-## Уведомления на телефон
-
-Когда приложение закрыто, сервер присылает уведомление через службу самого
-браузера. Для этого при первом входе телефон спрашивает разрешение.
-
-Работает это на паре ключей VAPID: приватный лежит рядом с базой в
-`push-keys.json` и создаётся сам при первом запуске, публичный уходит в
-браузер. Уведомления получают только те, кого нет в сети — тем, кто сидит в
-чате, они не нужны. Протухшие подписки сервер забывает сам.
-
-Нужна библиотека `pywebpush`; без неё чат работает, просто молча.
-
-## Мобильное приложение
-
-Телефону ничего ставить не нужно: сервер сам раздаёт веб-клиент по тому же
-адресу и порту, что и чат.
-
-```
-https://velix.вашдомен.duckdns.org:8765/
-```
-
-Открывается в любом браузере на Android и iPhone. Через меню браузера
-(«Добавить на главный экран» / «На экран "Домой"») страница ставится как
-обычное приложение: со своей иконкой, без адресной строки. Токен входа
-запоминается, так что пароль спрашивают один раз.
-
-Умеет то же, что и оконный клиент: переписку с историей, аватарки, отправку
-фото и видео из галереи или прямо с камеры, профиль с фото и рассказом о себе.
-
-Страницы лежат в каталоге `web`, раздаются прямо из `server.py` — отдельный
-веб-сервер и второй проброс порта не нужны. Обычный GET получает файл,
-запрос с заголовком `Upgrade: websocket` уходит в чат. Каталог можно увести
-переменной `VELIX_WEB`.
-
-## Приглашения и защита от перебора
-
-Зарегистрироваться можно только по одноразовому коду приглашения. Коды
-выдаются на сервере:
-
-```bash
-python invite.py "для Димы"    # выдать код
-python invite.py --list        # посмотреть, кто чем воспользовался
-```
-
-Код одноразовый: после регистрации перестаёт работать. Регистрацию можно
-открыть всем, поставив `VELIX_OPEN_REGISTRATION=1`, но тогда в чат зайдёт
-любой, кто знает адрес.
-
-После пяти неудачных попыток входа логин запирается на пять минут — перебирать
-пароль бесполезно. Другие аккаунты при этом работают как ни в чём не бывало.
-
-## Кто может подключиться
-
-По умолчанию сервер принимает всех, кто дозвонился до порта. Если задать
-переменную окружения `VELIX_ALLOWED_HOSTS`, он станет пускать только тех, кто
-пришёл по перечисленным именам:
+By default the server accepts anyone who reaches the port. Set
+`VELIX_ALLOWED_HOSTS` and it will only accept connections that arrived under the
+listed names:
 
 ```bash
 VELIX_ALLOWED_HOSTS=velix.example.org,localhost python server.py
 ```
 
-Имя берётся из заголовка `Host`, который клиент отправляет при рукопожатии,
-остальным сервер отвечает `403` и в лог пишет, по какому имени стучались.
-Порт и регистр букв не важны, несколько имён перечисляются через запятую.
+The name comes from the `Host` header of the handshake; everyone else gets a
+`403`. This is not a security boundary — a `Host` header is forged in a minute —
+but a scanner sweeping addresses and ports does not know the name and never
+reaches the chat.
 
-Это удобно, когда провайдер динамического DNS отдаёт всю маску поддоменов:
-подключиться получится только по тому имени, которое вы раздали, а не по любому
-соседнему и не по голому IP-адресу. Но защитой это не является — заголовок
-`Host` подделывается вручную за минуту. Смысл в другом: случайный сканер,
-который перебирает адреса и порты, имени не знает и до чата не доберётся.
+### Backups
 
-Клиенты такой отказ показывают отдельным сообщением: «Сервер не принимает
-подключение по этому адресу».
+`backup.sh` snapshots the database through `sqlite3 .backup`, so the copy is
+consistent even if someone is writing a message at that moment. Attachments are
+copied as hard links and cost disk space only once. The last 14 copies are kept
+in `~/velix-backups`. Once a day from cron:
 
-## История сообщений
+```bash
+30 4 * * * $HOME/velix/backup.sh >> $HOME/velix-backups/backup.log 2>&1
+```
 
-Сервер пишет все сообщения в файл `velix.db` рядом с `server.py` (таблица
-`messages`: никнейм, текст, время в UTC). Когда клиент подключается, сервер
-первым делом присылает ему последние 50 сообщений — со временем отправки и
-пометками «последние сообщения» / «конец истории», — и только потом
-подключает к живому чату.
+### A test server next to the live one
 
-Сколько сообщений отдавать и где держать базу, задают константы
-`HISTORY_LIMIT` и `DB_PATH` в начале `storage.py`. Чтобы очистить историю,
-достаточно остановить сервер и удалить `velix.db` — при следующем запуске он
-создаст базу заново. Файл базы в git не попадает (он в `.gitignore`).
+Paths and the port come from environment variables, so a spare server can live
+on the same machine with its own data and never touch the real conversations:
 
-Отдельная библиотека для этого не нужна: модуль `sqlite3` входит в стандартную
-поставку Python.
+```bash
+VELIX_PORT=8766 VELIX_DB=~/velix-test/velix.db VELIX_MEDIA=~/velix-test/media python server.py
+```
 
-## Ограничения
+### Handing out an update
 
-Это учебный проект, а не защищённый мессенджер:
+The server keeps `updates/Velix.exe` and `updates/version.txt` next to itself
+and tells every client which version it has. If it is newer than the client's,
+the Update button in Settings lights up.
 
-- Трафик идёт открытым `ws://`, без шифрования. Всё, что проходит через сеть,
-  читается в открытом виде.
-- Никнейм формируется на стороне клиента и никак не проверяется сервером —
-  любой участник может представиться кем угодно.
-- Сквозного шифрования нет: переписка защищена в пути, но на сервере лежит
-  в открытом виде.
-- Групп больше двух человек нет: только общий чат и личные диалоги.
-- Нет ограничения длины сообщения и защиты от флуда.
-- История хранится в открытом виде: у любого, кто имеет доступ к файлу
-  `velix.db`, есть вся переписка.
+```bash
+~/velix/publish-update.sh /path/to/Velix.exe 1.8.0
+sudo systemctl restart velix
+```
 
-Не стоит использовать для чего-то, что не должно попасть в чужие руки.
+The swap works around the fact that a running exe cannot be overwritten but can
+be renamed: the old file moves aside as `Velix.exe.old`, the new one takes its
+place, the app restarts and cleans up the leftover on the next start. If
+anything fails halfway, the old file comes back.
+
+### Environment variables
+
+| Variable | What it does |
+|---|---|
+| `VELIX_PORT` | Port to listen on (default 8765) |
+| `VELIX_DB` | Path to the SQLite file |
+| `VELIX_MEDIA` | Directory for attachments |
+| `VELIX_WEB` | Directory with the web client |
+| `VELIX_CERT`, `VELIX_KEY` | TLS certificate and key |
+| `VELIX_ALLOWED_HOSTS` | Comma-separated host names allowed to connect |
+| `VELIX_OPEN_REGISTRATION` | `1` drops the invite requirement |
+| `VELIX_UPDATES` | Directory with the build handed out to clients |
+| `VELIX_PUSH_KEYS` | Path to the VAPID key file |
+| `VELIX_LANG` | Interface language of the console client |
+
+## How it is built
+
+| File | What lives there |
+|---|---|
+| `server.py` | Connections, delivery, presence, the web client, updates |
+| `storage.py` | SQLite: messages, users, sessions, conversations, reactions, subscriptions |
+| `protocol.py` | The shared language: JSON frames, attachment kinds, size limits |
+| `accounts.py` | Passwords, login checks, session tokens |
+| `media.py` | Server-side image compression |
+| `push.py` | Push notifications through the browser's own service |
+| `gui.py` | The desktop client, in Telegram's visual language |
+| `client.py` | The terminal client |
+| `web/` | The mobile web client |
+| `i18n.py`, `web/i18n.js` | Interface translations |
+| `store.py` | What the client remembers between runs |
+| `tray.py`, `autostart.py` | Tray icon, start with Windows |
+| `updates.py`, `version.py` | Updating in place |
+| `invite.py` | Invite codes |
+| `backup.sh`, `publish-update.sh`, `test-server.sh` | Server-side chores |
+
+A message travels as a JSON text frame; the bytes of an attachment follow in a
+separate binary frame. The desktop client keeps the network on its own thread
+with its own asyncio loop and talks to the interface through a queue — Tkinter
+must not be touched from another thread.
+
+Attachment payloads are never pushed to a client on their own: history carries
+only the description, and the bytes are requested when it is time to show them.
+Video is fetched only when the button is pressed, so opening a chat does not
+drag in every clip at once.
+
+## Limits, honestly
+
+- **No end-to-end encryption.** Messages are protected in transit, but they sit
+  in the clear on the server — whoever controls the machine can read them.
+- **No group chats beyond two people**: a shared main chat and direct chats.
+- **No flood protection** and no message length limit.
+- **The history file is not encrypted**: anyone with access to `velix.db` has
+  the whole correspondence.
+
+It is a private messenger for people who trust the person running the server —
+not a tool for keeping secrets from that person.
