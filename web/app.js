@@ -16,7 +16,7 @@ let registerMode = false;
 let pendingHeader = null;      // описание вложения, ждущее свои байты
 let lastSender = null;
 let currentDate = null;
-let conversation = 1;          // какая переписка открыта
+let conversation = null;       // какая переписка открыта
 let conversations = [];
 let people = [];
 let online = new Set();
@@ -31,6 +31,11 @@ const rows = new Map();        // номер сообщения -> его ряд
 const reactions = new Map();   // номер сообщения -> {смайлик: [кто поставил]}
 const reactionRows = new Map();// куда рисовать реакции
 const mediaSlots = new Map();
+const tickRows = new Map();    // номер (или свой временный) -> значок галочек
+const states = new Map();      // номер -> sent | delivered | read
+const keptMedia = new Map();   // содержимое картинок: их могут копировать
+let localNumber = 0;           // свои сообщения до ответа сервера
+let pendingGroup = false;      // ждём номер только что созданной группы
 const avatarSlots = new Map();
 const avatarCache = new Map();
 
@@ -119,6 +124,9 @@ function handle(message) {
   switch (message.type) {
     case "welcome": onWelcome(message); break;
     case "authfail": onAuthFail(fromServer(message)); break;
+    case "ack": onAck(message); break;
+    case "receipts": onReceipts(message); break;
+    case "conversation": onConversation(message); break;
     case "conversations": onConversations(message.items || []); break;
     case "people": onPeople(message); break;
     case "presence": onPresence(message); break;
@@ -201,6 +209,80 @@ function onProfile(updated) {
 function onConversations(items) {
   conversations = items;
   drawList();
+  if (conversation === null && items.length) {
+    openConversation(items[0].id, titleOf(items[0]));
+  }
+}
+
+function onConversation(message) {
+  // Появилась новая переписка — например, группа, куда нас позвали
+  const item = message.item || {};
+  if (!item.id) return;
+
+  conversations = conversations.filter((known) => known.id !== item.id);
+  conversations.push(item);
+  drawList();
+  if (pendingGroup || conversation === null) {
+    pendingGroup = false;
+    openConversation(item.id, titleOf(item));
+    show("chat");
+  }
+}
+
+function newGroup() {
+  // Заводим группу: название и галочки против имён — в той же карточке,
+  // что и меню сообщения
+  const others = people.filter((person) => person.id !== user.id);
+  if (!others.length) {
+    service(t("Пока некого позвать в группу."));
+    return;
+  }
+
+  const sheet = document.createElement("div");
+  sheet.className = "sheet";
+  const card = document.createElement("div");
+  card.className = "sheet-card";
+  sheet.append(card);
+
+  const name = document.createElement("input");
+  name.type = "text";
+  name.placeholder = t("Название группы");
+  card.append(name);
+
+  const chosen = new Map();
+  for (const person of others) {
+    const line = document.createElement("label");
+    line.className = "sheet-check";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    line.append(box, document.createTextNode(" " + person.name));
+    card.append(line);
+    chosen.set(person.id, box);
+  }
+
+  const create = document.createElement("button");
+  create.className = "primary";
+  create.textContent = t("Создать");
+  create.addEventListener("click", () => {
+    const members = [...chosen.entries()]
+        .filter(([, box]) => box.checked).map(([id]) => id);
+    if (!name.value.trim() || !members.length) return;
+    pendingGroup = true;
+    send({type: "group", title: name.value.trim(), members});
+    sheet.remove();
+  });
+
+  const cancel = document.createElement("button");
+  cancel.className = "sheet-button";
+  cancel.textContent = t("Отмена");
+  cancel.addEventListener("click", () => sheet.remove());
+
+  card.append(create, cancel);
+  sheet.addEventListener("click", (event) => {
+    if (event.target === sheet) sheet.remove();
+  });
+  document.body.append(sheet);
+  name.focus();
 }
 
 function onPeople(message) {
@@ -218,6 +300,14 @@ function onPresence(message) {
 function drawList() {
   const box = $("conversations");
   box.innerHTML = "";
+
+  if (!conversations.length) {
+    const hint = document.createElement("p");
+    hint.className = "muted small section";
+    hint.textContent =
+        t("Создайте группу или напишите кому-нибудь из списка участников.");
+    box.append(hint);
+  }
 
   for (const item of conversations) {
     const row = document.createElement("div");
@@ -296,6 +386,7 @@ function openConversation(id, title) {
 
 function clearMessages() {
   $("messages").innerHTML = "";
+  emptyHint = null;
   rows.clear();
   reactionRows.clear();
   lastSender = null;
@@ -309,6 +400,15 @@ function service(text) {
   element.textContent = text;
   $("messages").append(element);
   scrollDown();
+  return element;
+}
+
+let emptyHint = null;
+
+function clearHint() {
+  // Подсказка «пока тихо» уходит, как только появляется первое сообщение
+  if (emptyHint) emptyHint.remove();
+  emptyHint = null;
 }
 
 function ensureDate(moment) {
@@ -354,9 +454,11 @@ function onHistory(message) {
     });
     $("messages").append(button);
   }
-  if (!loadedItems.length) service(t("Пока тихо. Напишите первым."));
+  if (!loadedItems.length) emptyHint = service(t("Пока тихо. Напишите первым."));
   for (const item of loadedItems) showItem(item);
   if (loadedItems.length) oldest = loadedItems[0].id;
+  markRead(loadedItems.filter((item) => item.id && item.user !== user.id)
+                      .map((item) => item.id));
 }
 
 let loadedItems = [];
@@ -381,6 +483,7 @@ function bumpPreview(message) {
 }
 
 function showItem(item, localUrl) {
+  clearHint();
   const moment = item.at ? new Date(item.at) : new Date();
   ensureDate(moment);
 
@@ -454,8 +557,19 @@ function showItem(item, localUrl) {
 
   const time = document.createElement("div");
   time.className = "time";
-  time.textContent = moment.toLocaleTimeString("ru-RU",
+  time.textContent = moment.toLocaleTimeString([],
       {hour: "2-digit", minute: "2-digit"});
+  if (own) {
+    // Галочки: одна — сервер принял, две — дошло до всех, голубые — прочли
+    const mark = document.createElement("span");
+    const key = item.id || item.local;
+    time.append(" ", mark);
+    if (key !== undefined) {
+      tickRows.set(key, mark);
+      paintTick(key, item.state || states.get(key)
+                     || (item.id ? "sent" : "sending"));
+    }
+  }
   bubble.append(time);
 
   // Долгое нажатие на пузыре — ответить или удалить своё
@@ -479,6 +593,40 @@ function showItem(item, localUrl) {
   row.append(bubble);
   $("messages").append(row);
   scrollDown();
+}
+
+const TICKS = {sending: "·", sent: "✓", delivered: "✓✓", read: "✓✓"};
+
+function paintTick(key, state) {
+  states.set(key, state);
+  const mark = tickRows.get(key);
+  if (!mark) return;
+  mark.textContent = TICKS[state] || "✓";
+  mark.className = state === "read" ? "tick read" : "tick";
+}
+
+function onAck(message) {
+  // Сервер принял сообщение и назвал его настоящий номер
+  if (!message.id) return;
+  for (const item of loadedItems) {
+    if (message.local && item.local === message.local) item.id = message.id;
+  }
+  const mark = tickRows.get(message.local);
+  tickRows.delete(message.local);
+  states.delete(message.local);
+  if (mark) tickRows.set(message.id, mark);
+  paintTick(message.id, states.get(message.id) || "sent");
+}
+
+function onReceipts(message) {
+  for (const [key, state] of Object.entries(message.items || {})) {
+    paintTick(Number(key), state);
+  }
+}
+
+function markRead(ids) {
+  if (!ids.length || conversation === null || document.hidden) return;
+  send({type: "read", conversation, ids});
 }
 
 function drawReactions(messageId) {
@@ -529,11 +677,59 @@ function pickEmoji(messageId) {
 function messageMenu(item, own) {
   if (!item.id) return;
 
-  const choice = prompt(
-      t("1 — реакция, 2 — ответить") + (own ? t(", 3 — удалить") : ""), "1");
-  if (choice === "1") pickEmoji(item.id);
-  else if (choice === "2") startReply(item);
-  else if (choice === "3" && own) send({type: "delete", id: item.id});
+  const sheet = document.createElement("div");
+  sheet.className = "sheet";
+
+  const card = document.createElement("div");
+  card.className = "sheet-card";
+  sheet.append(card);
+
+  const close = () => sheet.remove();
+  const action = (label, handler) => {
+    const button = document.createElement("button");
+    button.className = "sheet-button";
+    button.textContent = label;
+    button.addEventListener("click", () => { close(); handler(); });
+    card.append(button);
+  };
+
+  action(t("Ответить"), () => startReply(item));
+  action(t("Реакция"), () => pickEmoji(item.id));
+  action(t("Копировать"), () => copyItem(item));
+  if (own) action(t("Удалить"), () => send({type: "delete", id: item.id}));
+  action(t("Отмена"), () => {});
+
+  sheet.addEventListener("click", (event) => {
+    if (event.target === sheet) close();
+  });
+  document.body.append(sheet);
+}
+
+async function copyItem(item) {
+  // Текст ложится текстом, картинка — картинкой: так её можно вставить
+  // в другой чат, а не пересылать ссылкой
+  try {
+    if ((item.kind || "text") === "text") {
+      await navigator.clipboard.writeText(item.text || "");
+      service(t("Скопировано"));
+      return;
+    }
+
+    const data = keptMedia.get(item.media);
+    if (!data) {
+      service(t("Сначала откройте вложение"));
+      return;
+    }
+    if (item.kind === "image" && window.ClipboardItem) {
+      const png = await (await fetch(data)).blob();
+      await navigator.clipboard.write([new ClipboardItem({[png.type]: png})]);
+    } else {
+      await navigator.clipboard.writeText(item.name || "");
+    }
+    service(t("Скопировано"));
+  } catch (error) {
+    service(t("Не удалось скопировать: {error}", {error}));
+  }
 }
 
 function startReply(item) {
@@ -584,7 +780,9 @@ function fillMedia(slot, header, url) {
     picture.alt = header.name || "";
     picture.loading = "lazy";
     picture.addEventListener("load", scrollDown);
+    picture.addEventListener("click", () => showFull(url));
     slot.append(picture);
+    if (header.media) keptMedia.set(header.media, url);
     return;
   }
 
@@ -603,6 +801,24 @@ function fillMedia(slot, header, url) {
   link.download = header.name || t("файл");
   link.textContent = t("Скачать {name}", {name: header.name || t("файл")});
   slot.append(link);
+}
+
+function showFull(url) {
+  // Картинка во весь экран: закрывается по нажатию в любом месте
+  const viewer = document.createElement("div");
+  viewer.className = "viewer";
+
+  const picture = document.createElement("img");
+  picture.src = url;
+  viewer.append(picture);
+
+  const close = document.createElement("button");
+  close.className = "viewer-close";
+  close.textContent = "✕";
+  viewer.append(close);
+
+  viewer.addEventListener("click", () => viewer.remove());
+  document.body.append(viewer);
 }
 
 function scrollDown() {
@@ -659,12 +875,17 @@ async function sendFile(file) {
              : file.type === "image/gif" ? "gif"
              : file.type.startsWith("image/") ? "image" : "file";
 
-  send({type: "media", nick: user.name, kind, name: file.name, size: file.size,
-        conversation, reply_to: replyTo}, buffer);
+  if (conversation === null) return;
 
-  showItem({nick: user.name, user: user.id, kind, name: file.name,
-            size: file.size, at: new Date().toISOString()},
-           URL.createObjectURL(file));
+  const local = `l${++localNumber}`;
+  send({type: "media", nick: user.name, kind, name: file.name, size: file.size,
+        conversation, reply_to: replyTo, local}, buffer);
+
+  const item = {nick: user.name, user: user.id, kind, name: file.name,
+                size: file.size, at: new Date().toISOString(), local,
+                conversation};
+  loadedItems.push(item);
+  showItem(item, URL.createObjectURL(file));
   cancelReply();
 }
 
@@ -700,10 +921,16 @@ $("composer").addEventListener("submit", (event) => {
   const text = field.value.trim();
   if (!text) return;
 
+  if (conversation === null) return;
+
   field.value = "";
-  send({type: "text", nick: user.name, text, conversation, reply_to: replyTo});
-  showItem({nick: user.name, user: user.id, text, kind: "text",
-            at: new Date().toISOString(), reply_to: replyTo});
+  const local = `l${++localNumber}`;
+  send({type: "text", nick: user.name, text, conversation, reply_to: replyTo,
+        local});
+  const item = {nick: user.name, user: user.id, text, kind: "text", local,
+                at: new Date().toISOString(), reply_to: replyTo, conversation};
+  loadedItems.push(item);
+  showItem(item);
   cancelReply();
 });
 
@@ -760,6 +987,8 @@ $("logout").addEventListener("click", () => {
   if (socket) socket.close();
   show("auth");
 });
+
+$("new-group").addEventListener("click", newGroup);
 
 $("language").value = language;
 $("language").addEventListener("change", (event) => {
