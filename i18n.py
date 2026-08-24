@@ -280,6 +280,13 @@ ENGLISH = {
     "{nick} прислал {label}: {name} ({size}) — открыть можно в оконном клиенте":
         "{nick} sent {label}: {name} ({size}) — open it in the desktop client",
     "--- последние сообщения ---": "--- recent messages ---",
+    "--- переписки ---": "--- conversations ---",
+    "[Система]: вас пока никуда не позвали":
+        "[System]: nobody has invited you anywhere yet",
+    "[Система]: новая переписка «{title}»":
+        "[System]: new conversation “{title}”",
+    "[Система]: нужен номер переписки из /chats":
+        "[System]: give the conversation number from /chats",
     "--- конец истории ---": "--- end of history ---",
     "[Система]: {text}": "[System]: {text}",
     "[Ошибка]: {text}": "[Error]: {text}",

@@ -22,6 +22,10 @@ from i18n import t
 
 PORT = 8765
 
+# Общего чата больше нет: пишем в ту переписку, что открыта сейчас.
+# Список приходит от сервера при входе и по мере появления новых.
+chats = {"items": [], "current": None}
+
 
 def kind_label(kind):
     """Как назвать вложение в строке чата."""
@@ -129,6 +133,17 @@ def format_item(item):
     return f"[{stamp}] {body}"
 
 
+def show_chats():
+    """Печатает список переписок с номерами для команды /go."""
+    if not chats["items"]:
+        show(t("[Система]: вас пока никуда не позвали"))
+        return
+    show(t("--- переписки ---"))
+    for number, item in enumerate(chats["items"], start=1):
+        here = " *" if item["id"] == chats["current"] else ""
+        show(f"{number}. {item.get('title') or '?'}{here}")
+
+
 def show(line):
     """Печатает строку, не затирая набранное приглашение ввода."""
     print(f"\r{line}\n> ", end="", flush=True)
@@ -165,7 +180,20 @@ async def receive_messages(websocket, stop_event):
                 continue
 
             kind = message.get("type")
-            if kind == "history":
+            if kind == "conversations":
+                chats["items"] = message.get("items") or []
+                if chats["current"] is None and chats["items"]:
+                    chats["current"] = chats["items"][0]["id"]
+                show_chats()
+            elif kind == "conversation":
+                item = message.get("item") or {}
+                chats["items"] = [known for known in chats["items"]
+                                  if known["id"] != item.get("id")] + [item]
+                if chats["current"] is None:
+                    chats["current"] = item.get("id")
+                show(t("[Система]: новая переписка «{title}»",
+                       title=item.get("title") or "?"))
+            elif kind == "history":
                 items = message.get("items", [])
                 if items:
                     show(t("--- последние сообщения ---"))
@@ -202,9 +230,28 @@ async def send_messages(websocket, nickname, outgoing, stop_event):
                 print(t("Выход из Velix..."))
                 return
 
-            if message.strip():
+            if message.strip().startswith("/chats"):
+                show_chats()
+                continue
+
+            if message.strip().startswith("/go"):
+                parts = message.split()
                 try:
-                    await websocket.send(protocol.text_message(nickname, message))
+                    chosen = chats["items"][int(parts[1]) - 1]
+                except (IndexError, ValueError):
+                    show(t("[Система]: нужен номер переписки из /chats"))
+                    continue
+                chats["current"] = chosen["id"]
+                await websocket.send(protocol.open_request(chosen["id"]))
+                continue
+
+            if message.strip():
+                if chats["current"] is None:
+                    show(t("[Система]: вас пока никуда не позвали"))
+                    continue
+                try:
+                    await websocket.send(protocol.text_message(
+                        nickname, message, chats["current"]))
                 except websockets.exceptions.ConnectionClosed:
                     print("\n" + t("[Система]: Сообщение не отправлено, "
                                     "соединение закрыто."))

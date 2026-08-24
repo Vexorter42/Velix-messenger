@@ -371,6 +371,7 @@ class VelixApp(ctk.CTk):
         self.local_number = 0          # свои сообщения до ответа сервера
         self.pending_group = False     # ждём номер только что созданной группы
         self.kept_media = {}           # содержимое картинок для копирования
+        self.viewer = None             # открытый просмотр картинки
 
         # Файл, оставшийся от прошлого обновления, больше не нужен
         if updates.running_as_exe():
@@ -992,6 +993,7 @@ class VelixApp(ctk.CTk):
         self.last_sender = None
         self.current_date = None
         self.loaded_items = []
+        self.viewer = None
 
         self._build_auth_view()
         self._build_chat_view()
@@ -1100,12 +1102,13 @@ class VelixApp(ctk.CTk):
             return
 
         self.message_entry.delete(0, "end")
+        now = datetime.now()
+        # Свой номер нужен, чтобы узнать сообщение в ответе сервера
+        self.local_number += 1
+        local = f"l{self.local_number}"
         self.network.send(protocol.text_message(self.user.get("name", ""), text,
                                                 self.conversation, self.reply_to,
                                                 local))
-        now = datetime.now()
-        self.local_number += 1
-        local = f"l{self.local_number}"
         item = {"text": text, "kind": "text", "local": local,
                 "nick": self.user.get("name", t("Я")),
                 "user": self.user.get("id"),
@@ -2345,7 +2348,12 @@ class VelixApp(ctk.CTk):
 
     def _show_full(self, data, kind):
         """Открывает картинку во всё окно приложения."""
+        # Второй просмотр поверх первого не нужен: закрываем прежний
+        if self.viewer is not None:
+            self._close_full(self.viewer)
+
         overlay = ctk.CTkFrame(self, fg_color=("#101820", "#05080c"))
+        self.viewer = overlay
         overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
 
         box = (max(self.winfo_width() - 80, 240), max(self.winfo_height() - 80, 240))
@@ -2353,7 +2361,7 @@ class VelixApp(ctk.CTk):
             image = Image.open(io.BytesIO(data))
             frames = self._prepare_frames(image, kind, box)
         except Exception as error:
-            overlay.destroy()
+            self._close_full(overlay)
             self._service_label(
                 t("не удалось показать картинку: {error}", error=error))
             return
@@ -2379,6 +2387,8 @@ class VelixApp(ctk.CTk):
             self._animate(picture, frames, 0, delay)
 
     def _close_full(self, overlay):
+        """Закрывает просмотр картинки."""
+        self.viewer = None
         self.unbind("<Escape>")
         for widget in list(self.animations):
             if not widget.winfo_exists():
