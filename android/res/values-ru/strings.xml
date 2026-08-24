@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="server_title">Адрес сервера</string>
+    <string name="server_failed">Не получилось достучаться до сервера. Проверьте адрес.</string>
+    <string name="connect">Подключиться</string>
+</resources>

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Домашний сервер бывает и без сертификата: разрешаем открытый ws://,
+     но только по явно введённому адресу — трафик наружу всё равно идёт
+     по https, когда сервер это умеет. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

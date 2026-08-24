@@ -34,3 +34,8 @@ VelixSetup.exe
 
 # Ключи для уведомлений
 push-keys.json
+
+# Сборка приложения для Android
+android/build/
+android/*.keystore
+android/*.apk

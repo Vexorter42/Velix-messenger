@@ -1007,6 +1007,21 @@ $("language").addEventListener("change", (event) => {
   }
 });
 
+// Кнопка «назад» в приложении для Android: из переписки — к списку,
+// из списка — выход. Обёртка спрашивает об этом страницу.
+window.velixBack = () => {
+  if (document.querySelector(".viewer, .sheet")) {
+    document.querySelector(".viewer, .sheet").remove();
+    return true;
+  }
+  if (!screens.chat.hidden || !screens.profile.hidden) {
+    drawList();
+    show("list");
+    return true;
+  }
+  return false;
+};
+
 applyLanguage();
 drawAuthMode();
 // Заголовок переписки живёт отдельно: он меняется по ходу дела

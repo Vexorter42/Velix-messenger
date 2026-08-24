@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Velix</string>
+    <string name="server_title">Server address</string>
+    <string name="server_failed">Could not reach the server. Check the address.</string>
+    <string name="connect">Connect</string>
+</resources>
