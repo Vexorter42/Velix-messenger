@@ -34,11 +34,12 @@ The server is a single `python server.py` away.
 
 | | |
 |---|---|
-| 💬 **Conversations** | A main chat everyone shares, plus one-to-one direct chats. Reply quotes, reactions, delete-your-own, full-text search, typing indicator, who-is-online. |
-| 📷 **Attachments** | Photos, GIFs (animated in place), video and any other file. Paste a screenshot straight from the clipboard. Images are compressed server-side — a 7.5 MB phone photo lands at ~400 KB. |
+| 💬 **Conversations** | Groups you create and invite people into, plus one-to-one direct chats. Reply quotes, reactions, copy, delete-your-own, full-text search, typing indicator, who-is-online. |
+| ✓✓ **Delivery ticks** | One grey tick — the server took it. Two grey — it reached everyone in the conversation. Two blue — everyone read it. |
+| 📷 **Attachments** | Photos, GIFs (animated in place), video and any other file. Tap a photo to open it full-window. Paste a screenshot straight from the clipboard. Images are compressed server-side — a 7.5 MB phone photo lands at ~400 KB. |
 | 👤 **Accounts** | Invite-only registration, scrypt password hashing, session tokens, brute-force lockout. Profile with a name, a bio and a photo. |
 | 🔒 **Encryption** | TLS 1.3 (`wss://`) with a Let's Encrypt certificate. The client falls back to plain `ws://` only if the server has no certificate — and says so on screen. |
-| 📱 **Phones** | The server serves a mobile web client at the same address and port. Add it to the home screen and it behaves like an app, push notifications included. |
+| 📱 **Phones** | An Android app (`Velix.apk`), or the mobile web client the server hands out at the same address — add it to the home screen and it behaves like an app, push notifications included. |
 | 🔄 **Updates** | A button in Settings. The server hands out the fresh build, the client swaps itself and restarts — no reinstall. |
 | 🌍 **Two languages** | English and Russian, switched in Settings, applied instantly. |
 
@@ -107,7 +108,25 @@ version lives in `version.py` and must match `AppVersion` in `installer.iss`.
 
 ## Mobile app
 
-Nothing to install on the phone: the server hands out the web client at the same
+There are two ways onto a phone.
+
+**The Android app.** `Velix.apk` is on the
+[Releases](https://github.com/Vexorter42/Velix-messenger/releases) page. It is
+signed by hand rather than by a store, so Android will ask permission to install
+it. On first launch it asks for the server address and remembers it.
+
+It is a thin shell around the same web client the server hands out — on purpose:
+one set of screens for phone and browser means a new feature shows up in both at
+once. The trade-off is that a WebView has no Push API, so **notifications with
+the app closed only work through the web client below**.
+
+Building it needs the Android SDK and takes no Gradle:
+
+```bash
+python android/build.py
+```
+
+**The web client.** Nothing to install: the server hands it out at the same
 address and port as the chat itself.
 
 ```
@@ -248,6 +267,7 @@ anything fails halfway, the old file comes back.
 | `gui.py` | The desktop client, in Telegram's visual language |
 | `client.py` | The terminal client |
 | `web/` | The mobile web client |
+| `android/` | The Android app and its Gradle-free build script |
 | `i18n.py`, `web/i18n.js` | Interface translations |
 | `store.py` | What the client remembers between runs |
 | `tray.py`, `autostart.py` | Tray icon, start with Windows |
@@ -269,7 +289,8 @@ drag in every clip at once.
 
 - **No end-to-end encryption.** Messages are protected in transit, but they sit
   in the clear on the server — whoever controls the machine can read them.
-- **No group chats beyond two people**: a shared main chat and direct chats.
+- **Groups have no admins**: anyone in a group can invite anyone else, and
+  nobody can be removed.
 - **No flood protection** and no message length limit.
 - **The history file is not encrypted**: anyone with access to `velix.db` has
   the whole correspondence.
