@@ -847,15 +847,15 @@ def _search_sync(user_id, query, limit):
             " LEFT JOIN users u ON u.id = m.user_id"
             " JOIN conversations c ON c.id = m.conversation_id"
             " WHERE m.deleted = 0 AND m.kind = 'text' AND m.text LIKE ?"
-            "   AND (c.kind = 'room'"
-            "        OR c.id IN (SELECT conversation_id FROM members WHERE user_id = ?))"
+            "   AND c.id IN (SELECT conversation_id FROM members WHERE user_id = ?)"
             " ORDER BY m.id DESC LIMIT ?",
             (pattern, user_id, limit),
         ).fetchall()
 
     found = []
     for row in rows:
-        item = _row_to_item(row[:13])
+        # Последний столбец — переписка, остальное разбирает общий помощник
+        item = _row_to_item(row[:-1])
         item["conversation"] = row[13]
         found.append(item)
     return found

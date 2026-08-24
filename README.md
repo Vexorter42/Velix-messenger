@@ -3,11 +3,11 @@
 # Velix
 
 **A self-hosted messenger you can actually run yourself.**
-One small Python server, a Windows desktop app, and a mobile web client — all speaking the same WebSocket protocol.
+One small Python server, a Windows desktop app, a native Android app and a mobile web client — all speaking the same WebSocket protocol.
 
 [![Python](https://img.shields.io/badge/python-3.9%2B-3776ab?logo=python&logoColor=white)](https://www.python.org/)
 [![Windows](https://img.shields.io/badge/desktop-Windows-0078d6?logo=windows&logoColor=white)](#windows-app)
-[![Mobile](https://img.shields.io/badge/mobile-PWA-5288c1?logo=pwa&logoColor=white)](#mobile-app)
+[![Android](https://img.shields.io/badge/mobile-Android-3ddc84?logo=android&logoColor=white)](#phones)
 [![TLS](https://img.shields.io/badge/transport-TLS%201.3-31a24c)](#encryption)
 [![Languages](https://img.shields.io/badge/interface-EN%20%2F%20RU-a695e7)](#interface-language)
 
@@ -34,12 +34,12 @@ The server is a single `python server.py` away.
 
 | | |
 |---|---|
-| 💬 **Conversations** | Groups you create and invite people into, plus one-to-one direct chats. Reply quotes, reactions, copy, delete-your-own, full-text search, typing indicator, who-is-online. |
+| 💬 **Conversations** | Groups you create and invite people into, plus one-to-one direct chats. Reply, react, pin, forward, copy, delete-your-own, full-text search, typing indicator, who-is-online — from a message menu that opens on right-click or long-press. |
 | ✓✓ **Delivery ticks** | One grey tick — the server took it. Two grey — it reached everyone in the conversation. Two blue — everyone read it. |
 | 📷 **Attachments** | Photos, GIFs (animated in place), video and any other file. Tap a photo to open it full-window. Paste a screenshot straight from the clipboard. Images are compressed server-side — a 7.5 MB phone photo lands at ~400 KB. |
 | 👤 **Accounts** | Invite-only registration, scrypt password hashing, session tokens, brute-force lockout. Profile with a name, a bio and a photo. |
 | 🔒 **Encryption** | TLS 1.3 (`wss://`) with a Let's Encrypt certificate. The client falls back to plain `ws://` only if the server has no certificate — and says so on screen. |
-| 📱 **Phones** | An Android app (`Velix.apk`), or the mobile web client the server hands out at the same address — add it to the home screen and it behaves like an app, push notifications included. |
+| 📱 **Phones** | A native Android app (`Velix.apk`) — real Android views, not a web page in a frame. The web client is still there for iPhones and for push notifications. |
 | 🔄 **Updates** | A button in Settings. The server hands out the fresh build, the client swaps itself and restarts — no reinstall. |
 | 🌍 **Two languages** | English and Russian, switched in Settings, applied instantly. |
 
@@ -106,40 +106,48 @@ The installer is compiled from `installer.iss` with Inno Setup 6, with the built
 The binaries are not committed — they are 30-odd megabytes and rebuildable. The
 version lives in `version.py` and must match `AppVersion` in `installer.iss`.
 
-## Mobile app
+## Phones
 
-There are two ways onto a phone.
+### The Android app
 
-**The Android app.** `Velix.apk` is on the
-[Releases](https://github.com/Vexorter42/Velix-messenger/releases) page. It is
-signed by hand rather than by a store, so Android will ask permission to install
-it. On first launch it asks for the server address and remembers it.
+`Velix.apk` on the
+[Releases](https://github.com/Vexorter42/Velix-messenger/releases) page is a
+native client: the screens are ordinary Android views and it speaks the same
+WebSocket protocol as the desktop app. It is signed by hand rather than by a
+store, so Android will ask permission to install it. On first launch it asks
+for the server address and remembers it.
 
-It is a thin shell around the same web client the server hands out — on purpose:
-one set of screens for phone and browser means a new feature shows up in both at
-once. The trade-off is that a WebView has no Push API, so **notifications with
-the app closed only work through the web client below**.
+It does what the desktop client does: sign-in and registration, the list of
+chats and members, direct chats and groups, history, photos from the gallery
+and full-screen viewing, delivery ticks, reactions, replies, pin, forward,
+copy, delete — and both languages.
 
-Building it needs the Android SDK and takes no Gradle:
+There is no third-party library inside: even the WebSocket is hand-written
+(`android/java/org/vexorter/velix/Ws.java`), because the Android framework has
+no client of its own and pulling one in would drag Gradle along with it. The
+build needs only the Android SDK:
 
 ```bash
 python android/build.py
 ```
 
-**The web client.** Nothing to install: the server hands it out at the same
-address and port as the chat itself.
+**What it does not do yet:** notifications while the app is closed. That needs
+Firebase, a Google account and a project of its own; the web client below does
+it through the browser instead.
+
+### The web client
+
+Nothing to install, and the way onto an iPhone: the server hands it out at the
+same address and port as the chat itself.
 
 ```
 https://velix.example.org:8765/
 ```
 
-It opens in any browser on Android and iPhone. Through the browser menu ("Add to
-home screen") the page installs like a normal app — its own icon, no address
-bar. The session token is remembered, so the password is asked once.
-
-It does what the desktop client does: history, avatars, photos and video from
-the gallery or straight from the camera, profile, reactions, replies, search —
-and push notifications when the app is closed.
+Through the browser menu ("Add to home screen") the page installs like a normal
+app — its own icon, no address bar. The session token is remembered, so the
+password is asked once. It carries the same features, plus push notifications
+when the app is closed.
 
 The pages live in `web/` and are served from `server.py` itself, so there is no
 second web server and no second port to forward. A plain GET returns a file; a
@@ -267,7 +275,7 @@ anything fails halfway, the old file comes back.
 | `gui.py` | The desktop client, in Telegram's visual language |
 | `client.py` | The terminal client |
 | `web/` | The mobile web client |
-| `android/` | The Android app and its Gradle-free build script |
+| `android/` | The native Android app: WebSocket, protocol, screens, Gradle-free build |
 | `i18n.py`, `web/i18n.js` | Interface translations |
 | `store.py` | What the client remembers between runs |
 | `tray.py`, `autostart.py` | Tray icon, start with Windows |
