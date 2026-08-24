@@ -68,6 +68,10 @@ ON_ACCENT = "#ffffff"
 ONLINE = ("#31a24c", "#4dc866")
 OFFLINE = ("#d1435b", "#ec5f75")
 
+# Галочки о доставке: серые, пока сообщение не прочитали, и голубые после
+TICK_SENT = ("#8a9aa9", "#7da8d3")
+TICK_READ = ("#34b7f1", "#7ee2ff")
+
 AVATAR_COLORS = ["#e17076", "#faa774", "#a695e7", "#7bc862",
                  "#6ec9cb", "#65aadd", "#ee7aae"]
 
@@ -348,7 +352,7 @@ class VelixApp(ctk.CTk):
         self.available_update = None   # что сервер предлагает поставить
         self.secure = False            # идёт ли соединение по TLS
 
-        self.conversation = 1          # какая переписка открыта
+        self.conversation = None       # какая переписка открыта
         self.conversations = []        # что показывать в списке слева
         self.people = []               # все участники
         self.online = set()            # кто сейчас в сети
@@ -362,6 +366,11 @@ class VelixApp(ctk.CTk):
         self.reactions = {}            # номер сообщения -> {смайлик: [кто]}
         self.reaction_rows = {}        # где рисовать реакции у сообщения
         self.loaded_items = []         # что сейчас показано в ленте
+        self.ticks = {}                # номер сообщения -> надпись с галочками
+        self.states = {}               # номер сообщения -> sent/delivered/read
+        self.local_number = 0          # свои сообщения до ответа сервера
+        self.pending_group = False     # ждём номер только что созданной группы
+        self.kept_media = {}           # содержимое картинок для копирования
 
         # Файл, оставшийся от прошлого обновления, больше не нужен
         if updates.running_as_exe():
@@ -658,6 +667,11 @@ class VelixApp(ctk.CTk):
             corner_radius=10, border_width=0, fg_color=INPUT_BG, text_color=TEXT,
             placeholder_text_color=MUTED, font=self.font_small)
         self.search_entry.pack(fill="x", padx=14, pady=(0, 8))
+
+        ctk.CTkButton(sidebar, text="＋ " + t("Новая группа"), height=30,
+                      corner_radius=8, font=self.font_small, fg_color=INPUT_BG,
+                      hover_color=SEPARATOR, text_color=MUTED,
+                      command=self._new_group).pack(fill="x", padx=14, pady=(0, 8))
         self.search_entry.bind("<Return>", lambda event: self._on_search())
         self.search_entry.bind("<Control-KeyPress>", self._on_entry_shortcut)
 
@@ -1082,14 +1096,17 @@ class VelixApp(ctk.CTk):
 
     def _on_send(self):
         text = self.message_entry.get().strip()
-        if not text or self.network.websocket is None:
+        if not text or self.network.websocket is None or self.conversation is None:
             return
 
         self.message_entry.delete(0, "end")
         self.network.send(protocol.text_message(self.user.get("name", ""), text,
-                                                self.conversation, self.reply_to))
+                                                self.conversation, self.reply_to,
+                                                local))
         now = datetime.now()
-        item = {"text": text, "kind": "text",
+        self.local_number += 1
+        local = f"l{self.local_number}"
+        item = {"text": text, "kind": "text", "local": local,
                 "nick": self.user.get("name", t("Я")),
                 "user": self.user.get("id"),
                 "at": now.astimezone().isoformat(),
@@ -1248,15 +1265,17 @@ class VelixApp(ctk.CTk):
             return
 
         kind = protocol.kind_of(name)
+        self.local_number += 1
+        local = f"l{self.local_number}"
         self.network.send(protocol.media_header(self.user.get("name", ""), kind,
                                                 name, len(data), self.conversation,
-                                                self.reply_to), data)
+                                                self.reply_to, local), data)
 
         now = datetime.now()
         self._ensure_date(now.strftime("%d.%m"))
         self.loaded_items.append({"kind": kind, "name": name, "size": len(data),
                                   "nick": self.user.get("name", t("Я")),
-                                  "user": self.user.get("id"),
+                                  "user": self.user.get("id"), "local": local,
                                   "at": datetime.now().astimezone().isoformat(),
                                   "conversation": self.conversation})
         self._add_media_bubble(self.user.get("name", t("Я")), own=True, kind=kind,
@@ -1399,6 +1418,16 @@ class VelixApp(ctk.CTk):
             self.conversations = message.get("items") or []
             self._refresh_side_list()
             self._update_header()
+            if self.conversation is None and self.conversations:
+                self._open(self.conversations[0]["id"])
+            elif not self.conversations:
+                self._nothing_open()
+        elif kind == "conversation":
+            self._on_conversation(message)
+        elif kind == "ack":
+            self._on_ack(message)
+        elif kind == "receipts":
+            self._on_receipts(message)
         elif kind == "people":
             self.people = message.get("items") or []
             self.online = set(message.get("online") or [])
@@ -1457,6 +1486,8 @@ class VelixApp(ctk.CTk):
         self.loaded_items.append(message)
         self._show_item(message)
         self._bump_preview(message, notify=False)
+        if message.get("id"):
+            self._mark_read([message["id"]])
 
     def _bump_preview(self, message, notify=True):
         """Обновляет строчку в списке слева, не открывая переписку.
@@ -1683,7 +1714,89 @@ class VelixApp(ctk.CTk):
         self.pending_direct = True
         self.network.send(protocol.direct_request(user_id))
 
+    def _nothing_open(self):
+        """Переписок нет — показываем, что с этим делать."""
+        self.conversation = None
+        self._clear_messages()
+        self.empty_hint = self._service_label(
+            t("Создайте группу или напишите кому-нибудь из списка участников."))
+        self.header_title.configure(text="Velix")
+        self.header_subtitle.configure(text="")
+
+    def _on_conversation(self, message):
+        """Появилась новая переписка — например, группа, куда нас позвали."""
+        item = message.get("item") or {}
+        if not item.get("id"):
+            return
+
+        self.conversations = [known for known in self.conversations
+                              if known["id"] != item["id"]] + [item]
+        self._refresh_side_list()
+        if self.pending_group or self.conversation is None:
+            self.pending_group = False
+            self._open(item["id"])
+
+    def _new_group(self):
+        """Окошко создания группы: название и кого позвать."""
+        if self.network.websocket is None:
+            return
+
+        window = ctk.CTkToplevel(self)
+        window.title(t("Новая группа"))
+        window.geometry("340x470")
+        window.transient(self)
+        window.configure(fg_color=SIDEBAR)
+        # Окно захватывает ввод не сразу: Windows отдаёт его с задержкой
+        window.after(200, window.grab_set)
+
+        name = ctk.CTkEntry(window, placeholder_text=t("Название группы"),
+                            height=40, corner_radius=10, border_width=1,
+                            border_color=SEPARATOR, fg_color=INPUT_BG,
+                            text_color=TEXT, font=self.font_body)
+        name.pack(fill="x", padx=18, pady=(18, 10))
+        name.bind("<Control-KeyPress>", self._on_entry_shortcut)
+
+        ctk.CTkLabel(window, text=t("Кого позвать"), font=self.font_small,
+                     text_color=MUTED, anchor="w").pack(fill="x", padx=20)
+
+        box = ctk.CTkScrollableFrame(window, fg_color="transparent")
+        box.pack(fill="both", expand=True, padx=12, pady=6)
+
+        chosen = {}
+        for person in self.people:
+            if person["id"] == self.user.get("id"):
+                continue
+            variable = tkinter.IntVar()
+            ctk.CTkCheckBox(box, text=person["name"], variable=variable,
+                            font=self.font_body, text_color=TEXT, fg_color=ACCENT,
+                            hover_color=ACCENT_HOVER).pack(anchor="w", pady=4)
+            chosen[person["id"]] = variable
+
+        row = ctk.CTkFrame(window, fg_color="transparent")
+        row.pack(fill="x", padx=18, pady=(0, 16))
+        ctk.CTkButton(row, text=t("Отмена"), height=38, corner_radius=10,
+                      font=self.font_small, fg_color=INPUT_BG,
+                      hover_color=SEPARATOR, text_color=MUTED,
+                      command=window.destroy).pack(side="left", expand=True,
+                                                   fill="x", padx=(0, 6))
+        ctk.CTkButton(row, text=t("Создать"), height=38, corner_radius=10,
+                      font=self.font_button, fg_color=ACCENT,
+                      hover_color=ACCENT_HOVER, text_color=ON_ACCENT,
+                      command=lambda: self._create_group(window, name, chosen)).pack(
+            side="left", expand=True, fill="x", padx=(6, 0))
+
+    def _create_group(self, window, name, chosen):
+        title = name.get().strip()
+        members = [user_id for user_id, box in chosen.items() if box.get()]
+        if not title or not members:
+            return
+        self.pending_group = True
+        self.network.send(protocol.group_request(title, members))
+        window.destroy()
+
     def _update_header(self):
+        if self.conversation is None:
+            return
         item = next((c for c in self.conversations if c["id"] == self.conversation),
                     None)
         title = self._title_of(item)
@@ -1702,7 +1815,12 @@ class VelixApp(ctk.CTk):
 
     def _show_history(self, message):
         """Показывает пришедший кусок истории."""
-        if self.pending_direct and message.get("conversation") != self.conversation:
+        if self.conversation is None:
+            # Первая переписка после входа: какую сервер прислал, ту и открыли
+            self.conversation = message.get("conversation")
+            self._refresh_side_list()
+            self._update_header()
+        elif self.pending_direct and message.get("conversation") != self.conversation:
             # Это история личной переписки, которую мы только что попросили
             self.pending_direct = False
             self.conversation = message.get("conversation")
@@ -1737,6 +1855,9 @@ class VelixApp(ctk.CTk):
             self.empty_hint = self._service_label(t("Пока тихо. Напишите первым."))
         for item in self.loaded_items:
             self._show_item(item)
+
+        self._mark_read([item["id"] for item in self.loaded_items
+                         if item.get("id") and item.get("user") != self.user.get("id")])
         if self.loaded_items:
             self.oldest = self.loaded_items[0].get("id")
 
@@ -1819,6 +1940,7 @@ class VelixApp(ctk.CTk):
         """Правая кнопка на сообщении: ответить или удалить своё."""
         menu = tkinter.Menu(self, tearoff=0)
         menu.add_command(label=t("Ответить"), command=lambda: self._start_reply(item))
+        menu.add_command(label=t("Копировать"), command=lambda: self._copy_item(item))
         if item.get("id"):
             menu.add_command(label=t("Реакция"),
                              command=lambda: self._emoji_menu(item["id"]))
@@ -1829,6 +1951,53 @@ class VelixApp(ctk.CTk):
             menu.tk_popup(event.x_root, event.y_root)
         finally:
             menu.grab_release()
+
+    def _copy_item(self, item):
+        """Кладёт сообщение в буфер: текст — текстом, картинку — картинкой."""
+        if item.get("kind", "text") == "text":
+            self.clipboard_clear()
+            self.clipboard_append(item.get("text", ""))
+            self._service_label(t("Скопировано"))
+            return
+
+        media_id = item.get("media")
+        if not media_id:
+            return
+
+        data = self.kept_media.get(media_id)
+        if data is None:
+            # Содержимое ещё не забирали с сервера — попросим и вернёмся сюда
+            self.pending_media[media_id] = ("copy", None, item)
+            self.network.send(protocol.fetch_request(media_id))
+            return
+        self._copy_bytes(item, data)
+
+    def _copy_bytes(self, item, data):
+        """Картинка ложится в буфер картинкой, остальное — файлом.
+
+        Гифку и видео как картинку класть нельзя: буфер хранит один кадр, и
+        движение пропадёт. Файл же вставится и в чат, и в проводник.
+        """
+        suffix = Path(item.get("name") or "").suffix[:10]
+        path = Path(tempfile.gettempdir()) / f"velix-copy-{item.get('media')}{suffix}"
+        quoted = str(path).replace("'", "''")
+
+        if item.get("kind") == "image":
+            script = ("Add-Type -AssemblyName System.Windows.Forms,System.Drawing;"
+                      f"$picture=[System.Drawing.Image]::FromFile('{quoted}');"
+                      "[System.Windows.Forms.Clipboard]::SetImage($picture)")
+        else:
+            script = f"Set-Clipboard -LiteralPath '{quoted}'"
+
+        try:
+            path.write_bytes(data)
+            subprocess.run(["powershell", "-NoProfile", "-STA", "-Command", script],
+                           check=True, capture_output=True,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        except Exception as error:
+            self._service_label(t("Не удалось скопировать: {error}", error=error))
+            return
+        self._service_label(t("Скопировано"))
 
     def _on_deleted(self, message):
         """Сообщение убрали — гасим его на месте."""
@@ -1943,10 +2112,20 @@ class VelixApp(ctk.CTk):
         return bubble, grouped
 
     def _add_time(self, bubble, own, time_text, item=None):
+        item = item or {}
         if time_text:
-            ctk.CTkLabel(bubble, text=time_text, font=self.font_small,
-                         text_color=TIME_OUT if own else TIME_IN, anchor="e").pack(
-                fill="x", padx=13, pady=(0, 5))
+            line = ctk.CTkFrame(bubble, fg_color="transparent")
+            line.pack(fill="x", padx=13, pady=(0, 5))
+            if own:
+                # Галочки: одна — сервер принял, две — дошло до всех,
+                # голубые — все прочитали
+                tick = ctk.CTkLabel(line, text="", font=self.font_small,
+                                    text_color=TICK_SENT, width=24, anchor="e")
+                tick.pack(side="right")
+                self._remember_tick(item, tick)
+            ctk.CTkLabel(line, text=time_text, font=self.font_small,
+                         text_color=TIME_OUT if own else TIME_IN,
+                         anchor="e").pack(side="right")
 
         # Полоска реакций живёт под сообщением и появляется, когда есть что показать
         message_id = (item or {}).get("id")
@@ -1954,6 +2133,68 @@ class VelixApp(ctk.CTk):
             holder = ctk.CTkFrame(bubble, fg_color="transparent")
             self.reaction_rows[message_id] = holder
             self._draw_reactions(message_id)
+
+    def _remember_tick(self, item, label):
+        """Запоминает, где рисовать галочки, и сразу их рисует."""
+        key = item.get("id") or item.get("local")
+        if key is None:
+            return
+
+        self.ticks[key] = label
+        state = item.get("state") or self.states.get(key)
+        if state is None:
+            # У своего сообщения до ответа сервера номера ещё нет
+            state = "sending" if item.get("id") is None else "sent"
+        self._paint_tick(key, state)
+
+    def _paint_tick(self, key, state):
+        """Рисует галочки одного сообщения."""
+        self.states[key] = state
+        label = self.ticks.get(key)
+        if label is None or not label.winfo_exists():
+            return
+        marks = {"sending": "·", "sent": "✓", "delivered": "✓✓", "read": "✓✓"}
+        label.configure(text=marks.get(state, "✓"),
+                        text_color=TICK_READ if state == "read" else TICK_SENT)
+
+    def _on_ack(self, message):
+        """Сервер принял сообщение и назвал его настоящий номер."""
+        local = message.get("local")
+        message_id = message.get("id")
+        if not message_id:
+            return
+
+        for item in self.loaded_items:
+            if local and item.get("local") == local:
+                item["id"] = message_id
+
+        label = self.ticks.pop(local, None)
+        self.states.pop(local, None)
+        if label is not None:
+            self.ticks[message_id] = label
+        row = self.rows.pop(local, None)
+        if row is not None:
+            self.rows[message_id] = row
+        self._paint_tick(message_id, self.states.get(message_id, "sent"))
+
+    def _on_receipts(self, message):
+        """Сообщения дошли или их прочитали."""
+        for key, state in (message.get("items") or {}).items():
+            try:
+                self._paint_tick(int(key), state)
+            except (TypeError, ValueError):
+                continue
+
+    def _mark_read(self, ids):
+        """Говорит серверу, что эти сообщения прочитаны.
+
+        Спрятанное окно не считается: человек их не видел.
+        """
+        if not ids or self.conversation is None:
+            return
+        if self.state() != "normal":
+            return
+        self.network.send(protocol.read_request(self.conversation, ids))
 
     def _add_quote(self, bubble, item):
         """Показывает, на что отвечает это сообщение."""
@@ -1988,8 +2229,8 @@ class VelixApp(ctk.CTk):
 
         self._add_time(bubble, own, time_text, item)
         self._attach_menu((bubble, label), item, own)
-        if item.get("id"):
-            self.rows[item["id"]] = bubble.master
+        if item.get("id") or item.get("local"):
+            self.rows[item.get("id") or item["local"]] = bubble.master
         self._scroll_to_bottom()
 
     # ----------------------------------------------------------- вложения
@@ -2064,12 +2305,18 @@ class VelixApp(ctk.CTk):
             self._fill_avatar(media_id, data)
             return
 
+        # Картинку держим при себе: её могут попросить скопировать
+        if data and len(data) <= protocol.MAX_MEDIA_SIZE // 5:
+            self.kept_media[media_id] = data
+
         waiting = self.pending_media.pop(media_id, None)
         if waiting is None:
             return
 
         mode, widget, extra = waiting
-        if mode == "picture":
+        if mode == "copy":
+            self._copy_bytes(extra, data)
+        elif mode == "picture":
             self._show_picture(widget, extra, data)
         else:
             widget.configure(text=t("Открыть"), state="normal",
@@ -2087,25 +2334,69 @@ class VelixApp(ctk.CTk):
             return
 
         self.images.extend(frames)
-        holder.configure(text="", image=frames[0])
+        holder.configure(text="", image=frames[0], cursor="hand2")
+        holder.bind("<Button-1>",
+                    lambda event, bytes_=data, k=kind: self._show_full(bytes_, k))
 
         if len(frames) > 1:
             delay = max(30, int(image.info.get("duration", 80)))
             self.animations[holder] = frames
             self._animate(holder, frames, 0, delay)
 
-    def _prepare_frames(self, image, kind):
+    def _show_full(self, data, kind):
+        """Открывает картинку во всё окно приложения."""
+        overlay = ctk.CTkFrame(self, fg_color=("#101820", "#05080c"))
+        overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
+
+        box = (max(self.winfo_width() - 80, 240), max(self.winfo_height() - 80, 240))
+        try:
+            image = Image.open(io.BytesIO(data))
+            frames = self._prepare_frames(image, kind, box)
+        except Exception as error:
+            overlay.destroy()
+            self._service_label(
+                t("не удалось показать картинку: {error}", error=error))
+            return
+
+        self.images.extend(frames)
+        picture = ctk.CTkLabel(overlay, text="", image=frames[0])
+        picture.place(relx=0.5, rely=0.5, anchor="center")
+
+        ctk.CTkButton(overlay, text="✕", width=36, height=36, corner_radius=18,
+                      font=self.font_button, fg_color=INPUT_BG,
+                      hover_color=SEPARATOR, text_color=TEXT,
+                      command=lambda: self._close_full(overlay)).place(
+            relx=1.0, rely=0.0, x=-20, y=20, anchor="ne")
+
+        for widget in (overlay, picture):
+            widget.configure(cursor="hand2")
+            widget.bind("<Button-1>", lambda event: self._close_full(overlay))
+        self.bind("<Escape>", lambda event: self._close_full(overlay))
+
+        if len(frames) > 1:
+            delay = max(30, int(image.info.get("duration", 80)))
+            self.animations[picture] = frames
+            self._animate(picture, frames, 0, delay)
+
+    def _close_full(self, overlay):
+        self.unbind("<Escape>")
+        for widget in list(self.animations):
+            if not widget.winfo_exists():
+                self.animations.pop(widget, None)
+        overlay.destroy()
+
+    def _prepare_frames(self, image, kind, box=MAX_PICTURE):
         """Готовит кадры: обычной картинке — один, гифке — все по очереди."""
         if kind != "gif":
             picture = image.convert("RGBA")
-            picture.thumbnail(MAX_PICTURE, Image.LANCZOS)
+            picture.thumbnail(box, Image.LANCZOS)
             return [ctk.CTkImage(light_image=picture, dark_image=picture,
                                  size=picture.size)]
 
         frames = []
         for frame in ImageSequence.Iterator(image):
             picture = frame.convert("RGBA")
-            picture.thumbnail(MAX_PICTURE, Image.LANCZOS)
+            picture.thumbnail(box, Image.LANCZOS)
             frames.append(ctk.CTkImage(light_image=picture, dark_image=picture,
                                        size=picture.size))
             if len(frames) >= MAX_GIF_FRAMES:

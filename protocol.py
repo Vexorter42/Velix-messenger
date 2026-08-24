@@ -8,9 +8,9 @@
 import json
 from pathlib import Path
 
-VERSION = 4
+VERSION = 5
 
-# Общий чат заведён на сервере первым и есть у всех
+# Первая группа заведена на сервере первой; общего чата больше нет
 GENERAL_ID = 1
 
 # Больше этого файлы не принимаем — и сокет не забьётся, и малина цела
@@ -64,15 +64,23 @@ def decode(frame):
 
 # --- то, что отправляет клиент ---
 
-def text_message(nickname, text, conversation=1, reply_to=None):
+def text_message(nickname, text, conversation=1, reply_to=None, local=None):
+    """Сообщение в переписку.
+
+    local — номер, который отправитель дал сообщению у себя. Сервер
+    вернёт его в ack вместе с настоящим номером: до этого у сообщения
+    на экране ещё нет ни номера, ни галочек.
+    """
     return encode({"type": "text", "nick": nickname, "text": text,
-                   "conversation": conversation, "reply_to": reply_to})
+                   "conversation": conversation, "reply_to": reply_to,
+                   "local": local})
 
 
-def media_header(nickname, kind, name, size, conversation=1, reply_to=None):
+def media_header(nickname, kind, name, size, conversation=1, reply_to=None,
+                 local=None):
     return encode({"type": "media", "nick": nickname, "kind": kind,
                    "name": name, "size": size, "conversation": conversation,
-                   "reply_to": reply_to})
+                   "reply_to": reply_to, "local": local})
 
 
 def fetch_request(media_id):
@@ -84,6 +92,23 @@ def fetch_request(media_id):
 def open_request(conversation, before=None):
     """Открыть переписку; before подгружает то, что старше."""
     return encode({"type": "open", "conversation": conversation, "before": before})
+
+
+def group_request(title, members):
+    """Завести группу с перечисленными участниками."""
+    return encode({"type": "group", "title": title, "members": list(members)})
+
+
+def members_request(conversation, members):
+    """Позвать людей в уже заведённую группу."""
+    return encode({"type": "members", "conversation": conversation,
+                   "members": list(members)})
+
+
+def read_request(conversation, message_ids):
+    """Сообщить серверу, что эти сообщения прочитаны."""
+    return encode({"type": "read", "conversation": conversation,
+                   "ids": list(message_ids)})
 
 
 def direct_request(user_id):
@@ -129,6 +154,21 @@ def history_page(conversation, items, quotes, more, before=None, reactions=None)
     return encode({"type": "history", "conversation": conversation,
                    "items": items, "quotes": quotes, "more": more,
                    "before": before, "reactions": reactions or {}})
+
+
+def ack_message(local, message_id, at):
+    """Сервер принял сообщение: вот его настоящий номер и время."""
+    return encode({"type": "ack", "local": local, "id": message_id, "at": at})
+
+
+def receipts_message(items):
+    """Состояние галочек: {номер сообщения: sent | delivered | read}."""
+    return encode({"type": "receipts", "items": items})
+
+
+def conversation_message(item):
+    """Одна новая переписка — например, только что созданная группа."""
+    return encode({"type": "conversation", "item": item})
 
 
 def conversations_message(items):

@@ -390,20 +390,132 @@ async def broadcast(frame, sender, payload=None):
 
 
 async def send_to_conversation(conversation_id, frame, sender=None, payload=None):
-    """Отправляет кадр участникам переписки.
+    """Отправляет кадр участникам переписки, где бы они ни сидели.
 
-    В общий чат уходит всем, в личную — только её двоим, где бы они ни сидели.
+    Возвращает тех, до кого кадр дошёл: по ним считаются галочки о доставке.
     """
-    if conversation_id == storage.GENERAL_ID:
-        await broadcast(frame, sender, payload)
-        return
-
     recipients = []
+    reached = []
     for user_id in await storage.members(conversation_id):
         for client in online.get(user_id, ()):  # у человека может быть и окно, и телефон
             if client is not sender:
                 recipients.append(client)
+                reached.append(user_id)
     await deliver_to(recipients, frame, payload)
+    return sorted(set(reached))
+
+
+async def note_delivery(message_id, author_id, reached):
+    """Отмечает доставку и, если галочка изменилась, говорит об этом автору."""
+    for user_id in reached:
+        await storage.mark_receipts(user_id, [message_id])
+    await tell_author(author_id, [message_id])
+
+
+async def tell_author(author_id, message_ids):
+    """Сообщает автору, что стало с его сообщениями."""
+    clients = list(online.get(author_id, ()))
+    if not clients or not message_ids:
+        return
+    state = await storage.receipt_state(message_ids)
+    if not state:
+        return
+    await deliver_to(clients, protocol.receipts_message(
+        {str(key): value for key, value in state.items()}))
+
+
+async def handle_read(websocket, user, message):
+    """Человек открыл переписку и увидел эти сообщения."""
+    conversation = conversation_of(message)
+    if not await storage.is_member(conversation, user["id"]):
+        return
+
+    try:
+        ids = [int(item) for item in (message.get("ids") or [])][:200]
+    except (TypeError, ValueError):
+        return
+
+    changed = await storage.mark_receipts(user["id"], ids, read=True)
+    if not changed:
+        return
+
+    # Разбираем по авторам: каждому — только про его сообщения
+    by_author = {}
+    for item in await storage.messages_by_ids(changed):
+        by_author.setdefault(item["user"], []).append(item["id"])
+    for author_id, message_ids in by_author.items():
+        await tell_author(author_id, message_ids)
+
+
+async def handle_members(websocket, user, message):
+    """Дописывает людей в группу, где состоит сам зовущий."""
+    conversation = conversation_of(message)
+    if not await allowed(websocket, user, conversation):
+        return
+
+    item = await storage.conversation(conversation)
+    if (item or {}).get("kind") != "group":
+        await websocket.send(protocol.error_message(
+            "Позвать можно только в группу.", "group_only"))
+        return
+
+    try:
+        chosen = {int(one) for one in (message.get("members") or [])}
+    except (TypeError, ValueError):
+        return
+
+    known = {person["id"] for person in await storage.people()}
+    already = set(await storage.members(conversation))
+    fresh = (chosen & known) - already
+    if not fresh:
+        return
+
+    await storage.add_members(conversation, fresh)
+    print(f"[Лог]: {user['name']} позвал в «{item['title']}» ещё {len(fresh)}")
+
+    # Новым — сама переписка, старым — обновлённый список участников
+    for member in fresh:
+        for client in online.get(member, ()):
+            await client.send(protocol.conversation_message(item))
+    await send_people_to(await storage.members(conversation))
+
+
+async def send_people_to(user_ids):
+    """Освежает список участников у перечисленных людей."""
+    people = await storage.people()
+    frame = protocol.people_message(people, sorted(online))
+    await deliver_to([client for user_id in user_ids
+                      for client in online.get(user_id, ())], frame)
+
+
+async def handle_group(websocket, user, message):
+    """Заводит группу и показывает её всем, кого туда позвали."""
+    title = str(message.get("title") or "").strip()[:60]
+    if not title:
+        await websocket.send(protocol.error_message(
+            "У группы должно быть название.", "group_needs_title"))
+        return
+
+    try:
+        chosen = {int(item) for item in (message.get("members") or [])}
+    except (TypeError, ValueError):
+        return
+
+    known = {person["id"] for person in await storage.people()}
+    members = (chosen & known) | {user["id"]}
+    if len(members) < 2:
+        await websocket.send(protocol.error_message(
+            "Выберите, кого позвать в группу.", "group_needs_members"))
+        return
+
+    conversation = await storage.create_group(title, members)
+    print(f"[Лог]: {user['name']} завёл группу «{title}» на {len(members)} человек")
+
+    item = await storage.conversation(conversation)
+    for member in members:
+        for client in online.get(member, ()):
+            await client.send(protocol.conversation_message(item))
+    await send_history(websocket, user, conversation)
 
 
 async def allowed(websocket, user, conversation_id):
@@ -420,6 +532,21 @@ async def send_history(websocket, user, conversation_id, before=None):
     quotes = await storage.quoted({item["reply_to"] for item in items
                                    if item.get("reply_to")})
     marks = await storage.reactions([item["id"] for item in items])
+
+    # Раз человек забрал историю, чужие сообщения из неё до него дошли
+    delivered = await storage.mark_receipts(user["id"],
+                                            [item["id"] for item in items])
+    for author_id in {item["user"] for item in items
+                      if item["id"] in set(delivered)}:
+        await tell_author(author_id, [item["id"] for item in items
+                                      if item["user"] == author_id])
+
+    # Свои сообщения показываем с галочками
+    states = await storage.receipt_state([item["id"] for item in items
+                                          if item.get("user") == user["id"]])
+    for item in items:
+        if item["id"] in states:
+            item["state"] = states[item["id"]]
     # Если пришло ровно столько, сколько просили, вероятно есть и постарше
     more = len(items) >= storage.HISTORY_LIMIT
     await websocket.send(protocol.history_page(
@@ -607,7 +734,14 @@ async def handle_text(websocket, user, message):
         payload["reply_to"] = reply_to
     if user.get("avatar"):
         payload["avatar"] = user["avatar"]
-    await send_to_conversation(conversation, protocol.encode(payload), websocket)
+
+    # Отправителю — номер сообщения: по нему он поставит галочки, а потом
+    # сможет его удалить или отметить реакцией, не перезаходя в чат
+    await websocket.send(protocol.ack_message(message.get("local"), message_id,
+                                              created_at))
+    reached = await send_to_conversation(conversation, protocol.encode(payload),
+                                         websocket)
+    await note_delivery(message_id, user["id"], reached)
     await notify_absent(conversation, user["id"], user["name"], text[:120])
 
 
@@ -656,7 +790,11 @@ async def handle_media(websocket, user, message):
         frame["reply_to"] = reply_to
     if user.get("avatar"):
         frame["avatar"] = user["avatar"]
-    await send_to_conversation(conversation, protocol.encode(frame), websocket)
+    await websocket.send(protocol.ack_message(message.get("local"), message_id,
+                                              created_at))
+    reached = await send_to_conversation(conversation, protocol.encode(frame),
+                                         websocket)
+    await note_delivery(message_id, user["id"], reached)
     await notify_absent(conversation, user["id"], user["name"],
                         "прислал вложение")
 
@@ -727,9 +865,12 @@ async def chat_handler(websocket):
                                                       available_update()))
         # Историю отдаём до регистрации в connected_clients, иначе новые
         # сообщения чата могли бы вклиниться в середину выгрузки.
-        await websocket.send(protocol.conversations_message(
-            await storage.conversations(user["id"])))
-        await send_history(websocket, user, storage.GENERAL_ID)
+        items = await storage.conversations(user["id"])
+        await websocket.send(protocol.conversations_message(items))
+        # Общего чата больше нет: открываем первую переписку человека,
+        # а если его никуда не звали — ленту показывать нечем
+        if items:
+            await send_history(websocket, user, items[0]["id"])
     except websockets.exceptions.ConnectionClosed:
         return
 
@@ -772,6 +913,12 @@ async def chat_handler(websocket):
                 await handle_open(websocket, user, message)
             elif kind == "direct":
                 await handle_direct(websocket, user, message)
+            elif kind == "group":
+                await handle_group(websocket, user, message)
+            elif kind == "members":
+                await handle_members(websocket, user, message)
+            elif kind == "read":
+                await handle_read(websocket, user, message)
             elif kind == "delete":
                 await handle_delete(websocket, user, message)
             elif kind == "react":

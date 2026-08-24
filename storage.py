@@ -46,8 +46,10 @@ MESSAGE_COLUMNS = {
 }
 
 # Общий чат существует всегда и лежит под первым номером
+# Общий чат превратился в обычную группу: она заведена первой и в ней
+# состоят все, кто был в чате до этого.
 GENERAL_ID = 1
-GENERAL_TITLE = "Общий чат"
+GENERAL_TITLE = "Velix"
 
 
 def now():
@@ -139,6 +141,17 @@ def _init_sync(path, media_dir):
         )
         _connection.execute(
             """
+            CREATE TABLE IF NOT EXISTS receipts (
+                message_id   INTEGER NOT NULL,
+                user_id      INTEGER NOT NULL,
+                delivered_at TEXT,
+                read_at      TEXT,
+                PRIMARY KEY (message_id, user_id)
+            )
+            """
+        )
+        _connection.execute(
+            """
             CREATE TABLE IF NOT EXISTS invites (
                 code       TEXT PRIMARY KEY,
                 created_at TEXT NOT NULL,
@@ -153,15 +166,27 @@ def _init_sync(path, media_dir):
         for column, definition in MESSAGE_COLUMNS.items():
             if column not in existing:
                 _connection.execute(f"ALTER TABLE messages ADD COLUMN {column} {definition}")
-        # Общий чат заводим сразу: он есть у всех и всегда
+        # Первая группа заводится сразу, чтобы новой базе было куда писать
         _connection.execute(
             "INSERT OR IGNORE INTO conversations (id, kind, title, created_at)"
-            " VALUES (?, 'room', ?, ?)", (GENERAL_ID, GENERAL_TITLE, now()))
+            " VALUES (?, 'group', ?, ?)", (GENERAL_ID, GENERAL_TITLE, now()))
 
         # Сообщения из прежних версий жили без переписок — считаем их общими
         _connection.execute(
             "UPDATE messages SET conversation_id = ? WHERE conversation_id IS NULL",
             (GENERAL_ID,))
+
+        # Раньше общий чат был особой переписки без списка участников: теперь
+        # это обычная группа, и все, кто в ней был, становятся её участниками
+        room = _connection.execute(
+            "SELECT id FROM conversations WHERE kind = 'room'").fetchall()
+        for (conversation_id,) in room:
+            _connection.execute(
+                "UPDATE conversations SET kind = 'group', title = ? WHERE id = ?",
+                (GENERAL_TITLE, conversation_id))
+            _connection.execute(
+                "INSERT OR IGNORE INTO members (conversation_id, user_id)"
+                " SELECT ?, id FROM users", (conversation_id,))
         _connection.commit()
 
 
@@ -317,8 +342,7 @@ def _conversations_sync(user_id):
             """
             SELECT c.id, c.kind, c.title
             FROM conversations c
-            WHERE c.kind = 'room'
-               OR c.id IN (SELECT conversation_id FROM members WHERE user_id = ?)
+            WHERE c.id IN (SELECT conversation_id FROM members WHERE user_id = ?)
             ORDER BY c.kind DESC, c.id ASC
             """,
             (user_id,),
@@ -355,6 +379,40 @@ def _conversations_sync(user_id):
     return result
 
 
+def _create_group_sync(title, member_ids):
+    """Заводит группу и сразу вписывает в неё участников."""
+    with _lock:
+        cursor = _connection.execute(
+            "INSERT INTO conversations (kind, title, created_at)"
+            " VALUES ('group', ?, ?)", (title, now()))
+        conversation = cursor.lastrowid
+        _connection.executemany(
+            "INSERT OR IGNORE INTO members (conversation_id, user_id) VALUES (?, ?)",
+            [(conversation, user_id) for user_id in member_ids])
+        _connection.commit()
+    return conversation
+
+
+def _add_members_sync(conversation_id, member_ids):
+    """Дописывает людей в существующую группу."""
+    with _lock:
+        _connection.executemany(
+            "INSERT OR IGNORE INTO members (conversation_id, user_id) VALUES (?, ?)",
+            [(conversation_id, user_id) for user_id in member_ids])
+        _connection.commit()
+
+
+def _conversation_sync(conversation_id):
+    """Одна переписка — какой её увидит участник группы."""
+    with _lock:
+        row = _connection.execute(
+            "SELECT id, kind, title FROM conversations WHERE id = ?",
+            (conversation_id,)).fetchone()
+    if row is None:
+        return None
+    return {"id": row[0], "kind": row[1], "title": row[2]}
+
+
 def _is_member_sync(conversation_id, user_id):
     """Пускать ли пользователя в эту переписку."""
     with _lock:
@@ -362,8 +420,6 @@ def _is_member_sync(conversation_id, user_id):
             "SELECT kind FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
         if row is None:
             return False
-        if row[0] == "room":
-            return True  # общий чат открыт всем, кто вошёл
         member = _connection.execute(
             "SELECT 1 FROM members WHERE conversation_id = ? AND user_id = ?",
             (conversation_id, user_id)).fetchone()
@@ -500,6 +556,85 @@ def _drop_push_sync(endpoint):
         _connection.commit()
 
 
+def _mark_receipts_sync(user_id, message_ids, read):
+    """Отмечает сообщения доставленными, а при read — и прочитанными.
+
+    Свои сообщения не отмечаем: галочки показывают, что с ними стало у
+    других. Возвращает номера сообщений, у которых отметка изменилась, —
+    только о них есть смысл сообщать автору.
+    """
+    if not message_ids:
+        return []
+
+    marks = ",".join("?" * len(message_ids))
+    stamp = now()
+    with _lock:
+        rows = _connection.execute(
+            "SELECT id FROM messages WHERE id IN (" + marks + ")"
+            " AND user_id IS NOT NULL AND user_id != ?",
+            list(message_ids) + [user_id]).fetchall()
+        theirs = [row[0] for row in rows]
+        if not theirs:
+            return []
+
+        changed = []
+        for message_id in theirs:
+            existing = _connection.execute(
+                "SELECT delivered_at, read_at FROM receipts"
+                " WHERE message_id = ? AND user_id = ?",
+                (message_id, user_id)).fetchone()
+            if existing is None:
+                _connection.execute(
+                    "INSERT INTO receipts (message_id, user_id, delivered_at, read_at)"
+                    " VALUES (?, ?, ?, ?)",
+                    (message_id, user_id, stamp, stamp if read else None))
+                changed.append(message_id)
+            elif read and existing[1] is None:
+                _connection.execute(
+                    "UPDATE receipts SET read_at = ? WHERE message_id = ? AND user_id = ?",
+                    (stamp, message_id, user_id))
+                changed.append(message_id)
+        _connection.commit()
+    return changed
+
+
+def _receipt_state_sync(message_ids):
+    """Состояние галочек: sent, delivered или read.
+
+    Доставлено — когда сообщение дошло до всех остальных участников,
+    прочитано — когда все его открыли. Так же считает WhatsApp: одна
+    галочка означает, что до кого-то ещё не дошло.
+    """
+    if not message_ids:
+        return {}
+
+    marks = ",".join("?" * len(message_ids))
+    with _lock:
+        rows = _connection.execute(
+            "SELECT m.id, m.conversation_id, m.user_id FROM messages m"
+            " WHERE m.id IN (" + marks + ")", list(message_ids)).fetchall()
+
+        state = {}
+        for message_id, conversation_id, author in rows:
+            others = _connection.execute(
+                "SELECT COUNT(*) FROM members WHERE conversation_id = ?"
+                " AND user_id != ?", (conversation_id, author)).fetchone()[0]
+            if not others:
+                state[message_id] = "sent"
+                continue
+
+            delivered, read = _connection.execute(
+                "SELECT COUNT(delivered_at), COUNT(read_at) FROM receipts"
+                " WHERE message_id = ?", (message_id,)).fetchone()
+            if read >= others:
+                state[message_id] = "read"
+            elif delivered >= others:
+                state[message_id] = "delivered"
+            else:
+                state[message_id] = "sent"
+    return state
+
+
 def _toggle_reaction_sync(message_id, user_id, emoji):
     """Ставит или снимает реакцию. Возвращает (переписка, сводка) или None."""
     with _lock:
@@ -592,6 +727,18 @@ def _messages_sync(conversation_id, limit, before):
             parameters,
         ).fetchall()
     return [_row_to_item(row) for row in rows]
+
+
+def _messages_by_ids_sync(message_ids):
+    """Кто автор этих сообщений и в какой они переписке."""
+    if not message_ids:
+        return []
+    marks = ",".join("?" * len(message_ids))
+    with _lock:
+        rows = _connection.execute(
+            "SELECT id, user_id, conversation_id FROM messages WHERE id IN ("
+            + marks + ")", list(message_ids)).fetchall()
+    return [{"id": row[0], "user": row[1], "conversation": row[2]} for row in rows]
 
 
 def _quoted_sync(message_ids):
@@ -817,6 +964,32 @@ async def drop_push(endpoint):
     await asyncio.to_thread(_drop_push_sync, endpoint)
 
 
+async def create_group(title, member_ids):
+    """Новая группа с участниками."""
+    return await asyncio.to_thread(_create_group_sync, title, list(member_ids))
+
+
+async def add_members(conversation_id, member_ids):
+    """Дописывает людей в группу."""
+    await asyncio.to_thread(_add_members_sync, conversation_id, list(member_ids))
+
+
+async def conversation(conversation_id):
+    """Описание одной переписки."""
+    return await asyncio.to_thread(_conversation_sync, conversation_id)
+
+
+async def mark_receipts(user_id, message_ids, read=False):
+    """Отмечает чужие сообщения доставленными или прочитанными."""
+    return await asyncio.to_thread(_mark_receipts_sync, user_id,
+                                   list(message_ids), read)
+
+
+async def receipt_state(message_ids):
+    """Состояние галочек у перечисленных сообщений."""
+    return await asyncio.to_thread(_receipt_state_sync, list(message_ids))
+
+
 async def toggle_reaction(message_id, user_id, emoji):
     """Ставит или снимает реакцию, возвращает (переписка, сводка)."""
     return await asyncio.to_thread(_toggle_reaction_sync, message_id, user_id, emoji)
@@ -830,6 +1003,11 @@ async def reactions(message_ids):
 async def messages(conversation_id, limit=HISTORY_LIMIT, before=None):
     """Сообщения переписки; before подгружает то, что старше."""
     return await asyncio.to_thread(_messages_sync, conversation_id, limit, before)
+
+
+async def messages_by_ids(message_ids):
+    """Авторы и переписки перечисленных сообщений."""
+    return await asyncio.to_thread(_messages_by_ids_sync, list(message_ids))
 
 
 async def quoted(message_ids):
