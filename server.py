@@ -447,6 +447,76 @@ async def handle_read(websocket, user, message):
         await tell_author(author_id, message_ids)
 
 
+async def handle_pin(websocket, user, message):
+    """Закрепляет сообщение переписки — или снимает закрепление."""
+    conversation = conversation_of(message)
+    if not await allowed(websocket, user, conversation):
+        return
+
+    message_id = reply_of({"reply_to": message.get("id")})
+    item = None
+    if message_id is not None:
+        item = await storage.message(message_id)
+        if item is None or await storage.conversation_of(message_id) != conversation:
+            await websocket.send(protocol.error_message(
+                "Сообщение не найдено.", "message_not_found"))
+            return
+
+    await storage.pin(conversation, message_id)
+    frame = protocol.pinned_message(conversation, item)
+    await websocket.send(frame)
+    await send_to_conversation(conversation, frame, websocket)
+
+
+async def handle_forward(websocket, user, message):
+    """Пересылает сообщение в другую переписку."""
+    target = conversation_of(message)
+    source_id = reply_of({"reply_to": message.get("id")})
+    if source_id is None:
+        return
+
+    item = await storage.message(source_id)
+    if item is None:
+        await websocket.send(protocol.error_message(
+            "Сообщение не найдено.", "message_not_found"))
+        return
+
+    # Взять можно только оттуда, где состоишь, и положить только туда же
+    where = await storage.conversation_of(source_id)
+    if not await storage.is_member(where, user["id"]):
+        await websocket.send(protocol.error_message(
+            "Эта переписка вам недоступна.", "no_access"))
+        return
+    if not await allowed(websocket, user, target):
+        return
+
+    author = item.get("nick") or ""
+    if item.get("kind", "text") == "text":
+        message_id, created_at = await storage.save_message(
+            user["id"], user["name"], item.get("text", ""), target, None, author)
+        payload = {"type": "text", "id": message_id, "nick": user["name"],
+                   "text": item.get("text", ""), "at": created_at,
+                   "conversation": target, "user": user["id"],
+                   "forwarded": author}
+    else:
+        message_id, created_at = await storage.save_existing_media(
+            user["id"], user["name"], item["kind"], item.get("name", ""),
+            item.get("size") or 0, item.get("media"), target, author)
+        payload = {"type": "media", "id": message_id, "media": item.get("media"),
+                   "nick": user["name"], "kind": item["kind"],
+                   "name": item.get("name", ""), "size": item.get("size") or 0,
+                   "at": created_at, "conversation": target, "user": user["id"],
+                   "forwarded": author}
+
+    if user.get("avatar"):
+        payload["avatar"] = user["avatar"]
+
+    print(f"[Лог]: {user['name']} переслал сообщение {source_id} в {target}")
+    await websocket.send(protocol.encode(payload))
+    reached = await send_to_conversation(target, protocol.encode(payload), websocket)
+    await note_delivery(message_id, user["id"], reached)
+
+
 async def handle_members(websocket, user, message):
     """Дописывает людей в группу, где состоит сам зовущий."""
     conversation = conversation_of(message)
@@ -919,6 +989,10 @@ async def chat_handler(websocket):
                 await handle_members(websocket, user, message)
             elif kind == "read":
                 await handle_read(websocket, user, message)
+            elif kind == "pin":
+                await handle_pin(websocket, user, message)
+            elif kind == "forward":
+                await handle_forward(websocket, user, message)
             elif kind == "delete":
                 await handle_delete(websocket, user, message)
             elif kind == "react":

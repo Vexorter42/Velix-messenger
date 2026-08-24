@@ -43,7 +43,11 @@ MESSAGE_COLUMNS = {
     "conversation_id": "INTEGER",
     "reply_to": "INTEGER",
     "deleted": "INTEGER NOT NULL DEFAULT 0",
+    "forwarded": "TEXT",
 }
+
+# Закреплённое сообщение переписки — тоже дописываемый столбец
+CONVERSATION_COLUMNS = {"pinned_id": "INTEGER"}
 
 # Общий чат существует всегда и лежит под первым номером
 # Общий чат превратился в обычную группу: она заведена первой и в ней
@@ -166,6 +170,13 @@ def _init_sync(path, media_dir):
         for column, definition in MESSAGE_COLUMNS.items():
             if column not in existing:
                 _connection.execute(f"ALTER TABLE messages ADD COLUMN {column} {definition}")
+
+        existing = {row[1] for row in
+                    _connection.execute("PRAGMA table_info(conversations)")}
+        for column, definition in CONVERSATION_COLUMNS.items():
+            if column not in existing:
+                _connection.execute(
+                    f"ALTER TABLE conversations ADD COLUMN {column} {definition}")
         # Первая группа заводится сразу, чтобы новой базе было куда писать
         _connection.execute(
             "INSERT OR IGNORE INTO conversations (id, kind, title, created_at)"
@@ -340,7 +351,7 @@ def _conversations_sync(user_id):
     with _lock:
         rows = _connection.execute(
             """
-            SELECT c.id, c.kind, c.title
+            SELECT c.id, c.kind, c.title, c.pinned_id
             FROM conversations c
             WHERE c.id IN (SELECT conversation_id FROM members WHERE user_id = ?)
             ORDER BY c.kind DESC, c.id ASC
@@ -349,8 +360,10 @@ def _conversations_sync(user_id):
         ).fetchall()
 
         result = []
-        for conversation_id, kind, title in rows:
+        for conversation_id, kind, title, pinned in rows:
             item = {"id": conversation_id, "kind": kind, "title": title}
+            if pinned:
+                item["pinned"] = pinned
 
             if kind == "direct":
                 # У личной переписки заголовок — это имя собеседника
@@ -406,11 +419,14 @@ def _conversation_sync(conversation_id):
     """Одна переписка — какой её увидит участник группы."""
     with _lock:
         row = _connection.execute(
-            "SELECT id, kind, title FROM conversations WHERE id = ?",
+            "SELECT id, kind, title, pinned_id FROM conversations WHERE id = ?",
             (conversation_id,)).fetchone()
     if row is None:
         return None
-    return {"id": row[0], "kind": row[1], "title": row[2]}
+    item = {"id": row[0], "kind": row[1], "title": row[2]}
+    if row[3]:
+        item["pinned"] = row[3]
+    return item
 
 
 def _is_member_sync(conversation_id, user_id):
@@ -481,16 +497,59 @@ def _list_invites_sync():
 
 # --------------------------------------------------------------- сообщения
 
-def _save_message_sync(user_id, nickname, text, conversation_id, reply_to):
+def _save_message_sync(user_id, nickname, text, conversation_id, reply_to,
+                       forwarded=None):
     created_at = now()
     with _lock:
         cursor = _connection.execute(
             "INSERT INTO messages (nickname, text, created_at, kind, user_id,"
-            " conversation_id, reply_to) VALUES (?, ?, ?, 'text', ?, ?, ?)",
-            (nickname, text, created_at, user_id, conversation_id, reply_to),
+            " conversation_id, reply_to, forwarded)"
+            " VALUES (?, ?, ?, 'text', ?, ?, ?, ?)",
+            (nickname, text, created_at, user_id, conversation_id, reply_to,
+             forwarded),
         )
         _connection.commit()
     return cursor.lastrowid, created_at
+
+
+def _save_existing_media_sync(user_id, nickname, kind, name, size, media_id,
+                              conversation_id, forwarded):
+    """Пересылка вложения: файл уже лежит на диске, копируем только запись."""
+    created_at = now()
+    with _lock:
+        cursor = _connection.execute(
+            "INSERT INTO messages (nickname, text, created_at, kind,"
+            " media_id, media_name, media_size, user_id, conversation_id,"
+            " forwarded) VALUES (?, '', ?, ?, ?, ?, ?, ?, ?, ?)",
+            (nickname, created_at, kind, media_id, name, size, user_id,
+             conversation_id, forwarded))
+        _connection.commit()
+    return cursor.lastrowid, created_at
+
+
+def _message_sync(message_id):
+    """Одно сообщение целиком — для пересылки и закрепления."""
+    with _lock:
+        row = _connection.execute(
+            "SELECT " + MESSAGE_FIELDS + " FROM messages m"
+            " LEFT JOIN users u ON u.id = m.user_id WHERE m.id = ?",
+            (message_id,)).fetchone()
+    return _row_to_item(row) if row else None
+
+
+def _conversation_of_sync(message_id):
+    with _lock:
+        row = _connection.execute(
+            "SELECT conversation_id FROM messages WHERE id = ?",
+            (message_id,)).fetchone()
+    return row[0] if row else None
+
+
+def _pin_sync(conversation_id, message_id):
+    with _lock:
+        _connection.execute("UPDATE conversations SET pinned_id = ? WHERE id = ?",
+                            (message_id, conversation_id))
+        _connection.commit()
 
 
 def _save_media_sync(user_id, nickname, kind, name, data, conversation_id, reply_to):
@@ -682,7 +741,8 @@ def _reactions_sync(message_ids):
 def _row_to_item(row):
     """Одна строка из базы — в то, что понимает клиент."""
     (message_id, nickname, text, created_at, kind, media_id, media_name,
-     media_size, deleted, reply_to, user_id, profile_name, avatar_id) = row
+     media_size, deleted, reply_to, user_id, profile_name, avatar_id,
+     forwarded) = row
 
     item = {"id": message_id, "nick": profile_name or nickname, "at": created_at,
             "kind": kind or "text", "user": user_id}
@@ -690,6 +750,8 @@ def _row_to_item(row):
         item["avatar"] = avatar_id
     if reply_to:
         item["reply_to"] = reply_to
+    if forwarded:
+        item["forwarded"] = forwarded
 
     if deleted:
         item["kind"] = "deleted"
@@ -706,7 +768,7 @@ def _row_to_item(row):
 
 MESSAGE_FIELDS = ("m.id, m.nickname, m.text, m.created_at, m.kind, m.media_id,"
                   " m.media_name, m.media_size, m.deleted, m.reply_to, m.user_id,"
-                  " u.name, u.avatar_id")
+                  " u.name, u.avatar_id, m.forwarded")
 
 
 def _messages_sync(conversation_id, limit, before):
@@ -935,11 +997,34 @@ async def set_avatar(user_id, name, data):
     return await asyncio.to_thread(_set_avatar_sync, user_id, name, data)
 
 
+async def message(message_id):
+    """Одно сообщение целиком."""
+    return await asyncio.to_thread(_message_sync, message_id)
+
+
+async def conversation_of(message_id):
+    """В какой переписке лежит сообщение."""
+    return await asyncio.to_thread(_conversation_of_sync, message_id)
+
+
+async def pin(conversation_id, message_id):
+    """Закрепляет сообщение в переписке; None снимает закрепление."""
+    await asyncio.to_thread(_pin_sync, conversation_id, message_id)
+
+
+async def save_existing_media(user_id, nickname, kind, name, size, media_id,
+                              conversation_id, forwarded):
+    """Записывает пересылку вложения, не трогая сам файл."""
+    return await asyncio.to_thread(_save_existing_media_sync, user_id, nickname,
+                                   kind, name, size, media_id, conversation_id,
+                                   forwarded)
+
+
 async def save_message(user_id, nickname, text, conversation_id=GENERAL_ID,
-                       reply_to=None):
+                       reply_to=None, forwarded=None):
     """Сохраняет текстовое сообщение, возвращает (номер, время в UTC)."""
     return await asyncio.to_thread(_save_message_sync, user_id, nickname, text,
-                                   conversation_id, reply_to)
+                                   conversation_id, reply_to, forwarded)
 
 
 async def save_media(user_id, nickname, kind, name, data,

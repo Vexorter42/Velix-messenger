@@ -105,6 +105,22 @@ def members_request(conversation, members):
                    "members": list(members)})
 
 
+def pin_request(conversation, message_id):
+    """Закрепить сообщение; message_id=None снимает закрепление."""
+    return encode({"type": "pin", "conversation": conversation, "id": message_id})
+
+
+def pinned_message(conversation, item):
+    """Что сейчас закреплено в переписке (item=None — ничего)."""
+    return encode({"type": "pinned", "conversation": conversation, "item": item})
+
+
+def forward_request(message_id, conversation):
+    """Переслать сообщение в другую переписку."""
+    return encode({"type": "forward", "id": message_id,
+                   "conversation": conversation})
+
+
 def read_request(conversation, message_ids):
     """Сообщить серверу, что эти сообщения прочитаны."""
     return encode({"type": "read", "conversation": conversation,

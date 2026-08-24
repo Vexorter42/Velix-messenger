@@ -68,6 +68,10 @@ ON_ACCENT = "#ffffff"
 ONLINE = ("#31a24c", "#4dc866")
 OFFLINE = ("#d1435b", "#ec5f75")
 
+# Всплывающее меню сообщения: карточка поверх переписки
+MENU_BG = ("#ffffff", "#1f2c3a")
+MENU_HOVER = ("#f1f3f5", "#2a3a4b")
+
 # Галочки о доставке: серые, пока сообщение не прочитали, и голубые после
 TICK_SENT = ("#8a9aa9", "#7da8d3")
 TICK_READ = ("#34b7f1", "#7ee2ff")
@@ -183,6 +187,63 @@ def circular(data, side):
     ImageDraw.Draw(mask).ellipse((0, 0, side - 1, side - 1), fill=255)
     picture.putalpha(mask)
     return picture
+
+
+ICON_SIDE = 20
+
+
+def draw_icon(name, colour):
+    """Рисует значок меню линиями.
+
+    Готовых значков под рукой нет, а шрифтовые стрелки в Tk выходят
+    то крошечными, то квадратами — рисуем сами и получаем одинаковые.
+    """
+    picture = Image.new("RGBA", (ICON_SIDE * 2, ICON_SIDE * 2), (0, 0, 0, 0))
+    pen = ImageDraw.Draw(picture)
+    line = 3
+    box = ICON_SIDE * 2
+
+    if name in ("reply", "forward"):
+        # Стрелка с загибом: остриё слева, хвост уходит вниз
+        points = [(16, 12), (8, 20), (16, 28)]
+        shaft = [(8, 20), (26, 20), (26, 32)]
+        if name == "forward":
+            points = [(box - x, y) for x, y in points]
+            shaft = [(box - x, y) for x, y in shaft]
+        pen.line(points, fill=colour, width=line, joint="curve")
+        pen.line(shaft, fill=colour, width=line, joint="curve")
+
+    elif name == "pin":
+        pen.line([(20, 8), (20, 24)], fill=colour, width=line)
+        pen.line([(12, 24), (28, 24)], fill=colour, width=line)
+        pen.line([(20, 24), (20, 32)], fill=colour, width=line)
+        pen.ellipse([15, 5, 25, 15], outline=colour, width=line)
+
+    elif name == "copy":
+        pen.rounded_rectangle([8, 8, 26, 28], radius=4, outline=colour, width=line)
+        pen.rounded_rectangle([14, 14, 32, 34], radius=4, outline=colour, width=line)
+
+    elif name == "trash":
+        pen.line([(8, 12), (32, 12)], fill=colour, width=line)
+        pen.line([(16, 8), (24, 8)], fill=colour, width=line)
+        pen.rounded_rectangle([11, 12, 29, 33], radius=4, outline=colour, width=line)
+        pen.line([(17, 18), (17, 28)], fill=colour, width=line)
+        pen.line([(23, 18), (23, 28)], fill=colour, width=line)
+
+    return picture.resize((ICON_SIDE, ICON_SIDE), Image.LANCZOS)
+
+
+_icons = {}
+
+
+def menu_icon(name):
+    """Значок для светлой и тёмной темы, посчитанный один раз."""
+    if name not in _icons:
+        _icons[name] = ctk.CTkImage(
+            light_image=draw_icon(name, "#4a5964"),
+            dark_image=draw_icon(name, "#aebac4"),
+            size=(ICON_SIDE, ICON_SIDE))
+    return _icons[name]
 
 
 def short(text, limit):
@@ -372,6 +433,8 @@ class VelixApp(ctk.CTk):
         self.pending_group = False     # ждём номер только что созданной группы
         self.kept_media = {}           # содержимое картинок для копирования
         self.viewer = None             # открытый просмотр картинки
+        self.menu = None               # открытое меню сообщения
+        self.pinned = {}               # переписка -> закреплённое сообщение
 
         # Файл, оставшийся от прошлого обновления, больше не нужен
         if updates.running_as_exe():
@@ -685,7 +748,9 @@ class VelixApp(ctk.CTk):
     def _build_conversation(self):
         main = ctk.CTkFrame(self.chat_view, fg_color=CHAT_BG, corner_radius=0)
         main.grid(row=0, column=1, sticky="nsew")
-        main.grid_rowconfigure(1, weight=1)
+        # Растягивается только лента: шапка, закреплённое, полоска ответа
+        # и поле ввода занимают ровно столько, сколько им нужно
+        main.grid_rowconfigure(2, weight=1)
         main.grid_columnconfigure(0, weight=1)
 
         header = ctk.CTkFrame(main, fg_color=COMPOSER, corner_radius=0, height=62)
@@ -712,10 +777,24 @@ class VelixApp(ctk.CTk):
                                        text_color=ONLINE, width=14)
         self.status_dot.grid(row=0, column=2, padx=(0, 20))
 
+        # Полоска с закреплённым сообщением: появляется, когда есть что показать
+        self.pin_bar = ctk.CTkFrame(main, fg_color=COMPOSER, corner_radius=0,
+                                    height=44)
+        self.pin_bar.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(self.pin_bar, text="📌", font=self.font_small,
+                     width=24).grid(row=0, column=0, padx=(18, 6), pady=8)
+        self.pin_label = ctk.CTkLabel(self.pin_bar, text="", font=self.font_small,
+                                      text_color=MUTED, anchor="w")
+        self.pin_label.grid(row=0, column=1, sticky="ew")
+        ctk.CTkButton(self.pin_bar, text="✕", width=28, height=24, corner_radius=8,
+                      font=self.font_small, fg_color="transparent",
+                      hover_color=SEPARATOR, text_color=MUTED,
+                      command=self._unpin).grid(row=0, column=2, padx=(6, 14))
+
         self.messages = ctk.CTkScrollableFrame(
             main, fg_color="transparent", corner_radius=0,
             scrollbar_button_color=SEPARATOR, scrollbar_button_hover_color=MUTED)
-        self.messages.grid(row=1, column=0, sticky="nsew")
+        self.messages.grid(row=2, column=0, sticky="nsew")
 
         # Полоска «отвечаем на …» появляется над строкой ввода
         self.reply_bar = ctk.CTkFrame(main, fg_color=INPUT_BG, corner_radius=0)
@@ -728,7 +807,7 @@ class VelixApp(ctk.CTk):
                       command=self._cancel_reply).pack(side="right", padx=(0, 18))
 
         composer = ctk.CTkFrame(main, fg_color=COMPOSER, corner_radius=0)
-        composer.grid(row=3, column=0, sticky="ew")
+        composer.grid(row=4, column=0, sticky="ew")
         composer.grid_columnconfigure(1, weight=1)
 
         self.attach_button = ctk.CTkButton(
@@ -1443,6 +1522,8 @@ class VelixApp(ctk.CTk):
             self._on_deleted(message)
         elif kind == "reactions":
             self._on_reactions(message)
+        elif kind == "pinned":
+            self._on_pinned(message)
         elif kind == "search":
             self._show_search(message)
         elif kind in ("text", "media"):
@@ -1709,6 +1790,7 @@ class VelixApp(ctk.CTk):
         self._clear_messages()
         self._refresh_side_list()
         self._update_header()
+        self._refresh_pin_bar()
         self.network.send(protocol.open_request(conversation_id))
 
     def _start_direct(self, user_id):
@@ -1929,7 +2011,7 @@ class VelixApp(ctk.CTk):
         what = item.get("text") or item.get("name") or t("вложение")
         self.reply_label.configure(
             text=t("Ответ {name}: {text}", name=who, text=what[:40]))
-        self.reply_bar.grid(row=2, column=0, sticky="ew")
+        self.reply_bar.grid(row=3, column=0, sticky="ew")
         self.message_entry.focus_set()
 
     def _cancel_reply(self):
@@ -1940,20 +2022,162 @@ class VelixApp(ctk.CTk):
         self.network.send(protocol.delete_request(message_id))
 
     def _message_menu(self, event, item, own):
-        """Правая кнопка на сообщении: ответить или удалить своё."""
-        menu = tkinter.Menu(self, tearoff=0)
-        menu.add_command(label=t("Ответить"), command=lambda: self._start_reply(item))
-        menu.add_command(label=t("Копировать"), command=lambda: self._copy_item(item))
+        """Правая кнопка на сообщении: панель с действиями и реакциями.
+
+        Своё окно вместо системного меню Tk: там нельзя ни скруглить углы,
+        ни поставить рядом полоску смайликов.
+        """
+        self._close_menu()
+
+        # Меню кладём прямо в окно: подложка на весь экран закрасила бы
+        # переписку, ведь «прозрачный» в CustomTkinter — это цвет родителя.
+        # Щелчок мимо ловим общей привязкой и сами смотрим, куда попали.
+        holder = ctk.CTkFrame(self, fg_color="transparent")
+        self.menu = holder
+        self.bind("<Escape>", lambda _: self._close_menu())
+        self.bind_all("<Button-1>", self._click_outside_menu, add="+")
+        self.bind_all("<Button-3>", self._click_outside_menu, add="+")
+
         if item.get("id"):
-            menu.add_command(label=t("Реакция"),
-                             command=lambda: self._emoji_menu(item["id"]))
+            strip = ctk.CTkFrame(holder, fg_color=MENU_BG, corner_radius=20)
+            strip.pack(anchor="w", pady=(0, 6))
+            for emoji in EMOJI:
+                ctk.CTkButton(strip, text=emoji, width=34, height=34,
+                              corner_radius=17, font=self.font_body,
+                              fg_color="transparent", hover_color=MENU_HOVER,
+                              text_color=TEXT,
+                              command=lambda e=emoji: self._pick_reaction(item, e)
+                              ).pack(side="left", padx=2, pady=3)
+
+        card = ctk.CTkFrame(holder, fg_color=MENU_BG, corner_radius=12)
+        card.pack(anchor="w")
+
+        actions = [("reply", t("Ответить"), lambda: self._start_reply(item))]
+        if item.get("id"):
+            pinned = (self.pinned.get(self.conversation) or {}).get("id")
+            if pinned == item["id"]:
+                actions.append(("pin", t("Открепить"), self._unpin))
+            else:
+                actions.append(("pin", t("Закрепить"),
+                                lambda: self._pin_message(item["id"])))
+            actions.append(("copy", self._copy_label(item),
+                            lambda: self._copy_item(item)))
+            actions.append(("forward", t("Переслать"),
+                            lambda: self._forward_menu(item)))
         if own and item.get("id"):
-            menu.add_command(label=t("Удалить"),
-                             command=lambda: self._delete_message(item["id"]))
-        try:
-            menu.tk_popup(event.x_root, event.y_root)
-        finally:
-            menu.grab_release()
+            actions.append(("trash", t("Удалить"),
+                            lambda: self._delete_message(item["id"])))
+
+        for icon, label, command in actions:
+            self._menu_row(card, icon, label, command)
+
+        # Ставим у курсора, но не даём вылезти за край окна
+        self.update_idletasks()
+        width = max(holder.winfo_reqwidth(), 180)
+        height = holder.winfo_reqheight()
+        x = min(max(event.x_root - self.winfo_rootx(), 8),
+                max(self.winfo_width() - width - 8, 8))
+        y = min(max(event.y_root - self.winfo_rooty(), 8),
+                max(self.winfo_height() - height - 8, 8))
+        holder.place(x=x, y=y)
+
+    def _menu_row(self, card, icon, label, command):
+        """Строка меню: значок слева, надпись рядом, подсветка под мышью."""
+        row = ctk.CTkButton(card, text=f"   {label}", image=menu_icon(icon),
+                            compound="left", anchor="w",
+                            height=38, corner_radius=8, font=self.font_body,
+                            fg_color="transparent", hover_color=MENU_HOVER,
+                            text_color=TEXT,
+                            command=lambda: (self._close_menu(), command()))
+        row.pack(fill="x", padx=6, pady=2)
+        return row
+
+    def _click_outside_menu(self, event):
+        """Закрывает меню, если щёлкнули мимо него."""
+        if self.menu is None:
+            return
+        widget = event.widget
+        while widget is not None:
+            if widget is self.menu:
+                return
+            widget = getattr(widget, "master", None)
+        self._close_menu()
+
+    def _copy_label(self, item):
+        """Что именно скопируется — зависит от вида сообщения."""
+        kind = item.get("kind", "text")
+        if kind == "text":
+            return t("Копировать текст")
+        if kind in ("image", "gif"):
+            return t("Копировать фото")
+        return t("Копировать файл")
+
+    def _pick_reaction(self, item, emoji):
+        self._close_menu()
+        self._react(item["id"], emoji)
+
+    def _close_menu(self):
+        """Убирает меню, если оно открыто."""
+        if self.menu is None:
+            return
+        self.menu.destroy()
+        self.menu = None
+        self.unbind("<Escape>")
+        self.unbind_all("<Button-1>")
+        self.unbind_all("<Button-3>")
+
+    # ---------------------------------------------- закрепить и переслать
+
+    def _pin_message(self, message_id):
+        self.network.send(protocol.pin_request(self.conversation, message_id))
+
+    def _unpin(self):
+        self.network.send(protocol.pin_request(self.conversation, None))
+
+    def _on_pinned(self, message):
+        """Сервер сказал, что закреплено в переписке."""
+        conversation = message.get("conversation")
+        item = message.get("item")
+        if item:
+            self.pinned[conversation] = item
+        else:
+            self.pinned.pop(conversation, None)
+        self._refresh_pin_bar()
+
+    def _refresh_pin_bar(self):
+        item = self.pinned.get(self.conversation)
+        if not item:
+            self.pin_bar.grid_forget()
+            return
+
+        what = item.get("text") or item.get("name") or t("вложение")
+        self.pin_label.configure(text=f"{item.get('nick', '')}: {short(what, 70)}")
+        self.pin_bar.grid(row=1, column=0, sticky="ew")
+
+    def _forward_menu(self, item):
+        """Куда переслать: список переписок в отдельном окне."""
+        window = ctk.CTkToplevel(self)
+        window.title(t("Куда переслать"))
+        window.geometry("300x380")
+        window.transient(self)
+        window.configure(fg_color=SIDEBAR)
+
+        ctk.CTkLabel(window, text=t("Куда переслать"), font=self.font_name,
+                     text_color=TEXT).pack(pady=(16, 8))
+
+        listing = ctk.CTkScrollableFrame(window, fg_color="transparent")
+        listing.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+
+        for conversation in self.conversations:
+            if conversation["id"] == self.conversation:
+                continue
+            ctk.CTkButton(
+                listing, text=self._title_of(conversation), anchor="w", height=38,
+                corner_radius=8, font=self.font_body, fg_color=INPUT_BG,
+                hover_color=SEPARATOR, text_color=TEXT,
+                command=lambda c=conversation["id"]: (
+                    self.network.send(protocol.forward_request(item["id"], c)),
+                    window.destroy())).pack(fill="x", pady=2)
 
     def _copy_item(self, item):
         """Кладёт сообщение в буфер: текст — текстом, картинку — картинкой."""
@@ -2199,6 +2423,15 @@ class VelixApp(ctk.CTk):
             return
         self.network.send(protocol.read_request(self.conversation, ids))
 
+    def _add_forward_mark(self, bubble, item):
+        """Строка «переслано от кого-то» над самим сообщением."""
+        if not item.get("forwarded"):
+            return
+        ctk.CTkLabel(bubble, text=t("Переслано от {name}",
+                                    name=item["forwarded"]),
+                     font=self.font_small, text_color=MUTED, anchor="w").pack(
+            fill="x", padx=13, pady=(4, 0))
+
     def _add_quote(self, bubble, item):
         """Показывает, на что отвечает это сообщение."""
         quoted = self.quotes.get(str(item.get("reply_to")))
@@ -2222,6 +2455,7 @@ class VelixApp(ctk.CTk):
         bubble, grouped = self._new_bubble(nickname, own, avatar)
         item = item or {}
 
+        self._add_forward_mark(bubble, item)
         if item.get("reply_to"):
             self._add_quote(bubble, item)
 
@@ -2243,6 +2477,7 @@ class VelixApp(ctk.CTk):
         self._clear_hint()
         bubble, _ = self._new_bubble(nickname, own, avatar)
         item = item or {}
+        self._add_forward_mark(bubble, item)
         if item.get("reply_to"):
             self._add_quote(bubble, item)
 
