@@ -346,3 +346,15 @@ main#messages button.link { align-self: center; width: auto; padding: 8px 16px; 
   text-align: center;
   margin: 10px 0;
 }
+
+/* Сколько пришло, пока в переписку не заглядывали */
+.badge {
+  min-width: 22px;
+  padding: 2px 7px;
+  border-radius: 11px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 13px;
+  text-align: center;
+  align-self: center;
+}

@@ -34,6 +34,7 @@ const mediaSlots = new Map();
 const tickRows = new Map();    // номер (или свой временный) -> значок галочек
 const states = new Map();      // номер -> sent | delivered | read
 const keptMedia = new Map();   // содержимое картинок: их могут копировать
+const unread = new Map();      // переписка -> сколько пришло, пока не смотрели
 let localNumber = 0;           // свои сообщения до ответа сервера
 let pendingGroup = false;      // ждём номер только что созданной группы
 const avatarSlots = new Map();
@@ -165,7 +166,7 @@ function connect(credentials) {
 
   socket.onclose = () => {
     $("status").textContent = t("нет связи");
-    if (!screens.chat.hidden) service(t("Соединение потеряно. Обновите страницу."));
+    scheduleReconnect();
   };
 
   socket.onerror = () => {
@@ -173,6 +174,43 @@ function connect(credentials) {
     $("primary").disabled = false;
   };
 }
+
+let reconnectAttempt = 0;
+let reconnectTimer = null;
+
+/**
+ * Связь на телефоне пропадает постоянно: экран гаснет, сеть переключается.
+ * Раньше тут предлагали обновить страницу — теперь возвращаемся сами, с
+ * растущей паузой, чтобы не долбить сервер.
+ */
+function scheduleReconnect() {
+  const token = localStorage.getItem("velix.token");
+  if (!token || reconnectTimer) {
+    return;
+  }
+  const pause = Math.min(1000 * 2 ** reconnectAttempt, 30000);
+  reconnectAttempt += 1;
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    connect({type: "auth", token});
+  }, pause);
+}
+
+// Вернулись на вкладку — проверяем связь сразу, не дожидаясь паузы
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    return;
+  }
+  if (!socket || socket.readyState > WebSocket.OPEN) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+    reconnectAttempt = 0;
+    scheduleReconnect();
+  } else if (conversation !== null) {
+    markRead(loadedItems.filter((item) => item.id && item.user !== user.id)
+                        .map((item) => item.id));
+  }
+});
 
 function send(message, payload) {
   if (!socket || socket.readyState !== WebSocket.OPEN) return;
@@ -231,6 +269,7 @@ function handleBinary(buffer) {
 // ------------------------------------------------------------------ вход
 
 function onWelcome(message) {
+  reconnectAttempt = 0;
   user = message.user || {};
   localStorage.setItem("velix.token", message.token || "");
   localStorage.setItem("velix.login", user.login || "");
@@ -293,6 +332,48 @@ function onConversation(message) {
     show("chat");
   }
 }
+
+function groupMenu(item) {
+  // Что можно сделать с группой: сменить фото, удалить (если она ваша)
+  if (item.kind !== "group") {
+    return;
+  }
+
+  const sheet = document.createElement("div");
+  sheet.className = "sheet";
+  const card = document.createElement("div");
+  card.className = "sheet-card";
+  sheet.append(card);
+
+  const action = (label, handler) => {
+    const button = document.createElement("button");
+    button.className = "sheet-button";
+    button.textContent = label;
+    button.addEventListener("click", () => { sheet.remove(); handler(); });
+    card.append(button);
+  };
+
+  action(t("Фото группы"), () => {
+    groupPhotoTarget = item.id;
+    $("avatar-file").click();
+  });
+  if (item.owner === user.id) {
+    action(t("Удалить группу"), () => {
+      if (confirm(t("Переписка и вложения пропадут у всех. Отменить это нельзя."))) {
+        send({type: "delete_group", conversation: item.id});
+        show("list");
+      }
+    });
+  }
+  action(t("Отмена"), () => {});
+
+  sheet.addEventListener("click", (event) => {
+    if (event.target === sheet) sheet.remove();
+  });
+  document.body.append(sheet);
+}
+
+let groupPhotoTarget = null;
 
 function newGroup() {
   // Заводим группу: название и галочки против имён — в той же карточке,
@@ -401,7 +482,23 @@ function drawList() {
     lines.append(preview);
     row.append(lines);
 
+    const waiting = unread.get(item.id) || 0;
+    if (waiting > 0) {
+      const badge = document.createElement("span");
+      badge.className = "badge";
+      badge.textContent = String(waiting);
+      row.append(badge);
+    }
+
     row.addEventListener("click", () => openConversation(item.id, titleOf(item)));
+
+    let hold = null;
+    row.addEventListener("pointerdown", () => {
+      hold = setTimeout(() => groupMenu(item), 500);
+    });
+    for (const event of ["pointerup", "pointercancel", "pointerleave"]) {
+      row.addEventListener(event, () => clearTimeout(hold));
+    }
     box.append(row);
   }
 
@@ -438,6 +535,7 @@ function drawList() {
 
 function openConversation(id, title) {
   conversation = id;
+  unread.delete(id);
   cancelReply();
   clearMessages();
   $("chat-title").textContent = title || t("Общий чат");
@@ -529,6 +627,7 @@ function onHistory(message) {
 let loadedItems = [];
 
 function onIncoming(message) {
+  countUnread(message);
   if (message.conversation !== conversation) {
     bumpPreview(message);
     return;
@@ -545,6 +644,20 @@ function bumpPreview(message) {
     }
   }
   if (!screens.list.hidden) drawList();
+}
+
+function countUnread(message) {
+  // Своё сообщение и то, что пришло в открытую переписку, непрочитанным
+  // не считается
+  if (message.user === user.id) {
+    return;
+  }
+  const where = message.conversation;
+  if (where === conversation && !document.hidden && !screens.chat.hidden) {
+    return;
+  }
+  unread.set(where, (unread.get(where) || 0) + 1);
+  drawList();
 }
 
 function showItem(item, localUrl) {
@@ -1062,6 +1175,16 @@ $("avatar-file").addEventListener("change", async (event) => {
   const file = event.target.files[0];
   event.target.value = "";
   if (!file) return;
+
+  // Та же кнопка ставит и фото группы — смотря откуда её позвали
+  if (groupPhotoTarget !== null) {
+    const room = groupPhotoTarget;
+    groupPhotoTarget = null;
+    send({type: "avatar", conversation: room, name: file.name, size: file.size},
+         await file.arrayBuffer());
+    return;
+  }
+
   $("profile-hint").textContent = t("Отправляем фото…");
   send({type: "avatar", name: file.name, size: file.size}, await file.arrayBuffer());
 });

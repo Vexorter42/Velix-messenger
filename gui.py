@@ -435,6 +435,9 @@ class VelixApp(ctk.CTk):
         self.viewer = None             # открытый просмотр картинки
         self.menu = None               # открытое меню сообщения
         self.pinned = {}               # переписка -> закреплённое сообщение
+        self.unread = {}               # переписка -> сколько пришло без нас
+        self.stats = None              # последняя сводка для панели
+        self.is_admin = False          # хозяин чата: решает сервер
 
         # Файл, оставшийся от прошлого обновления, больше не нужен
         if updates.running_as_exe():
@@ -959,6 +962,11 @@ class VelixApp(ctk.CTk):
             text_color=MUTED, state="disabled", command=self._on_update)
         self.update_button.pack(padx=48, pady=(8, 4))
 
+        self.admin_button = ctk.CTkButton(
+            card, text=t("Панель управления"), width=300, height=38,
+            corner_radius=10, font=self.font_small, fg_color=INPUT_BG,
+            hover_color=SEPARATOR, text_color=TEXT, command=self._show_admin)
+
         ctk.CTkButton(card, text=t("Назад в чат"), width=300, height=32,
                       corner_radius=8, font=self.font_small, fg_color="transparent",
                       hover_color=INPUT_BG, text_color=MUTED,
@@ -984,6 +992,13 @@ class VelixApp(ctk.CTk):
         # Спрашиваем реестр, а не свою память: пользователь мог убрать
         # автозапуск и мимо нас
         self._set_switch(self.autostart_switch, autostart.is_enabled())
+
+        # Панель показываем только хозяину чата: кто это — сказал сервер
+        # в приветствии, сам клиент такое решать не должен
+        if getattr(self, "is_admin", False):
+            self.admin_button.pack(padx=48, pady=(4, 8))
+        else:
+            self.admin_button.pack_forget()
 
         if not autostart.supported():
             self.autostart_switch.configure(state="disabled")
@@ -1126,6 +1141,135 @@ class VelixApp(ctk.CTk):
             self._show_settings()
         elif was_profile:
             self._show_profile()
+
+    def _show_admin(self):
+        """Панель управления: люди, переписки и место на диске."""
+        self.network.send(protocol.admin_request("stats"))
+
+        window = ctk.CTkToplevel(self)
+        window.title(t("Панель управления"))
+        window.geometry("620x620")
+        window.transient(self)
+        window.configure(fg_color=SIDEBAR)
+        self.admin_window = window
+
+        ctk.CTkLabel(window, text=t("Панель управления"), font=self.font_title,
+                     text_color=TEXT).pack(pady=(18, 6))
+
+        self.admin_summary = ctk.CTkLabel(window, text=t("Загружаю…"),
+                                          font=self.font_small, text_color=MUTED,
+                                          justify="left")
+        self.admin_summary.pack(padx=24, anchor="w")
+
+        self.admin_list = ctk.CTkScrollableFrame(window, fg_color="transparent")
+        self.admin_list.pack(fill="both", expand=True, padx=16, pady=12)
+
+        if self.stats:
+            self._draw_admin(self.stats)
+
+    def _on_admin(self, message):
+        """Пришла свежая сводка — перерисовываем панель."""
+        self.stats = message.get("stats") or {}
+        if getattr(self, "admin_window", None) is not None \
+                and self.admin_window.winfo_exists():
+            self._draw_admin(self.stats)
+
+    def _draw_admin(self, stats):
+        self.admin_summary.configure(text=t(
+            "Сообщений: {messages} · вложений: {files} на {media}\n"
+            "База: {database} · на диске свободно {free} из {total}",
+            messages=stats.get("messages", 0),
+            files=stats.get("media_files", 0),
+            media=protocol.human_size(stats.get("media_bytes", 0)),
+            database=protocol.human_size(stats.get("database_bytes", 0)),
+            free=protocol.human_size(stats.get("disk_free", 0)),
+            total=protocol.human_size(stats.get("disk_total", 0))))
+
+        for widget in self.admin_list.winfo_children():
+            widget.destroy()
+
+        ctk.CTkLabel(self.admin_list, text=t("УЧАСТНИКИ"), font=self.font_small,
+                     text_color=MUTED, anchor="w").pack(fill="x", pady=(4, 2))
+        for person in stats.get("users", []):
+            self._admin_row(
+                f"{person['name']} · {person['login']}",
+                t("сообщений: {count}", count=person.get("messages", 0)),
+                None if person["id"] == self.user.get("id")
+                else lambda p=person: self._admin_drop_user(p))
+
+        ctk.CTkLabel(self.admin_list, text=t("ПЕРЕПИСКИ"), font=self.font_small,
+                     text_color=MUTED, anchor="w").pack(fill="x", pady=(14, 2))
+        for room in stats.get("rooms", []):
+            title = room.get("title") or t("Личная переписка")
+            self._admin_row(
+                f"{title} · {room['kind']}",
+                t("людей: {members}, сообщений: {count}",
+                  members=room.get("members", 0), count=room.get("messages", 0)),
+                lambda r=room: self._admin_drop_room(r))
+
+    def _admin_row(self, title, note, on_delete):
+        row = ctk.CTkFrame(self.admin_list, fg_color=INPUT_BG, corner_radius=8)
+        row.pack(fill="x", pady=2)
+
+        lines = ctk.CTkFrame(row, fg_color="transparent")
+        lines.pack(side="left", fill="x", expand=True, padx=10, pady=6)
+        ctk.CTkLabel(lines, text=title, font=self.font_body, text_color=TEXT,
+                     anchor="w").pack(fill="x")
+        ctk.CTkLabel(lines, text=note, font=self.font_small, text_color=MUTED,
+                     anchor="w").pack(fill="x")
+
+        if on_delete is not None:
+            ctk.CTkButton(row, text=t("Удалить"), width=90, height=28,
+                          corner_radius=8, font=self.font_small, fg_color=SEPARATOR,
+                          hover_color=OFFLINE, text_color=TEXT,
+                          command=on_delete).pack(side="right", padx=10)
+
+    def _admin_drop_user(self, person):
+        if self._confirm(t("Удалить {name}?", name=person["name"]),
+                         t("Учётная запись пропадёт, сообщения останутся.")):
+            self.network.send(protocol.admin_request("drop_user", user=person["id"]))
+
+    def _admin_drop_room(self, room):
+        title = room.get("title") or t("Личная переписка")
+        if self._confirm(t("Удалить «{title}»?", title=title),
+                         t("Переписка и вложения пропадут у всех. "
+                           "Отменить это нельзя.")):
+            self.network.send(protocol.admin_request("drop_room",
+                                                     conversation=room["id"]))
+
+    def _confirm(self, question, note):
+        """Простое «да/нет» своим окном: системного в CustomTkinter нет."""
+        window = ctk.CTkToplevel(self)
+        window.title(question)
+        window.geometry("420x180")
+        window.transient(self)
+        window.configure(fg_color=SIDEBAR)
+        window.grab_set()
+
+        ctk.CTkLabel(window, text=question, font=self.font_name,
+                     text_color=TEXT, wraplength=360).pack(pady=(20, 6))
+        ctk.CTkLabel(window, text=note, font=self.font_small, text_color=MUTED,
+                     wraplength=360).pack()
+
+        answer = {"yes": False}
+
+        def say(value):
+            answer["yes"] = value
+            window.destroy()
+
+        buttons = ctk.CTkFrame(window, fg_color="transparent")
+        buttons.pack(pady=16)
+        ctk.CTkButton(buttons, text=t("Удалить"), width=140, height=34,
+                      corner_radius=8, font=self.font_small, fg_color=OFFLINE,
+                      hover_color=SEPARATOR, text_color=TEXT,
+                      command=lambda: say(True)).pack(side="left", padx=6)
+        ctk.CTkButton(buttons, text=t("Отмена"), width=140, height=34,
+                      corner_radius=8, font=self.font_small, fg_color=INPUT_BG,
+                      hover_color=SEPARATOR, text_color=TEXT,
+                      command=lambda: say(False)).pack(side="left", padx=6)
+
+        self.wait_window(window)
+        return answer["yes"]
 
     def _on_theme_switch(self):
         theme = "dark" if self.theme_switch.get() else "light"
@@ -1493,6 +1637,7 @@ class VelixApp(ctk.CTk):
         self.user = dict(message.get("user") or {})
         self.token = message.get("token")
         self.available_update = message.get("update")
+        self.is_admin = bool(message.get("admin"))
         self.pending_login = None
 
         store.remember_account(self.config_data, self.user.get("login", ""),
@@ -1577,6 +1722,8 @@ class VelixApp(ctk.CTk):
             self._on_reactions(message)
         elif kind == "pinned":
             self._on_pinned(message)
+        elif kind == "admin":
+            self._on_admin(message)
         elif kind == "search":
             self._show_search(message)
         elif kind in ("text", "media"):
@@ -1655,6 +1802,13 @@ class VelixApp(ctk.CTk):
 
     def _on_incoming(self, message):
         """Сообщение из сети: показываем, если оно в открытой переписке."""
+        where = message.get("conversation")
+        if where not in (None, self.conversation) \
+                or self.state() != "normal":
+            # Пришло не сюда или окно спрятано — считаем непрочитанным
+            if message.get("user") != self.user.get("id"):
+                self.unread[where] = self.unread.get(where, 0) + 1
+
         if message.get("conversation") not in (None, self.conversation):
             # Пришло в другую переписку: ленту не трогаем, только
             # обновляем строку в списке слева
@@ -1849,6 +2003,12 @@ class VelixApp(ctk.CTk):
         ctk.CTkLabel(lines, text=short(preview, 30), font=self.font_small,
                      text_color=quiet, anchor="w").pack(fill="x")
 
+        waiting = self.unread.get(item["id"], 0)
+        if waiting:
+            ctk.CTkLabel(row, text=f" {waiting} ", font=self.font_small,
+                         text_color=ON_ACCENT, fg_color=OFFLINE, corner_radius=10,
+                         width=24, height=20).pack(side="right", padx=(0, 10))
+
         for widget in (row, lines, avatar):
             widget.bind("<Button-1>", lambda event, i=item["id"]: self._open(i))
         for child in lines.winfo_children():
@@ -1879,6 +2039,7 @@ class VelixApp(ctk.CTk):
         if conversation_id == self.conversation:
             return
         self.conversation = conversation_id
+        self.unread.pop(conversation_id, None)
         self._cancel_reply()
         self._clear_messages()
         self._refresh_side_list()

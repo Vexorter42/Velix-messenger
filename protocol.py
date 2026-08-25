@@ -273,13 +273,18 @@ def avatar_header(name, size):
     return encode({"type": "avatar", "name": name, "size": size})
 
 
-def welcome_message(user, token, update=None, recovery=None):
+def welcome_message(user, token, update=None, recovery=None, admin=False):
     """Приветствие после входа.
 
     recovery появляется один раз — при регистрации и после смены пароля:
     показать код можно только тогда, дальше на сервере лежит лишь его хеш.
+
+    admin говорит клиенту, показывать ли панель управления: кто хозяин
+    чата, решает сервер, а клиенту это знать только для кнопки.
     """
     payload = {"type": "welcome", "user": user, "token": token}
+    if admin:
+        payload["admin"] = True
     if update:
         payload["update"] = update
     if recovery:
@@ -332,9 +337,13 @@ def blob_header(media_id, kind, name):
 
 
 def human_size(size):
-    """Размер файла человеческими словами: 1.4 МБ."""
+    """Размер человеческими словами: 1.4 МБ, 240 ГБ."""
     if size < 1024:
         return f"{size} Б"
     if size < 1024 * 1024:
         return f"{size / 1024:.0f} КБ"
-    return f"{size / (1024 * 1024):.1f} МБ"
+    if size < 1024 ** 3:
+        return f"{size / 1024 ** 2:.1f} МБ"
+    if size < 1024 ** 4:
+        return f"{size / 1024 ** 3:.1f} ГБ"
+    return f"{size / 1024 ** 4:.1f} ТБ"

@@ -266,6 +266,25 @@ ENGLISH = {
     "Автозапуск настраивается только в Windows.":
         "Autostart can only be set up on Windows.",
     "Настройки сохраняются сразу.": "Settings are saved as you change them.",
+    "Панель управления": "Control panel",
+    "Сообщений: {messages} · вложений: {files} на {media}\n"
+    "База: {database} · на диске свободно {free} из {total}":
+        "Messages: {messages} · attachments: {files} taking {media}\n"
+        "Database: {database} · disk free {free} of {total}",
+    "сообщений: {count}": "messages: {count}",
+    "людей: {members}, сообщений: {count}":
+        "people: {members}, messages: {count}",
+    "ПЕРЕПИСКИ": "CONVERSATIONS",
+    "Личная переписка": "Direct chat",
+    "Удалить {name}?": "Delete {name}?",
+    "Учётная запись пропадёт, сообщения останутся.":
+        "The account disappears, the messages stay.",
+    "Удалить «{title}»?": "Delete “{title}”?",
+    "Переписка и вложения пропадут у всех. Отменить это нельзя.":
+        "The conversation and its attachments disappear for everyone. "
+        "This cannot be undone.",
+    "Фото группы": "Group photo",
+    "Удалить группу": "Delete group",
 
     # --- трей и окно
     "Velix свернулся в трей": "Velix moved to the tray",

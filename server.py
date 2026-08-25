@@ -1087,8 +1087,8 @@ async def chat_handler(websocket):
         return
 
     try:
-        await websocket.send(protocol.welcome_message(user, token,
-                                                      available_update(), recovery))
+        await websocket.send(protocol.welcome_message(
+            user, token, available_update(), recovery, await is_admin(user)))
         # Историю отдаём до регистрации в connected_clients, иначе новые
         # сообщения чата могли бы вклиниться в середину выгрузки.
         items = await storage.conversations(user["id"])
