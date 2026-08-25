@@ -36,13 +36,13 @@ The server is a single `python server.py` away.
 |---|---|
 | 💬 **Conversations** | Groups with their own name and photo, plus one-to-one direct chats. Unread messages show up as a red count next to the name. A group is deleted by whoever created it. Reply, react, pin, forward, copy, delete-your-own, full-text search, typing indicator, who-is-online — from a message menu that opens on right-click or long-press. |
 | ✓✓ **Delivery ticks** | One grey tick — the server took it. Two grey — it reached the other side. Two blue — it was read. In a group one reader is enough: people read at their own pace, and waiting for the quietest member means waiting forever. |
-| 📷 **Attachments** | Photos, GIFs (animated in place), video and any other file. Tap a photo to open it full-window. Paste a screenshot straight from the clipboard. Images are compressed server-side — a 7.5 MB phone photo lands at ~400 KB. |
+| 📷 **Attachments** | Photos, GIFs (animated in place), video up to 1 GB and any other file up to 500 MB — big ones travel in chunks instead of landing in memory whole. Open a photo full-window and zoom it with the wheel, by dragging, or with the buttons. Paste a screenshot straight from the clipboard. Images are compressed server-side — a 7.5 MB phone photo lands at ~400 KB. |
 | 👤 **Accounts** | Invite-only registration, scrypt password hashing, session tokens, brute-force lockout. A recovery code instead of email resets. Profile with a name, a bio and a photo. |
 | 🔒 **Encryption** | TLS 1.3 (`wss://`) with a Let's Encrypt certificate. The client falls back to plain `ws://` only if the server has no certificate — and says so on screen. |
 | 📱 **Phones** | A native Android app (`Velix.apk`) — real Android views, not a web page in a frame, with notifications for new messages. The web client is still there for iPhones. |
 | 🔄 **Updates** | A button in Settings. The server hands out the fresh build, the client swaps itself and restarts — no reinstall. |
 | 🌍 **Two languages** | English and Russian, switched in Settings, applied instantly. |
-| 🛠 **Control panel** | The chat owner gets an extra button in Settings: how much space attachments and the database take, how much is free on the disk, who writes how much. Users and conversations are deleted from there too. |
+| 🛠 **Control panel** | The chat owner gets an extra button in Settings: how much space attachments and the database take, how much is free on the disk, who writes how much. Users and conversations are deleted from there too, and the file and video limits are set there. |
 
 ## Quick start
 
@@ -268,7 +268,9 @@ The chat owner is whoever registered first, or whoever's login is named in
 * who is in the chat and how much each of them wrote — each with a Delete
   button;
 * which conversations exist and how many people are in them — likewise with
-  Delete.
+  Delete;
+* the attachment limits: how large a file and a video may be. The numbers live
+  in the database, so they survive a restart.
 
 A deleted account disappears while its messages stay: otherwise conversations
 would grow holes and the other side would lose half the exchange. A deleted
@@ -291,7 +293,7 @@ and tells every client which version it has. If it is newer than the client's,
 the Update button in Settings lights up.
 
 ```bash
-~/velix/publish-update.sh /path/to/Velix.exe 0.2.2.0
+~/velix/publish-update.sh /path/to/Velix.exe 0.2.3.0
 sudo systemctl restart velix
 ```
 
@@ -319,8 +321,31 @@ anything fails halfway, the old file comes back.
 | `VELIX_OPEN_REGISTRATION` | `1` drops the invite requirement |
 | `VELIX_UPDATES` | Directory with the build handed out to clients |
 | `VELIX_ADMIN` | Login of the chat owner; without it the owner is whoever registered first |
+| `VELIX_CACHE` | Where the client keeps downloaded attachments (default: next to the settings) |
 | `VELIX_PUSH_KEYS` | Path to the VAPID key file |
 | `VELIX_LANG` | Interface language of the console client |
+
+## Large attachments
+
+An image travels in a single frame: it gets compressed anyway, and a phone
+photo ends up under a megabyte. Video and files are another matter, so they go
+in four-megabyte chunks:
+
+1. the client says "here comes a file, this many bytes";
+2. the server agrees and opens a temporary file for it;
+3. the client sends chunks, the server appends them and reports the progress;
+4. once everything has arrived, the file moves into storage and becomes a
+   message.
+
+It is handed back the same way — chunk by chunk, straight off the disk. Neither
+the server nor the client ever holds a gigabyte of video in memory: the Pi
+would not survive it, and neither would a phone.
+
+Clients remember what they have already downloaded: attachments sit next to the
+settings along with scaled-down copies of the images. A conversation with two
+dozen photos therefore opens instantly instead of pulling them over the network
+on every launch. The cache is allowed 500 MB, beyond which it drops whatever
+has gone untouched the longest.
 
 ## How it is built
 
