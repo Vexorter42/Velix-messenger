@@ -28,6 +28,7 @@ from PIL import Image, ImageDraw, ImageSequence
 
 import autostart
 import i18n
+import mediacache
 import protocol
 import store
 import tray as tray_module
@@ -1923,7 +1924,13 @@ class VelixApp(ctk.CTk):
             return
 
         self.avatar_waiters.setdefault(avatar_id, []).append((label, side))
-        if len(self.avatar_waiters[avatar_id]) == 1:
+        if len(self.avatar_waiters[avatar_id]) > 1:
+            return
+
+        сохранённое = mediacache.get(avatar_id)
+        if сохранённое is not None:
+            self._fill_avatar(avatar_id, сохранённое)
+        else:
             self.network.send(protocol.fetch_request(avatar_id))
 
     def _fill_avatar(self, avatar_id, data):
@@ -2514,7 +2521,7 @@ class VelixApp(ctk.CTk):
         if not media_id:
             return
 
-        data = self.kept_media.get(media_id)
+        data = self.kept_media.get(media_id) or mediacache.get(media_id)
         if data is None:
             # Содержимое ещё не забирали с сервера — попросим и вернёмся сюда
             self.pending_media[media_id] = ("copy", None, item)
@@ -2809,8 +2816,12 @@ class VelixApp(ctk.CTk):
                                   font=self.font_small, text_color=MUTED)
             holder.pack(padx=6, pady=(6, 2))
 
+            if data is None and media_id:
+                # Однажды пришедшая картинка лежит на диске: сеть не трогаем
+                data = mediacache.get(media_id)
+
             if data is not None:
-                self._show_picture(holder, kind, data)
+                self._show_picture(holder, kind, data, media_id)
             elif media_id:
                 self.pending_media[media_id] = ("picture", holder, kind)
                 self.network.send(protocol.fetch_request(media_id))
@@ -2858,9 +2869,12 @@ class VelixApp(ctk.CTk):
         return card
 
     def _fill_media(self, message):
-        """Пришло содержимое вложения — показываем его."""
+        """Пришло содержимое вложения — показываем его и кладём на диск."""
         media_id = message.get("id")
         data = message.get("data") or b""
+
+        if data:
+            mediacache.put(media_id, data)
 
         if media_id in self.avatar_waiters:
             self._fill_avatar(media_id, data)
@@ -2878,17 +2892,23 @@ class VelixApp(ctk.CTk):
         if mode == "copy":
             self._copy_bytes(extra, data)
         elif mode == "picture":
-            self._show_picture(widget, extra, data)
+            self._show_picture(widget, extra, data, media_id)
         else:
             widget.configure(text=t("Открыть"), state="normal",
                              command=lambda: self._open_media(extra, data))
             self._open_media(extra, data)
 
-    def _show_picture(self, holder, kind, data):
+    def _show_picture(self, holder, kind, data, media_id=None):
         """Заменяет заглушку картинкой, гифку — запускает."""
+        image = None
         try:
-            image = Image.open(io.BytesIO(data))
-            frames = self._prepare_frames(image, kind)
+            if kind == "gif":
+                image = Image.open(io.BytesIO(data))
+                frames = self._prepare_frames(image, kind)
+            else:
+                picture = self._thumbnail(data, media_id)
+                frames = [ctk.CTkImage(light_image=picture, dark_image=picture,
+                                       size=picture.size)]
         except Exception as error:
             holder.configure(
                 text=t("не удалось показать картинку: {error}", error=error))
@@ -2899,7 +2919,7 @@ class VelixApp(ctk.CTk):
         holder.bind("<Button-1>",
                     lambda event, bytes_=data, k=kind: self._show_full(bytes_, k))
 
-        if len(frames) > 1:
+        if len(frames) > 1 and image is not None:
             delay = max(30, int(image.info.get("duration", 80)))
             self.animations[holder] = frames
             self._animate(holder, frames, 0, delay)
@@ -2952,6 +2972,30 @@ class VelixApp(ctk.CTk):
             if not widget.winfo_exists():
                 self.animations.pop(widget, None)
         overlay.destroy()
+
+    def _thumbnail(self, data, media_id):
+        """Уменьшенная картинка для пузыря — по возможности готовая.
+
+        Разобрать снимок с телефона и ужать его стоит десятков миллисекунд;
+        на два десятка фотографий это уже заметная пауза при каждом входе в
+        переписку. Поэтому готовую копию держим на диске.
+        """
+        if media_id:
+            готовое = mediacache.get_thumb(media_id)
+            if готовое is not None:
+                try:
+                    return Image.open(io.BytesIO(готовое)).convert("RGBA")
+                except Exception:
+                    pass          # копия испортилась — сделаем заново
+
+        picture = Image.open(io.BytesIO(data)).convert("RGBA")
+        picture.thumbnail(MAX_PICTURE, Image.LANCZOS)
+
+        if media_id:
+            holder = io.BytesIO()
+            picture.save(holder, "PNG")
+            mediacache.put_thumb(media_id, holder.getvalue())
+        return picture
 
     def _prepare_frames(self, image, kind, box=MAX_PICTURE):
         """Готовит кадры: обычной картинке — один, гифке — все по очереди."""
