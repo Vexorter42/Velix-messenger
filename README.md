@@ -34,14 +34,15 @@ The server is a single `python server.py` away.
 
 | | |
 |---|---|
-| 💬 **Conversations** | Groups you create and invite people into, plus one-to-one direct chats. Reply, react, pin, forward, copy, delete-your-own, full-text search, typing indicator, who-is-online — from a message menu that opens on right-click or long-press. |
-| ✓✓ **Delivery ticks** | One grey tick — the server took it. Two grey — it reached everyone in the conversation. Two blue — everyone read it. |
+| 💬 **Conversations** | Groups with their own name and photo, plus one-to-one direct chats. Unread messages show up as a red count next to the name. A group is deleted by whoever created it. Reply, react, pin, forward, copy, delete-your-own, full-text search, typing indicator, who-is-online — from a message menu that opens on right-click or long-press. |
+| ✓✓ **Delivery ticks** | One grey tick — the server took it. Two grey — it reached the other side. Two blue — it was read. In a group one reader is enough: people read at their own pace, and waiting for the quietest member means waiting forever. |
 | 📷 **Attachments** | Photos, GIFs (animated in place), video and any other file. Tap a photo to open it full-window. Paste a screenshot straight from the clipboard. Images are compressed server-side — a 7.5 MB phone photo lands at ~400 KB. |
 | 👤 **Accounts** | Invite-only registration, scrypt password hashing, session tokens, brute-force lockout. A recovery code instead of email resets. Profile with a name, a bio and a photo. |
 | 🔒 **Encryption** | TLS 1.3 (`wss://`) with a Let's Encrypt certificate. The client falls back to plain `ws://` only if the server has no certificate — and says so on screen. |
-| 📱 **Phones** | A native Android app (`Velix.apk`) — real Android views, not a web page in a frame. The web client is still there for iPhones and for push notifications. |
+| 📱 **Phones** | A native Android app (`Velix.apk`) — real Android views, not a web page in a frame, with notifications for new messages. The web client is still there for iPhones. |
 | 🔄 **Updates** | A button in Settings. The server hands out the fresh build, the client swaps itself and restarts — no reinstall. |
 | 🌍 **Two languages** | English and Russian, switched in Settings, applied instantly. |
+| 🛠 **Control panel** | The chat owner gets an extra button in Settings: how much space attachments and the database take, how much is free on the disk, who writes how much. Users and conversations are deleted from there too. |
 
 ## Quick start
 
@@ -120,7 +121,18 @@ for the server address and remembers it.
 It does what the desktop client does: sign-in and registration, the list of
 chats and members, direct chats and groups, history, photos from the gallery
 and full-screen viewing, delivery ticks, reactions, replies, pin, forward,
-copy, delete — and both languages.
+copy, delete — and both languages. A long press on a group in the list changes
+its photo or deletes it.
+
+**Notifications.** The connection lives in a service, not on the screen: it
+keeps running on its own, shows a "Velix is online" line in the shade and posts
+a notification when a message arrives while the app is in the background. That
+line cannot be hidden — without it Android puts the connection to sleep within
+minutes. On first launch the app asks for notification permission (Android 13
+and newer); decline it and everything else still works.
+
+While the app is away, unread messages are counted and shown as a red badge
+next to the conversation name.
 
 There is no third-party library inside: even the WebSocket is hand-written
 (`android/java/org/vexorter/velix/Ws.java`), because the Android framework has
@@ -131,9 +143,10 @@ build needs only the Android SDK:
 python android/build.py
 ```
 
-**What it does not do yet:** notifications while the app is closed. That needs
-Firebase, a Google account and a project of its own; the web client below does
-it through the browser instead.
+**What it does not do yet:** notifications once the app has been shut down
+entirely (swiped away from recents, or after a reboot before the first launch).
+The service survives backgrounding and network loss, but not being killed — for
+that you need Firebase, a Google account and a project of its own.
 
 ### The web client
 
@@ -245,6 +258,23 @@ in `~/velix-backups`. Once a day from cron:
 30 4 * * * $HOME/velix/backup.sh >> $HOME/velix-backups/backup.log 2>&1
 ```
 
+### The control panel
+
+The chat owner is whoever registered first, or whoever's login is named in
+`VELIX_ADMIN`. They get a "Control panel" button in Settings:
+
+* how many messages and attachments there are, how much space they take and
+  how much is left on the Pi's disk;
+* who is in the chat and how much each of them wrote — each with a Delete
+  button;
+* which conversations exist and how many people are in them — likewise with
+  Delete.
+
+A deleted account disappears while its messages stay: otherwise conversations
+would grow holes and the other side would lose half the exchange. A deleted
+conversation takes its messages and attachments with it, and that cannot be
+undone. You cannot delete yourself.
+
 ### A test server next to the live one
 
 Paths and the port come from environment variables, so a spare server can live
@@ -261,9 +291,15 @@ and tells every client which version it has. If it is newer than the client's,
 the Update button in Settings lights up.
 
 ```bash
-~/velix/publish-update.sh /path/to/Velix.exe 1.8.0
+~/velix/publish-update.sh /path/to/Velix.exe 0.2.2.0
 sudo systemctl restart velix
 ```
+
+**Version numbers** look like `0.2.2.0`. The leading zero says the first round
+release is still ahead; it does not count when versions are compared, so
+`0.2.2.0` and `2.2.0` mean the same thing. A big addition moves the second
+digit (`0.2.1.0` → `0.2.2.0`), a small or middling one moves the last
+(`0.2.2.0` → `0.2.2.1`).
 
 The swap works around the fact that a running exe cannot be overwritten but can
 be renamed: the old file moves aside as `Velix.exe.old`, the new one takes its
@@ -282,6 +318,7 @@ anything fails halfway, the old file comes back.
 | `VELIX_ALLOWED_HOSTS` | Comma-separated host names allowed to connect |
 | `VELIX_OPEN_REGISTRATION` | `1` drops the invite requirement |
 | `VELIX_UPDATES` | Directory with the build handed out to clients |
+| `VELIX_ADMIN` | Login of the chat owner; without it the owner is whoever registered first |
 | `VELIX_PUSH_KEYS` | Path to the VAPID key file |
 | `VELIX_LANG` | Interface language of the console client |
 
