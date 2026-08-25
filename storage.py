@@ -12,6 +12,7 @@
 import asyncio
 import json
 import os
+import shutil
 import sqlite3
 import threading
 import uuid
@@ -50,7 +51,8 @@ MESSAGE_COLUMNS = {
 USER_COLUMNS = {"recovery_hash": "TEXT"}
 
 # Закреплённое сообщение переписки — тоже дописываемый столбец
-CONVERSATION_COLUMNS = {"pinned_id": "INTEGER"}
+CONVERSATION_COLUMNS = {"pinned_id": "INTEGER", "avatar_id": "TEXT",
+                        "created_by": "INTEGER"}
 
 # Общий чат существует всегда и лежит под первым номером
 # Общий чат превратился в обычную группу: она заведена первой и в ней
@@ -388,7 +390,7 @@ def _conversations_sync(user_id):
     with _lock:
         rows = _connection.execute(
             """
-            SELECT c.id, c.kind, c.title, c.pinned_id
+            SELECT c.id, c.kind, c.title, c.pinned_id, c.avatar_id, c.created_by
             FROM conversations c
             WHERE c.id IN (SELECT conversation_id FROM members WHERE user_id = ?)
             ORDER BY c.kind DESC, c.id ASC
@@ -397,10 +399,14 @@ def _conversations_sync(user_id):
         ).fetchall()
 
         result = []
-        for conversation_id, kind, title, pinned in rows:
+        for conversation_id, kind, title, pinned, avatar, owner in rows:
             item = {"id": conversation_id, "kind": kind, "title": title}
             if pinned:
                 item["pinned"] = pinned
+            if avatar:
+                item["avatar"] = avatar
+            if owner:
+                item["owner"] = owner
 
             if kind == "direct":
                 # У личной переписки заголовок — это имя собеседника
@@ -429,12 +435,12 @@ def _conversations_sync(user_id):
     return result
 
 
-def _create_group_sync(title, member_ids):
+def _create_group_sync(title, member_ids, creator=None):
     """Заводит группу и сразу вписывает в неё участников."""
     with _lock:
         cursor = _connection.execute(
-            "INSERT INTO conversations (kind, title, created_at)"
-            " VALUES ('group', ?, ?)", (title, now()))
+            "INSERT INTO conversations (kind, title, created_at, created_by)"
+            " VALUES ('group', ?, ?, ?)", (title, now(), creator))
         conversation = cursor.lastrowid
         _connection.executemany(
             "INSERT OR IGNORE INTO members (conversation_id, user_id) VALUES (?, ?)",
@@ -456,13 +462,18 @@ def _conversation_sync(conversation_id):
     """Одна переписка — какой её увидит участник группы."""
     with _lock:
         row = _connection.execute(
-            "SELECT id, kind, title, pinned_id FROM conversations WHERE id = ?",
+            "SELECT id, kind, title, pinned_id, avatar_id, created_by"
+            " FROM conversations WHERE id = ?",
             (conversation_id,)).fetchone()
     if row is None:
         return None
     item = {"id": row[0], "kind": row[1], "title": row[2]}
     if row[3]:
         item["pinned"] = row[3]
+    if row[4]:
+        item["avatar"] = row[4]
+    if row[5]:
+        item["owner"] = row[5]
     return item
 
 
@@ -582,6 +593,121 @@ def _conversation_of_sync(message_id):
     return row[0] if row else None
 
 
+def _set_conversation_avatar_sync(conversation_id, media_id, name, data):
+    """Ставит фото группы, стирая прежнее."""
+    with _lock:
+        row = _connection.execute(
+            "SELECT avatar_id FROM conversations WHERE id = ?",
+            (conversation_id,)).fetchone()
+        previous = row[0] if row else None
+        _connection.execute("UPDATE conversations SET avatar_id = ? WHERE id = ?",
+                            (media_id, conversation_id))
+        _connection.commit()
+
+    suffix = Path(name).suffix.lower()[:16]
+    (_media_dir / f"{media_id}{suffix}").write_bytes(data)
+    if previous:
+        for stale in _media_dir.glob(f"{previous}*"):
+            stale.unlink(missing_ok=True)
+    return media_id
+
+
+def _forget_media(media_ids):
+    """Стирает файлы вложений с диска."""
+    for media_id in media_ids:
+        if not media_id:
+            continue
+        for path in _media_dir.glob(f"{media_id}*"):
+            path.unlink(missing_ok=True)
+
+
+def _delete_conversation_sync(conversation_id):
+    """Убирает переписку целиком: сообщения, вложения, участников."""
+    with _lock:
+        rows = _connection.execute(
+            "SELECT media_id FROM messages WHERE conversation_id = ?",
+            (conversation_id,)).fetchall()
+        _connection.execute(
+            "DELETE FROM receipts WHERE message_id IN"
+            " (SELECT id FROM messages WHERE conversation_id = ?)",
+            (conversation_id,))
+        _connection.execute(
+            "DELETE FROM reactions WHERE message_id IN"
+            " (SELECT id FROM messages WHERE conversation_id = ?)",
+            (conversation_id,))
+        _connection.execute("DELETE FROM messages WHERE conversation_id = ?",
+                            (conversation_id,))
+        _connection.execute("DELETE FROM members WHERE conversation_id = ?",
+                            (conversation_id,))
+        _connection.execute("DELETE FROM conversations WHERE id = ?",
+                            (conversation_id,))
+        _connection.commit()
+
+    _forget_media(row[0] for row in rows)
+
+
+def _delete_user_sync(user_id):
+    """Убирает учётную запись.
+
+    Сообщения остаются: иначе в переписке появились бы дыры, а у соседей
+    пропала бы половина разговора. Имя в них уже записано.
+    """
+    with _lock:
+        row = _connection.execute("SELECT login, avatar_id FROM users WHERE id = ?",
+                                  (user_id,)).fetchone()
+        if row is None:
+            return None
+        _connection.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+        _connection.execute("DELETE FROM pushes WHERE user_id = ?", (user_id,))
+        _connection.execute("DELETE FROM members WHERE user_id = ?", (user_id,))
+        _connection.execute("DELETE FROM reactions WHERE user_id = ?", (user_id,))
+        _connection.execute("DELETE FROM receipts WHERE user_id = ?", (user_id,))
+        _connection.execute("UPDATE messages SET user_id = NULL WHERE user_id = ?",
+                            (user_id,))
+        _connection.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        _connection.commit()
+
+    _forget_media([row[1]])
+    return row[0]
+
+
+def _stats_sync():
+    """Сводка для панели: кто есть, сколько чего и сколько это весит."""
+    with _lock:
+        users = _connection.execute(
+            "SELECT id, login, name, created_at, last_seen,"
+            " (SELECT COUNT(*) FROM messages m WHERE m.user_id = users.id)"
+            " FROM users ORDER BY id").fetchall()
+        rooms = _connection.execute(
+            "SELECT c.id, c.kind, c.title, c.created_by,"
+            " (SELECT COUNT(*) FROM members WHERE conversation_id = c.id),"
+            " (SELECT COUNT(*) FROM messages WHERE conversation_id = c.id)"
+            " FROM conversations c ORDER BY c.id").fetchall()
+        messages = _connection.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+
+    files = list(_media_dir.glob("*"))
+    media_bytes = sum(path.stat().st_size for path in files if path.is_file())
+    database_bytes = sum(
+        path.stat().st_size for path in
+        [Path(_connection.execute("PRAGMA database_list").fetchone()[2])]
+        if path.exists())
+
+    usage = shutil.disk_usage(_media_dir)
+    return {
+        "users": [{"id": row[0], "login": row[1], "name": row[2],
+                   "created": row[3], "seen": row[4], "messages": row[5]}
+                  for row in users],
+        "rooms": [{"id": row[0], "kind": row[1], "title": row[2], "owner": row[3],
+                   "members": row[4], "messages": row[5]} for row in rooms],
+        "messages": messages,
+        "media_files": len([path for path in files if path.is_file()]),
+        "media_bytes": media_bytes,
+        "database_bytes": database_bytes,
+        "disk_total": usage.total,
+        "disk_free": usage.free,
+    }
+
+
 def _pin_sync(conversation_id, message_id):
     with _lock:
         _connection.execute("UPDATE conversations SET pinned_id = ? WHERE id = ?",
@@ -697,9 +823,10 @@ def _mark_receipts_sync(user_id, message_ids, read):
 def _receipt_state_sync(message_ids):
     """Состояние галочек: sent, delivered или read.
 
-    Доставлено — когда сообщение дошло до всех остальных участников,
-    прочитано — когда все его открыли. Так же считает WhatsApp: одна
-    галочка означает, что до кого-то ещё не дошло.
+    Две галочки — сообщение дошло хотя бы до кого-то из собеседников,
+    синие — хотя бы кто-то его прочитал. В переписке на двоих это ровно
+    то же самое, что «дошло до всех», а в группе иначе нельзя: один
+    заброшенный аккаунт держал бы галочки серыми навсегда.
     """
     if not message_ids:
         return {}
@@ -722,9 +849,9 @@ def _receipt_state_sync(message_ids):
             delivered, read = _connection.execute(
                 "SELECT COUNT(delivered_at), COUNT(read_at) FROM receipts"
                 " WHERE message_id = ?", (message_id,)).fetchone()
-            if read >= others:
+            if read > 0:
                 state[message_id] = "read"
-            elif delivered >= others:
+            elif delivered > 0:
                 state[message_id] = "delivered"
             else:
                 state[message_id] = "sent"
@@ -1102,9 +1229,31 @@ async def drop_push(endpoint):
     await asyncio.to_thread(_drop_push_sync, endpoint)
 
 
-async def create_group(title, member_ids):
+async def create_group(title, member_ids, creator=None):
     """Новая группа с участниками."""
-    return await asyncio.to_thread(_create_group_sync, title, list(member_ids))
+    return await asyncio.to_thread(_create_group_sync, title, list(member_ids),
+                                   creator)
+
+
+async def set_conversation_avatar(conversation_id, media_id, name, data):
+    """Ставит фото группы."""
+    return await asyncio.to_thread(_set_conversation_avatar_sync, conversation_id,
+                                   media_id, name, data)
+
+
+async def delete_conversation(conversation_id):
+    """Удаляет переписку вместе с сообщениями и вложениями."""
+    await asyncio.to_thread(_delete_conversation_sync, conversation_id)
+
+
+async def delete_user(user_id):
+    """Удаляет учётную запись, оставляя её сообщения на месте."""
+    return await asyncio.to_thread(_delete_user_sync, user_id)
+
+
+async def stats():
+    """Сводка для панели управления."""
+    return await asyncio.to_thread(_stats_sync)
 
 
 async def add_members(conversation_id, member_ids):

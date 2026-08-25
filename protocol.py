@@ -99,6 +99,26 @@ def group_request(title, members):
     return encode({"type": "group", "title": title, "members": list(members)})
 
 
+def group_avatar_header(conversation, name, size):
+    """Фото группы: следом идёт двоичный кадр с содержимым."""
+    return encode({"type": "avatar", "conversation": conversation,
+                   "name": name, "size": size})
+
+
+def delete_group_request(conversation):
+    """Удалить группу целиком."""
+    return encode({"type": "delete_group", "conversation": conversation})
+
+
+def admin_request(what, **values):
+    """Запрос к панели управления: stats, drop_user, drop_room."""
+    return encode({"type": "admin", "what": what, **values})
+
+
+def admin_message(stats):
+    return encode({"type": "admin", "stats": stats})
+
+
 def members_request(conversation, members):
     """Позвать людей в уже заведённую группу."""
     return encode({"type": "members", "conversation": conversation,
@@ -172,9 +192,16 @@ def history_page(conversation, items, quotes, more, before=None, reactions=None)
                    "before": before, "reactions": reactions or {}})
 
 
-def ack_message(local, message_id, at):
-    """Сервер принял сообщение: вот его настоящий номер и время."""
-    return encode({"type": "ack", "local": local, "id": message_id, "at": at})
+def ack_message(local, message_id, at, media=None):
+    """Сервер принял сообщение: вот его настоящий номер и время.
+
+    У вложения тут же едет и номер файла: без него отправитель не смог бы
+    показать только что отправленную картинку, не перезаходя в переписку.
+    """
+    frame = {"type": "ack", "local": local, "id": message_id, "at": at}
+    if media:
+        frame["media"] = media
+    return encode(frame)
 
 
 def receipts_message(items):

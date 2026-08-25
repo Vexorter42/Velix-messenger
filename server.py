@@ -2,6 +2,7 @@ import asyncio
 import os
 import ssl
 import time
+import uuid
 from http import HTTPStatus
 from pathlib import Path
 
@@ -39,6 +40,10 @@ MAX_TEXT = 4000
 
 # Регистрация по коду приглашения. VELIX_OPEN_REGISTRATION=1 открывает её
 # всем подряд — по умолчанию в чат попадают только по приглашению.
+# Панель управления доступна одному человеку: по умолчанию тому, кто
+# завёл сервер и зарегистрировался первым.
+ADMIN_LOGIN = os.environ.get("VELIX_ADMIN", "").strip().lower()
+
 OPEN_REGISTRATION = os.environ.get("VELIX_OPEN_REGISTRATION") == "1"
 
 # Защита от перебора пароля: сколько промахов подряд терпим и насколько
@@ -578,7 +583,7 @@ async def handle_group(websocket, user, message):
             "Выберите, кого позвать в группу.", "group_needs_members"))
         return
 
-    conversation = await storage.create_group(title, members)
+    conversation = await storage.create_group(title, members, user["id"])
     print(f"[Лог]: {user['name']} завёл группу «{title}» на {len(members)} человек")
 
     item = await storage.conversation(conversation)
@@ -916,7 +921,7 @@ async def handle_media(websocket, user, message):
     if user.get("avatar"):
         frame["avatar"] = user["avatar"]
     await websocket.send(protocol.ack_message(message.get("local"), message_id,
-                                              created_at))
+                                              created_at, media_id))
     reached = await send_to_conversation(conversation, protocol.encode(frame),
                                          websocket)
     await note_delivery(message_id, user["id"], reached)
@@ -950,6 +955,79 @@ async def handle_profile(websocket, user, message):
         await storage.people(), sorted(online)))
 
 
+async def is_admin(user):
+    """Хозяин чата: либо названный в VELIX_ADMIN, либо первый по счёту."""
+    if ADMIN_LOGIN:
+        return str(user.get("login", "")).lower() == ADMIN_LOGIN
+    return user.get("id") == 1
+
+
+async def handle_delete_group(websocket, user, message):
+    """Удаляет группу — по просьбе её создателя или хозяина чата."""
+    conversation = conversation_of(message)
+    item = await storage.conversation(conversation)
+    if item is None or item.get("kind") != "group":
+        await websocket.send(protocol.error_message(
+            "Удалить можно только группу.", "group_only_delete"))
+        return
+
+    if item.get("owner") != user["id"] and not await is_admin(user):
+        await websocket.send(protocol.error_message(
+            "Удалить группу может тот, кто её завёл.", "not_group_owner"))
+        return
+
+    members = await storage.members(conversation)
+    await storage.delete_conversation(conversation)
+    print(f"[Лог]: {user['name']} удалил группу «{item.get('title')}»")
+
+    # Каждому участнику — обновлённый список переписок
+    for member in members:
+        for client in online.get(member, ()):
+            await client.send(protocol.conversations_message(
+                await storage.conversations(member)))
+
+
+async def handle_admin(websocket, user, message):
+    """Панель управления: сводка, удаление людей и переписок."""
+    if not await is_admin(user):
+        await websocket.send(protocol.error_message(
+            "Панель доступна только хозяину чата.", "not_admin"))
+        return
+
+    what = str(message.get("what") or "stats")
+
+    if what == "drop_user":
+        try:
+            victim = int(message.get("user"))
+        except (TypeError, ValueError):
+            return
+        if victim == user["id"]:
+            await websocket.send(protocol.error_message(
+                "Себя удалить нельзя.", "admin_self"))
+            return
+
+        # Выкидываем из сети: его токены только что перестали существовать
+        for client in list(online.get(victim, ())):
+            await client.close()
+        login = await storage.delete_user(victim)
+        print(f"[Лог]: {user['name']} удалил учётную запись {login}")
+
+    elif what == "drop_room":
+        try:
+            room = int(message.get("conversation"))
+        except (TypeError, ValueError):
+            return
+        members = await storage.members(room)
+        await storage.delete_conversation(room)
+        print(f"[Лог]: {user['name']} удалил переписку {room}")
+        for member in members:
+            for client in online.get(member, ()):
+                await client.send(protocol.conversations_message(
+                    await storage.conversations(member)))
+
+    await websocket.send(protocol.admin_message(await storage.stats()))
+
+
 async def handle_avatar(websocket, user, message):
     """Принимает картинку профиля следующим кадром."""
     name = clean_filename(message.get("name"))
@@ -967,6 +1045,29 @@ async def handle_avatar(websocket, user, message):
 
     # Аватарку сжимаем той же дорогой, что и обычные картинки
     name, packed = await asyncio.to_thread(media.compress, "image", name, bytes(payload))
+
+    # С номером переписки это фото группы, без него — своё
+    if message.get("conversation"):
+        conversation = conversation_of(message)
+        if not await allowed(websocket, user, conversation):
+            return
+
+        item = await storage.conversation(conversation)
+        if (item or {}).get("kind") != "group":
+            await websocket.send(protocol.error_message(
+                "Фото ставится только группе.", "group_only_photo"))
+            return
+
+        await storage.set_conversation_avatar(conversation, uuid.uuid4().hex,
+                                              name, packed)
+        fresh = await storage.conversation(conversation)
+        print(f"[Сервер]: {user['login']} сменил фото группы «{fresh.get('title')}»")
+
+        frame = protocol.conversation_message(fresh)
+        await websocket.send(frame)
+        await send_to_conversation(conversation, frame, websocket)
+        return
+
     avatar_id = await storage.set_avatar(user["id"], name, packed)
     user["avatar"] = avatar_id
 
@@ -1042,6 +1143,10 @@ async def chat_handler(websocket):
                 await handle_group(websocket, user, message)
             elif kind == "members":
                 await handle_members(websocket, user, message)
+            elif kind == "delete_group":
+                await handle_delete_group(websocket, user, message)
+            elif kind == "admin":
+                await handle_admin(websocket, user, message)
             elif kind == "read":
                 await handle_read(websocket, user, message)
             elif kind == "pin":
@@ -1110,9 +1215,14 @@ async def main():
     try:
         # Запускаем WebSocket-сервер. max_size поднят: в кадр должен помещаться
         # файл целиком, а по умолчанию библиотека рвёт связь уже на мегабайте.
+        # Телефон в кармане отвечает на пинг не сразу: со стандартными
+        # двадцатью секундами связь рвалась на ровном месте, и клиенты
+        # переподключались по кругу.
         async with websockets.serve(chat_handler, HOST, PORT,
                                     process_request=check_host,
                                     max_size=protocol.MAX_FRAME_SIZE,
+                                    ping_interval=30, ping_timeout=90,
+                                    close_timeout=10,
                                     ssl=context):
             scheme = "wss" if context else "ws"
             print("--- Сервер Velix запущен ---")
