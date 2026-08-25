@@ -956,10 +956,16 @@ async def handle_profile(websocket, user, message):
 
 
 async def is_admin(user):
-    """Хозяин чата: либо названный в VELIX_ADMIN, либо первый по счёту."""
+    """Хозяин чата: либо названный в VELIX_ADMIN, либо самый давний.
+
+    Раньше тут стояло «номер 1», но номер выдаётся раз и навсегда: стоит
+    удалить первую же учётную запись — и хозяином не оказывается никто.
+    Поэтому спрашиваем, кто из ныне живущих завёлся раньше всех.
+    """
     if ADMIN_LOGIN:
         return str(user.get("login", "")).lower() == ADMIN_LOGIN
-    return user.get("id") == 1
+    first = await storage.first_user()
+    return first is not None and user.get("id") == first
 
 
 async def handle_delete_group(websocket, user, message):

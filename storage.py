@@ -1128,6 +1128,17 @@ async def people():
     return await asyncio.to_thread(_people_sync)
 
 
+def _first_user_sync():
+    with _lock:
+        row = _connection.execute("SELECT MIN(id) FROM users").fetchone()
+    return row[0] if row else None
+
+
+async def first_user():
+    """Кто завёл аккаунт раньше всех из ныне живущих."""
+    return await asyncio.to_thread(_first_user_sync)
+
+
 async def add_invite(code, note=""):
     """Заводит код приглашения."""
     return await asyncio.to_thread(_add_invite_sync, code, note)
