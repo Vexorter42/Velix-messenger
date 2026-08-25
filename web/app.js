@@ -128,6 +128,9 @@ function avatarColor(name) {
 function paintAvatar(element, name, avatarId) {
   element.textContent = (name || "?").trim().charAt(0).toUpperCase();
   element.style.background = avatarColor(name);
+  // Кружок в шапке один на все переписки: помечаем, чьё фото он ждёт,
+  // иначе запоздавшая картинка легла бы на уже другого человека
+  element.dataset.avatar = avatarId || "";
   if (!avatarId) return;
 
   const cached = avatarCache.get(avatarId);
@@ -257,7 +260,9 @@ function handleBinary(buffer) {
   if (avatarSlots.has(id)) {
     avatarCache.set(id, url);
     for (const element of avatarSlots.get(id)) {
-      element.innerHTML = `<img src="${url}" alt="">`;
+      if (element.dataset.avatar === id) {
+        element.innerHTML = `<img src="${url}" alt="">`;
+      }
     }
     avatarSlots.delete(id);
     return;

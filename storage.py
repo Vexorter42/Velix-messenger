@@ -385,17 +385,23 @@ def _direct_id_sync(first, second):
     return conversation
 
 
-def _conversations_sync(user_id):
-    """Список переписок пользователя: общий чат плюс его личные."""
+def _conversations_sync(user_id, only=None):
+    """Список переписок пользователя: общий чат плюс его личные.
+
+    only оставляет одну переписку — её же и той же выделки, чтобы
+    обновлённая строчка не потеряла ни имени собеседника, ни последнего
+    сообщения.
+    """
     with _lock:
         rows = _connection.execute(
             """
             SELECT c.id, c.kind, c.title, c.pinned_id, c.avatar_id, c.created_by
             FROM conversations c
             WHERE c.id IN (SELECT conversation_id FROM members WHERE user_id = ?)
+              AND (? IS NULL OR c.id = ?)
             ORDER BY c.kind DESC, c.id ASC
             """,
-            (user_id,),
+            (user_id, only, only),
         ).fetchall()
 
         result = []
@@ -1108,6 +1114,12 @@ async def init(path=DB_PATH, media_dir=MEDIA_DIR):
 async def direct_id(first, second):
     """Личная переписка двоих, создаётся при первом обращении."""
     return await asyncio.to_thread(_direct_id_sync, first, second)
+
+
+async def conversation_for(conversation_id, user_id):
+    """Одна переписка глазами участника — как строчка в его списке."""
+    rows = await asyncio.to_thread(_conversations_sync, user_id, conversation_id)
+    return rows[0] if rows else None
 
 
 async def conversations(user_id):

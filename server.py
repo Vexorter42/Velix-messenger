@@ -549,10 +549,27 @@ async def handle_members(websocket, user, message):
     print(f"[Лог]: {user['name']} позвал в «{item['title']}» ещё {len(fresh)}")
 
     # Новым — сама переписка, старым — обновлённый список участников
-    for member in fresh:
-        for client in online.get(member, ()):
-            await client.send(protocol.conversation_message(item))
+    await send_conversation_to(fresh, conversation)
     await send_people_to(await storage.members(conversation))
+
+
+async def send_conversation_to(user_ids, conversation_id):
+    """Отсылает обновлённую переписку — каждому такой, какой он её видит.
+
+    Личную переписку двое видят по-разному: заголовок у неё — имя
+    собеседника. Да и последнее сообщение в строчке пропало бы, собери мы
+    один кадр на всех.
+    """
+    for member in user_ids:
+        clients = online.get(member, ())
+        if not clients:
+            continue
+        item = await storage.conversation_for(conversation_id, member)
+        if item is None:
+            continue
+        frame = protocol.conversation_message(item)
+        for client in clients:
+            await client.send(frame)
 
 
 async def send_people_to(user_ids):
@@ -586,10 +603,7 @@ async def handle_group(websocket, user, message):
     conversation = await storage.create_group(title, members, user["id"])
     print(f"[Лог]: {user['name']} завёл группу «{title}» на {len(members)} человек")
 
-    item = await storage.conversation(conversation)
-    for member in members:
-        for client in online.get(member, ()):
-            await client.send(protocol.conversation_message(item))
+    await send_conversation_to(members, conversation)
     await send_history(websocket, user, conversation)
 
 
@@ -1066,12 +1080,10 @@ async def handle_avatar(websocket, user, message):
 
         await storage.set_conversation_avatar(conversation, uuid.uuid4().hex,
                                               name, packed)
-        fresh = await storage.conversation(conversation)
-        print(f"[Сервер]: {user['login']} сменил фото группы «{fresh.get('title')}»")
+        print(f"[Сервер]: {user['login']} сменил фото группы «{item.get('title')}»")
 
-        frame = protocol.conversation_message(fresh)
-        await websocket.send(frame)
-        await send_to_conversation(conversation, frame, websocket)
+        await send_conversation_to(await storage.members(conversation),
+                                   conversation)
         return
 
     avatar_id = await storage.set_avatar(user["id"], name, packed)

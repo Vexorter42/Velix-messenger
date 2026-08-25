@@ -1905,6 +1905,14 @@ class VelixApp(ctk.CTk):
         label.configure(text=(nickname or "?")[0].upper(), image=None,
                         fg_color=avatar_color(nickname), corner_radius=side // 2,
                         width=side, height=side)
+        # image=None в CustomTkinter картинку не снимает — она просто остаётся
+        # на месте. Поэтому чистим внутреннюю метку сами, иначе прежнее фото
+        # просвечивало бы из-под буквы у всех подряд.
+        label._label.configure(image="")
+
+        # Кружок в шапке один на все переписки: помечаем, чьё фото он ждёт,
+        # иначе запоздавшая картинка легла бы на уже другого человека
+        label.velix_avatar = avatar_id
 
         if not avatar_id:
             return
@@ -1929,6 +1937,8 @@ class VelixApp(ctk.CTk):
                                  size=(side, side))
             self.avatar_cache[(avatar_id, side)] = image
             self.images.append(image)
+            if getattr(label, "velix_avatar", None) != avatar_id:
+                continue          # кружок за это время достался другому
             if label.winfo_exists():
                 label.configure(text="", image=image, fg_color="transparent")
 

@@ -612,6 +612,9 @@ public class MainActivity extends Activity implements VelixService.Screen {
 
     /** Подставляет фотографию вместо кружка с буквой, когда она есть. */
     private void paintPhoto(final TextView view, final String id) {
+        // Кружок в шапке один на все переписки: помечаем, чьё фото он ждёт,
+        // иначе запоздавшая картинка легла бы на уже другого человека
+        view.setTag(id);
         if (id.isEmpty()) {
             return;
         }
@@ -1858,6 +1861,9 @@ public class MainActivity extends Activity implements VelixService.Screen {
         if (faces != null) {
             Bitmap round = circleBitmap(data);
             for (TextView face : faces) {
+                if (!id.equals(face.getTag())) {
+                    continue;     // кружок за это время достался другому
+                }
                 face.setText("");
                 face.setBackground(new android.graphics.drawable.BitmapDrawable(
                         getResources(), round));
