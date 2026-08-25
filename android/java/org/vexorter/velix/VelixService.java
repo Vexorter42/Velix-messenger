@@ -54,6 +54,7 @@ public class VelixService extends Service implements Net.Listener {
     private final Map<Integer, Integer> unread = new HashMap<>();
 
     private Net net;
+    private int generation;   // какое соединение считается нынешним
     private Screen screen;
     private JSONObject welcome, conversations, people;
     private int openConversation = -1;
@@ -70,6 +71,16 @@ public class VelixService extends Service implements Net.Listener {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int id) {
+        // Строчку в шторке показываем на каждый запуск, а не только при
+        // первом. Служба могла уже сворачиваться после смены учётной
+        // записи: тогда onCreate второй раз не зовут, Android не дожидается
+        // ответа и закрывает приложение с «Velix не отвечает».
+        startForeground(LIVE_ID, live());
+
+        if (stopping) {
+            stopping = false;
+            connect();
+        }
         return START_STICKY;   // система перезапустит нас, если убьёт
     }
 
@@ -134,7 +145,8 @@ public class VelixService extends Service implements Net.Listener {
         if (server.isEmpty()) {
             return;
         }
-        net = new Net(this);
+        generation += 1;
+        net = new Net(new Wire(generation));
         net.connect(server);
     }
 
@@ -203,6 +215,27 @@ public class VelixService extends Service implements Net.Listener {
         getSystemService(NotificationManager.class).cancel(1000 + conversation);
     }
 
+    /**
+     * Начать заново: старое соединение сбрасываем, память о нём чистим.
+     *
+     * Службу при этом не снимаем — она привязана к экрану, и повторная
+     * привязка уже ничего бы не сообщила: связь была бы потеряна насовсем.
+     */
+    void restart() {
+        welcome = null;
+        conversations = null;
+        people = null;
+        unread.clear();
+        openConversation = -1;
+        attempt = 0;
+        generation += 1;          // прощальные слова старого сокета не слушаем
+        if (net != null) {
+            net.close();
+            net = null;
+        }
+        connect();
+    }
+
     /** Полный выход: соединение закрываем и службу снимаем. */
     void shutdown() {
         stopping = true;
@@ -212,6 +245,54 @@ public class VelixService extends Service implements Net.Listener {
         }
         stopForeground(true);
         stopSelf();
+    }
+
+    /**
+     * Обёртка вокруг ответов сокета.
+     *
+     * Прежнее соединение закрывается не мгновенно, и его прощальные слова
+     * могли бы поднять лишний сокет поверх нового. Каждому выдаётся номер,
+     * и слушают только нынешний.
+     */
+    private class Wire implements Net.Listener {
+
+        private final int mine;
+
+        Wire(int mine) {
+            this.mine = mine;
+        }
+
+        private boolean stale() {
+            return mine != generation;
+        }
+
+        @Override
+        public void onOpen(boolean secure) {
+            if (!stale()) {
+                VelixService.this.onOpen(secure);
+            }
+        }
+
+        @Override
+        public void onFrame(JSONObject frame) {
+            if (!stale()) {
+                VelixService.this.onFrame(frame);
+            }
+        }
+
+        @Override
+        public void onBlob(JSONObject header, byte[] data) {
+            if (!stale()) {
+                VelixService.this.onBlob(header, data);
+            }
+        }
+
+        @Override
+        public void onClosed(String reason) {
+            if (!stale()) {
+                VelixService.this.onClosed(reason);
+            }
+        }
     }
 
     // ------------------------------------------------------ кадры сервера
@@ -256,20 +337,33 @@ public class VelixService extends Service implements Net.Listener {
             mergeConversation(frame.optJSONObject("item"));
         }
 
-        // Пока чат свёрнут, о новом сообщении сообщает система
-        if (screen == null && ("text".equals(kind) || "media".equals(kind))) {
+        if ("text".equals(kind) || "media".equals(kind)) {
             int conversation = frame.optInt("conversation");
-            Integer was = unread.get(conversation);
-            unread.put(conversation, (was == null ? 0 : was) + 1);
+            // Своё сообщение и то, что человек прямо сейчас видит,
+            // непрочитанным не считаем
+            boolean seen = screen != null && conversation == openConversation;
+            if (!mine(frame) && !seen) {
+                Integer was = unread.get(conversation);
+                unread.put(conversation, (was == null ? 0 : was) + 1);
 
-            String what = "text".equals(kind)
-                    ? frame.optString("text") : Lang.t("вложение");
-            notifyMessage(frame.optString("nick"), what, conversation);
+                // Пока чат свёрнут, о новом сообщении сообщает система
+                if (screen == null) {
+                    String what = "text".equals(kind)
+                            ? frame.optString("text") : Lang.t("вложение");
+                    notifyMessage(frame.optString("nick"), what, conversation);
+                }
+            }
         }
 
         if (screen != null) {
             screen.onFrame(frame);
         }
+    }
+
+    /** Наше ли это сообщение: своим уведомлять человека незачем. */
+    private boolean mine(JSONObject frame) {
+        JSONObject user = welcome == null ? null : welcome.optJSONObject("user");
+        return user != null && frame.optInt("user", -1) == user.optInt("id", -2);
     }
 
     private void mergeConversation(JSONObject item) {
@@ -314,10 +408,12 @@ public class VelixService extends Service implements Net.Listener {
         // Переподключаемся тихо и с растущей паузой: связь на телефоне
         // пропадает часто, и дёргать сервер каждую секунду незачем
         attempt = Math.min(attempt + 1, 6);
+        final int mine = generation;
         main.postDelayed(new Runnable() {
             @Override
             public void run() {
-                if (!stopping) {
+                // За время паузы могли войти заново — тогда не мешаем
+                if (!stopping && mine == generation) {
                     connect();
                 }
             }

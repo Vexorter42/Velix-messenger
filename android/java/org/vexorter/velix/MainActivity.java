@@ -198,6 +198,9 @@ public class MainActivity extends Activity implements VelixService.Screen {
             service.attach(this);
             if (conversation >= 0) {
                 service.clearUnread(conversation);
+                // Пока чат был свёрнут, сюда могли написать: перечитываем
+                // ленту, иначе пришедшее увиделось бы только после выхода
+                openConversation(conversation);
             }
             drawList();
         }
@@ -387,10 +390,10 @@ public class MainActivity extends Activity implements VelixService.Screen {
         authSubtitle.setText(Lang.t("Подключаемся…"));
         pendingSignIn = true;
         if (service != null) {
-            service.shutdown();
-            service = null;
+            service.restart();      // служба уже привязана — просто заново
+        } else {
+            startService();
         }
-        startService();
     }
 
     // Вход руками: как только служба откроет сокет, отправим логин или код
@@ -647,6 +650,27 @@ public class MainActivity extends Activity implements VelixService.Screen {
     }
 
     private final Map<String, List<TextView>> photoSlots = new HashMap<>();
+
+    /** Кладёт свежее сообщение в строчку списка переписок. */
+    private void rememberLast(JSONObject frame) {
+        int where = frame.optInt("conversation");
+        for (JSONObject item : conversations) {
+            if (item.optInt("id") != where) {
+                continue;
+            }
+            try {
+                JSONObject last = new JSONObject();
+                last.put("kind", frame.optString("type"));
+                last.put("text", frame.optString("text"));
+                last.put("nick", frame.optString("nick"));
+                last.put("at", frame.optString("at"));
+                item.put("last", last);
+            } catch (Exception ignored) {
+                // Не сложилось — строчка просто останется прежней
+            }
+            return;
+        }
+    }
 
     private String titleOf(JSONObject item) {
         String title = item.optString("title", "");
@@ -1523,7 +1547,9 @@ public class MainActivity extends Activity implements VelixService.Screen {
                                 prefs().edit().remove("token").apply();
                                 if (service != null) {
                                     service.shutdown();
+                                    unbindService(connection);
                                     service = null;
+                                    bound = false;
                                 }
                                 show(authScreen);
                             }
@@ -1667,6 +1693,11 @@ public class MainActivity extends Activity implements VelixService.Screen {
                 items.add(frame);
                 showItem(frame);
                 markRead();
+            } else {
+                // Пришло в другую переписку: показываем это в списке —
+                // и строчкой снизу, и красным кружком
+                rememberLast(frame);
+                drawList();
             }
 
         } else if ("ack".equals(kind)) {
