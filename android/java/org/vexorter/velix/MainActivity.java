@@ -709,7 +709,9 @@ public class MainActivity extends Activity implements VelixService.Screen {
                 .show();
     }
 
-    // Куда идёт выбранная фотография: 0 — своя аватарка, иначе фото группы
+    // Куда идёт выбранная фотография: MY_AVATAR — в профиль, номер
+    // переписки — фото группы, ноль — обычным сообщением в чат
+    private static final int MY_AVATAR = -1;
     private int photoTarget;
 
     private View personRow(final JSONObject person) {
@@ -1947,6 +1949,15 @@ public class MainActivity extends Activity implements VelixService.Screen {
                 return;
             }
 
+            if (photoTarget == MY_AVATAR) {
+                // Своя аватарка: без номера переписки сервер понимает,
+                // что это профиль, а не фото группы
+                send(Net.frame("avatar", "name", name, "size", bytes.length),
+                        bytes);
+                photoTarget = 0;
+                return;
+            }
+
             if (photoTarget > 0) {
                 send(Net.frame("avatar", "conversation", photoTarget,
                         "name", name, "size", bytes.length), bytes);
@@ -1977,6 +1988,10 @@ public class MainActivity extends Activity implements VelixService.Screen {
 
     /** Экран настроек: своя страница, а не тесное окошко поверх списка. */
     private void openSettings() {
+        // Прежний экран убираем: иначе они копились бы один поверх другого
+        if (settingsScreen != null) {
+            root.removeView(settingsScreen);
+        }
         settingsScreen = buildSettings();
         root.addView(settingsScreen);
         show(settingsScreen);
@@ -2025,7 +2040,7 @@ public class MainActivity extends Activity implements VelixService.Screen {
         сменить.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View view) {
-                photoTarget = 0;      // ноль — своя аватарка, не группа
+                photoTarget = MY_AVATAR;
                 pickPhoto();
             }
         });
@@ -2055,7 +2070,7 @@ public class MainActivity extends Activity implements VelixService.Screen {
                 Lang.t("Кружок, который видят остальные"), new Runnable() {
             @Override
             public void run() {
-                photoTarget = 0;
+                photoTarget = MY_AVATAR;
                 pickPhoto();
             }
         }), Ui.wide());
@@ -2381,6 +2396,12 @@ public class MainActivity extends Activity implements VelixService.Screen {
         } else if ("profile".equals(kind)) {
             me = frame.optJSONObject("user");
             toast(Lang.t("Сохранено"));
+
+            // Экран настроек показывает и фото, и имя — пересобираем его
+            if (settingsScreen != null && settingsScreen.getVisibility()
+                    == View.VISIBLE) {
+                openSettings();
+            }
 
         } else if ("typing".equals(kind)) {
             if (frame.optInt("conversation") == conversation) {

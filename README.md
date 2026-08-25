@@ -34,10 +34,10 @@ The server is a single `python server.py` away.
 
 | | |
 |---|---|
-| 💬 **Conversations** | Groups with their own name and photo, plus one-to-one direct chats. Unread messages show up as a red count next to the name. A group is deleted by whoever created it. Reply, react, pin, forward, copy, delete-your-own, full-text search, typing indicator, who-is-online — from a message menu that opens on right-click or long-press. |
+| 💬 **Conversations** | Groups with their own name and photo, plus one-to-one direct chats. A group is marked with a badge, and people can be invited into it at any time. Unread messages show up as a red count next to the name. A group is deleted by whoever created it. Reply, react, pin, forward, copy, delete-your-own, full-text search, typing indicator, who-is-online — from a message menu that opens on right-click or long-press. |
 | ✓✓ **Delivery ticks** | One grey tick — the server took it. Two grey — it reached the other side. Two blue — it was read. In a group one reader is enough: people read at their own pace, and waiting for the quietest member means waiting forever. |
 | 📷 **Attachments** | Photos, GIFs (animated in place), video up to 1 GB and any other file up to 500 MB — big ones travel in chunks instead of landing in memory whole. Open a photo full-window and zoom it with the wheel, by dragging, or with the buttons. Paste a screenshot straight from the clipboard. Images are compressed server-side — a 7.5 MB phone photo lands at ~400 KB. |
-| 👤 **Accounts** | Invite-only registration, scrypt password hashing, session tokens, brute-force lockout. A recovery code instead of email resets. Profile with a name, a bio and a photo. |
+| 👤 **Accounts** | Invite-only registration, scrypt password hashing, session tokens, brute-force lockout. A recovery code instead of email resets. Profile with a name, a bio and a photo. Everyone has a `@username` — that is how you find them in search. |
 | 🔒 **Encryption** | TLS 1.3 (`wss://`) with a Let's Encrypt certificate. The client falls back to plain `ws://` only if the server has no certificate — and says so on screen. |
 | 📱 **Phones** | A native Android app (`Velix.apk`) — real Android views, not a web page in a frame, with notifications for new messages. The web client is still there for iPhones. |
 | 🔄 **Updates** | A button in Settings. The server hands out the fresh build, the client swaps itself and restarts — no reinstall. |
@@ -123,6 +123,10 @@ chats and members, direct chats and groups, history, photos from the gallery
 and full-screen viewing, delivery ticks, reactions, replies, pin, forward,
 copy, delete — and both languages. A long press on a group in the list changes
 its photo or deletes it.
+
+**Settings.** A screen of its own rather than a dialog: profile photo, name,
+`@username`, language, server address and sign-out. A photo in a conversation
+zooms with a pinch or a double tap.
 
 **Notifications.** The connection lives in a service, not on the screen: it
 keeps running on its own, shows a "Velix is online" line in the shade and posts
@@ -293,7 +297,7 @@ and tells every client which version it has. If it is newer than the client's,
 the Update button in Settings lights up.
 
 ```bash
-~/velix/publish-update.sh /path/to/Velix.exe 0.2.3.0
+~/velix/publish-update.sh /path/to/Velix.exe 0.2.4.0
 sudo systemctl restart velix
 ```
 
