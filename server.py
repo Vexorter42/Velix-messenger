@@ -1134,7 +1134,8 @@ async def handle_upload(websocket, user, message):
                        "path": holder, "sent": 0,
                        "file": open(holder, "wb"), "socket": websocket}
 
-    await websocket.send(protocol.upload_ready(ticket))
+    await websocket.send(protocol.upload_ready(ticket,
+                                               local=message.get("local")))
 
 
 async def handle_chunk(websocket, user, message):

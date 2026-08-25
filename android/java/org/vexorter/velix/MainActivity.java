@@ -17,7 +17,9 @@ import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
@@ -58,6 +60,13 @@ public class MainActivity extends Activity implements VelixService.Screen {
 
     private static final String PREFS = "velix";
     private static final int PICK_PHOTO = 1;
+    private static final int PICK_FILE = 3;
+
+    // Пределы вложений называет сервер в приветствии
+    private JSONObject limits = new JSONObject();
+    private final Map<String, Object[]> pendingUploads = new HashMap<>();
+    private TextView uploadLine;
+    private final Handler main = new Handler(Looper.getMainLooper());
     private static final String[] EMOJI = {"👍", "❤", "😂", "🔥", "😢", "👎"};
 
     private VelixService service;
@@ -775,7 +784,7 @@ public class MainActivity extends Activity implements VelixService.Screen {
         attach.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View view) {
-                pickPhoto();
+                attachMenu();
             }
         });
         composer.addView(attach);
@@ -1446,12 +1455,184 @@ public class MainActivity extends Activity implements VelixService.Screen {
         startActivityForResult(intent, PICK_PHOTO);
     }
 
+    /** Что прикладываем: фотографию или любой файл. */
+    private void attachMenu() {
+        final String[] выбор = {Lang.t("Фото"), Lang.t("Видео или файл")};
+        new AlertDialog.Builder(this)
+                .setItems(выбор, new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int which) {
+                        if (which == 0) {
+                            pickPhoto();
+                        } else {
+                            pickFile();
+                        }
+                    }
+                })
+                .show();
+    }
+
+    private void pickFile() {
+        Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
+        intent.setType("*/*");
+        startActivityForResult(intent, PICK_FILE);
+    }
+
+    /** Имя и вес выбранного файла — их знает не сам адрес, а поставщик. */
+    private String[] describe(Uri uri) {
+        String name = uri.getLastPathSegment();
+        long size = -1;
+        android.database.Cursor cursor = getContentResolver()
+                .query(uri, null, null, null, null);
+        if (cursor != null) {
+            try {
+                if (cursor.moveToFirst()) {
+                    int столбец = cursor.getColumnIndex(
+                            android.provider.OpenableColumns.DISPLAY_NAME);
+                    if (столбец >= 0 && cursor.getString(столбец) != null) {
+                        name = cursor.getString(столбец);
+                    }
+                    int вес = cursor.getColumnIndex(
+                            android.provider.OpenableColumns.SIZE);
+                    if (вес >= 0 && !cursor.isNull(вес)) {
+                        size = cursor.getLong(вес);
+                    }
+                }
+            } finally {
+                cursor.close();
+            }
+        }
+        if (name == null || name.isEmpty()) {
+            name = "файл";
+        }
+        return new String[]{name, String.valueOf(size)};
+    }
+
+    /**
+     * Отправка большого вложения: сперва заявка, потом куски.
+     *
+     * Гигабайтное видео нельзя ни прочитать в память, ни послать одним
+     * кадром, поэтому читаем его порциями прямо во время отправки.
+     */
+    private void sendBigFile(Uri uri) {
+        String[] описание = describe(uri);
+        String name = описание[0];
+        long size = Long.parseLong(описание[1]);
+
+        if (size <= 0) {
+            toast(Lang.t("Не удалось прочитать файл: {error}", "error", name));
+            return;
+        }
+
+        long предел = limitFor(kindOf(name));
+        if (size > предел) {
+            toast(Lang.t("«{name}» весит {size}, а больше {limit} сервер не принимает.",
+                    "name", name, "size", humanSize(size),
+                    "limit", humanSize(предел)));
+            return;
+        }
+
+        String local = "l" + (++localNumber);
+        pendingUploads.put(local, new Object[]{uri, name, size});
+
+        uploadLine = Ui.text(this, Lang.t("Отправляю «{name}» — {percent}%",
+                "name", name, "percent", "0"), 12, Ui.MUTED);
+        uploadLine.setGravity(Gravity.CENTER);
+        uploadLine.setPadding(0, Ui.dp(this, 8), 0, Ui.dp(this, 8));
+        feed.addView(uploadLine, Ui.wide());
+
+        send(Net.frame("upload", "name", name, "size", size,
+                "conversation", conversation, "local", local));
+    }
+
+    private void pushChunks(final String ticket, final Uri uri, final int chunk) {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    InputStream stream = getContentResolver().openInputStream(uri);
+                    byte[] буфер = new byte[chunk];
+                    int прочитано;
+                    while ((прочитано = stream.read(буфер)) > 0) {
+                        byte[] кусок = прочитано == буфер.length ? буфер.clone()
+                                : java.util.Arrays.copyOf(буфер, прочитано);
+                        send(Net.frame("chunk", "ticket", ticket), кусок);
+                    }
+                    stream.close();
+                } catch (Exception error) {
+                    main.post(new Runnable() {
+                        @Override
+                        public void run() {
+                            toast(Lang.t("Не удалось прочитать файл: {error}",
+                                    "error", String.valueOf(error.getMessage())));
+                        }
+                    });
+                }
+            }
+        }).start();
+    }
+
+    private String kindOf(String name) {
+        String конец = name.toLowerCase();
+        int точка = конец.lastIndexOf('.');
+        конец = точка < 0 ? "" : конец.substring(точка + 1);
+        if (конец.equals("gif")) {
+            return "gif";
+        }
+        for (String один : new String[]{"png", "jpg", "jpeg", "webp", "bmp"}) {
+            if (один.equals(конец)) {
+                return "image";
+            }
+        }
+        for (String один : new String[]{"mp4", "mov", "webm", "mkv", "avi", "m4v"}) {
+            if (один.equals(конец)) {
+                return "video";
+            }
+        }
+        return "file";
+    }
+
+    private long limitFor(String kind) {
+        if ("video".equals(kind)) {
+            return limits.optLong("video", 1024L * 1024 * 1024);
+        }
+        if ("image".equals(kind) || "gif".equals(kind)) {
+            return limits.optLong("image", Net.MAX_MEDIA);
+        }
+        return limits.optLong("file", 500L * 1024 * 1024);
+    }
+
+    static String humanSize(long size) {
+        if (size < 1024) {
+            return size + " " + Lang.t("Б");
+        }
+        if (size < 1024 * 1024) {
+            return (size / 1024) + " " + Lang.t("КБ");
+        }
+        if (size < 1024L * 1024 * 1024) {
+            return String.format(java.util.Locale.US, "%.1f %s",
+                    size / 1024.0 / 1024.0, Lang.t("МБ"));
+        }
+        return String.format(java.util.Locale.US, "%.1f %s",
+                size / 1024.0 / 1024.0 / 1024.0, Lang.t("ГБ"));
+    }
+
     @Override
     protected void onActivityResult(int request, int result, Intent data) {
-        if (request != PICK_PHOTO || result != RESULT_OK || data == null
-                || data.getData() == null) {
+        if (result != RESULT_OK || data == null || data.getData() == null
+                || (request != PICK_PHOTO && request != PICK_FILE)) {
             super.onActivityResult(request, result, data);
             return;
+        }
+
+        if (request == PICK_FILE) {
+            String имя = describe(data.getData())[0];
+            String вид = kindOf(имя);
+            // Картинку и здесь отправляем целиком: сервер её ужмёт
+            if (!"image".equals(вид) && !"gif".equals(вид)) {
+                sendBigFile(data.getData());
+                return;
+            }
         }
 
         Uri uri = data.getData();
@@ -1602,6 +1783,9 @@ public class MainActivity extends Activity implements VelixService.Screen {
         if ("welcome".equals(kind)) {
             me = frame.optJSONObject("user");
             prefs().edit().putString("token", frame.optString("token")).apply();
+            if (frame.optJSONObject("limits") != null) {
+                limits = frame.optJSONObject("limits");
+            }
 
             // Приветствие из запаса службы только напоминает, кто мы: ни
             // списки чистить, ни уводить человека из переписки не нужно
@@ -1703,6 +1887,22 @@ public class MainActivity extends Activity implements VelixService.Screen {
                 drawList();
             }
 
+        } else if ("upload_ready".equals(kind)) {
+            Object[] отправка = pendingUploads.get(frame.optString("local"));
+            if (отправка != null) {
+                pushChunks(frame.optString("ticket"), (Uri) отправка[0],
+                        frame.optInt("chunk", 4 * 1024 * 1024));
+            }
+
+        } else if ("upload_progress".equals(kind)) {
+            if (uploadLine != null) {
+                long ушло = frame.optLong("sent");
+                long всего = Math.max(frame.optLong("size"), 1);
+                uploadLine.setText(Lang.t("Отправляю «{name}» — {percent}%",
+                        "name", uploadName(), "percent",
+                        String.valueOf(ушло * 100 / всего)));
+            }
+
         } else if ("ack".equals(kind)) {
             onAck(frame);
 
@@ -1750,9 +1950,35 @@ public class MainActivity extends Activity implements VelixService.Screen {
         }
     }
 
+    /** Имя того, что сейчас отправляется — для строчки о ходе. */
+    private String uploadName() {
+        for (Object[] один : pendingUploads.values()) {
+            return String.valueOf(один[1]);
+        }
+        return "";
+    }
+
     private void onAck(JSONObject frame) {
         String local = frame.optString("local");
         int id = frame.optInt("id");
+
+        Object[] отправка = pendingUploads.remove(local);
+        if (отправка != null) {
+            // Большое вложение доехало: убираем строчку о ходе и показываем его
+            if (uploadLine != null) {
+                feed.removeView(uploadLine);
+                uploadLine = null;
+            }
+            JSONObject item = Net.frame("media", "nick", me.optString("name"),
+                    "kind", kindOf(String.valueOf(отправка[1])),
+                    "name", String.valueOf(отправка[1]),
+                    "size", отправка[2], "user", me.optInt("id"),
+                    "id", id, "media", frame.optString("media"),
+                    "at", frame.optString("at"), "conversation", conversation);
+            items.add(item);
+            showItem(item);
+            return;
+        }
         for (JSONObject item : items) {
             if (local.equals(item.optString("local"))) {
                 try {

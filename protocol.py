@@ -114,10 +114,14 @@ def upload_request(name, size, conversation=1, reply_to=None, local=None):
                    "local": local})
 
 
-def upload_ready(ticket, chunk=CHUNK_SIZE, sent=0):
-    """Сервер готов принимать; sent говорит, сколько уже дошло."""
+def upload_ready(ticket, chunk=CHUNK_SIZE, local=None):
+    """Сервер готов принимать.
+
+    local возвращается тем же, каким прислал клиент: по нему он и узнаёт,
+    о какой из своих отправок речь.
+    """
     return encode({"type": "upload_ready", "ticket": ticket, "chunk": chunk,
-                   "sent": sent})
+                   "local": local})
 
 
 def chunk_header(ticket):

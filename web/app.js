@@ -4,6 +4,12 @@
 const AVATAR_COLORS = ["#e17076", "#faa774", "#a695e7", "#7bc862",
                        "#6ec9cb", "#65aadd", "#ee7aae"];
 const MAX_MEDIA = 25 * 1024 * 1024;
+
+// Пределы вложений называет сервер в приветствии; здесь — на случай,
+// если он о них умолчал (старая версия)
+let limits = {file: 500 * 1024 * 1024, video: 1024 * 1024 * 1024,
+              image: MAX_MEDIA, chunk: 4 * 1024 * 1024};
+const uploads = new Map();     // что сейчас уходит на сервер
 // Что можно поставить на сообщение — короткий набор, как в Telegram
 const EMOJI = ["👍", "❤", "😂", "🔥", "😢", "👎"];
 
@@ -14,6 +20,7 @@ let socket = null;
 let user = {};
 let registerMode = false;
 let pendingHeader = null;      // описание вложения, ждущее свои байты
+let pendingParts = [];         // куски вложения, приехавшие до сих пор
 let lastSender = null;
 let currentDate = null;
 let conversation = null;       // какая переписка открыта
@@ -162,6 +169,7 @@ function connect(credentials) {
     const message = JSON.parse(event.data);
     if (message.type === "blob" || message.type === "update_blob") {
       pendingHeader = message;
+      pendingParts = [];
       return;
     }
     handle(message);
@@ -221,7 +229,7 @@ document.addEventListener("visibilitychange", () => {
 
 function send(message, payload) {
   if (!socket || socket.readyState !== WebSocket.OPEN) return;
-  socket.send(JSON.stringify({v: 4, ...message}));
+  socket.send(JSON.stringify({v: 6, ...message}));
   if (payload) socket.send(payload);
 }
 
@@ -230,6 +238,10 @@ function handle(message) {
     case "welcome": onWelcome(message); break;
     case "authfail": onAuthFail(fromServer(message)); break;
     case "ack": onAck(message); break;
+    case "upload_ready":
+      pushChunks(message.local, message.ticket, message.chunk);
+      break;
+    case "upload_progress": onUploadProgress(message); break;
     case "receipts": onReceipts(message); break;
     case "conversation": onConversation(message); break;
     case "conversations": onConversations(message.items || []); break;
@@ -251,8 +263,18 @@ function handle(message) {
 
 function handleBinary(buffer) {
   const header = pendingHeader;
-  pendingHeader = null;
   if (!header) return;
+
+  // Большое вложение приезжает кусками: собираем, пока не наберётся всё
+  pendingParts.push(buffer);
+  const ждём = Math.max(1, header.parts || 1);
+  if (pendingParts.length < ждём) {
+    return;
+  }
+  pendingHeader = null;
+  buffer = pendingParts.length === 1 ? pendingParts[0]
+                                     : new Blob(pendingParts);
+  pendingParts = [];
 
   const id = header.id;
   const url = URL.createObjectURL(new Blob([buffer]));
@@ -277,9 +299,47 @@ function handleBinary(buffer) {
 
 // ------------------------------------------------------------------ вход
 
+async function pushChunks(local, ticket, chunk) {
+  /* Читаем файл по кускам: держать гигабайт в памяти браузера незачем. */
+  const upload = uploads.get(local);
+  if (!upload) return;
+
+  upload.ticket = ticket;
+  for (let начало = 0; начало < upload.size; начало += chunk) {
+    const кусок = await upload.file.slice(начало, начало + chunk).arrayBuffer();
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    send({type: "chunk", ticket}, кусок);
+
+    // Даём сокету разгрестись, иначе браузер соберёт всё в очередь и
+    // память кончится ровно так же, как если бы мы слали одним куском
+    while (socket.bufferedAmount > chunk * 2) {
+      await new Promise((готово) => setTimeout(готово, 50));
+    }
+  }
+}
+
+function onUploadProgress(message) {
+  const upload = [...uploads.values()].find(
+      (one) => one.ticket === message.ticket);
+  if (!upload) return;
+  const доля = Math.round(100 * message.sent / Math.max(message.size, 1));
+  if (upload.line) {
+    upload.line.textContent = t("Отправляю «{name}» — {percent}%",
+                               {name: upload.name, percent: доля});
+  } else {
+    upload.line = service(t("Отправляю «{name}» — {percent}%",
+                           {name: upload.name, percent: доля}));
+  }
+}
+
 function onWelcome(message) {
   reconnectAttempt = 0;
   user = message.user || {};
+  if (message.limits) {
+    limits = Object.assign({}, limits, message.limits);
+  }
   localStorage.setItem("velix.token", message.token || "");
   localStorage.setItem("velix.login", user.login || "");
 
@@ -566,6 +626,13 @@ function clearMessages() {
   oldest = null;
 }
 
+function humanSize(size) {
+  if (size < 1024) return `${size} ${t("Б")}`;
+  if (size < 1024 * 1024) return `${Math.round(size / 1024)} ${t("КБ")}`;
+  if (size < 1024 ** 3) return `${(size / 1024 ** 2).toFixed(1)} ${t("МБ")}`;
+  return `${(size / 1024 ** 3).toFixed(1)} ${t("ГБ")}`;
+}
+
 function service(text) {
   const element = document.createElement("div");
   element.className = "service";
@@ -795,6 +862,20 @@ function paintTick(key, state) {
 function onAck(message) {
   // Сервер принял сообщение и назвал его настоящий номер
   if (!message.id) return;
+
+  const upload = uploads.get(message.local);
+  if (upload) {
+    // Большое вложение доехало: строчку о ходе убираем, показываем сам файл
+    uploads.delete(message.local);
+    if (upload.line) upload.line.remove();
+    const item = {nick: user.name, user: user.id, id: message.id,
+                  kind: kindOf(upload.name), name: upload.name,
+                  size: upload.size, media: message.media,
+                  at: message.at || new Date().toISOString(),
+                  local: message.local, conversation};
+    loadedItems.push(item);
+    showItem(item, URL.createObjectURL(upload.file));
+  }
   for (const item of loadedItems) {
     if (message.local && item.local === message.local) item.id = message.id;
   }
@@ -986,7 +1067,10 @@ function fillMedia(slot, header, url) {
   link.className = "file";
   link.href = url;
   link.download = header.name || t("файл");
-  link.textContent = t("Скачать {name}", {name: header.name || t("файл")});
+  link.textContent = header.size
+      ? `${t("Скачать {name}", {name: header.name || t("файл")})} · `
+        + humanSize(header.size)
+      : t("Скачать {name}", {name: header.name || t("файл")});
   slot.append(link);
 }
 
@@ -1049,30 +1133,61 @@ async function subscribeToPush(key) {
 
 // -------------------------------------------------------------- отправка
 
+function kindOf(name) {
+  const конец = String(name || "").toLowerCase().split(".").pop();
+  if (конец === "gif") return "gif";
+  if (["png", "jpg", "jpeg", "webp", "bmp"].includes(конец)) return "image";
+  if (["mp4", "mov", "webm", "mkv", "avi", "m4v"].includes(конец)) return "video";
+  return "file";
+}
+
+function limitFor(kind) {
+  if (kind === "video") return limits.video;
+  if (kind === "image" || kind === "gif") return limits.image;
+  return limits.file;
+}
+
 async function sendFile(file) {
   if (!file) return;
-  if (file.size > MAX_MEDIA) {
-    service(t("«{name}» больше 25 МБ, сервер такое не принимает.",
-              {name: file.name}));
-    return;
-  }
 
-  const buffer = await file.arrayBuffer();
   const kind = file.type.startsWith("video/") ? "video"
              : file.type === "image/gif" ? "gif"
              : file.type.startsWith("image/") ? "image" : "file";
 
+  const предел = limitFor(kind);
+  if (file.size > предел) {
+    service(t("«{name}» весит {size}, а больше {limit} сервер не принимает.",
+              {name: file.name, size: humanSize(file.size),
+               limit: humanSize(предел)}));
+    return;
+  }
+
   if (conversation === null) return;
 
   const local = `l${++localNumber}`;
-  send({type: "media", nick: user.name, kind, name: file.name, size: file.size,
-        conversation, reply_to: replyTo, local}, buffer);
 
-  const item = {nick: user.name, user: user.id, kind, name: file.name,
-                size: file.size, at: new Date().toISOString(), local,
-                conversation};
-  loadedItems.push(item);
-  showItem(item, URL.createObjectURL(file));
+  // Картинку отправляем целиком — её ещё и ужмут на сервере. Всё
+  // остальное едет кусками: гигабайтное видео одним кадром не передать
+  if (kind === "image" || kind === "gif") {
+    const buffer = await file.arrayBuffer();
+    send({type: "media", nick: user.name, kind, name: file.name,
+          size: file.size, conversation, reply_to: replyTo, local}, buffer);
+    const item = {nick: user.name, user: user.id, kind, name: file.name,
+                  size: file.size, at: new Date().toISOString(), local,
+                  conversation};
+    loadedItems.push(item);
+    showItem(item, URL.createObjectURL(file));
+    cancelReply();
+    return;
+  }
+
+  // Большое вложение показываем не сразу: сперва пусть доедет. Пока оно
+  // едет, в переписке видно, сколько уже ушло
+  uploads.set(local, {file, name: file.name, size: file.size});
+  uploads.get(local).line = service(t("Отправляю «{name}» — {percent}%",
+                                      {name: file.name, percent: 0}));
+  send({type: "upload", name: file.name, size: file.size, conversation,
+        reply_to: replyTo, local});
   cancelReply();
 }
 

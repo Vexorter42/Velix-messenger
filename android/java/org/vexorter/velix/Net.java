@@ -32,6 +32,8 @@ class Net implements Ws.Listener {
     private final Listener listener;
     private Ws socket;
     private JSONObject pendingHeader;   // описание вложения ждёт свои байты
+    private java.io.ByteArrayOutputStream pendingParts;   // куски, что уже пришли
+    private int pendingLeft;            // сколько кусков ещё ждём
     private volatile boolean secure;
 
     Net(Listener listener) {
@@ -186,7 +188,10 @@ class Net implements Ws.Listener {
             final JSONObject frame = new JSONObject(text);
             String kind = frame.optString("type");
             if ("blob".equals(kind) || "update_blob".equals(kind)) {
-                pendingHeader = frame;      // содержимое придёт следующим кадром
+                // Содержимое придёт следом; большое вложение — не одним куском
+                pendingHeader = frame;
+                pendingLeft = Math.max(1, frame.optInt("parts", 1));
+                pendingParts = new java.io.ByteArrayOutputStream();
                 return;
             }
             main.post(new Runnable() {
@@ -203,14 +208,27 @@ class Net implements Ws.Listener {
     @Override
     public void onBinary(final byte[] data) {
         final JSONObject header = pendingHeader;
-        pendingHeader = null;
         if (header == null) {
             return;
         }
+
+        try {
+            pendingParts.write(data);
+        } catch (java.io.IOException error) {
+            pendingHeader = null;
+            return;
+        }
+        if (--pendingLeft > 0) {
+            return;             // ждём остальные куски
+        }
+
+        final byte[] whole = pendingParts.toByteArray();
+        pendingHeader = null;
+        pendingParts = null;
         main.post(new Runnable() {
             @Override
             public void run() {
-                listener.onBlob(header, data);
+                listener.onBlob(header, whole);
             }
         });
     }

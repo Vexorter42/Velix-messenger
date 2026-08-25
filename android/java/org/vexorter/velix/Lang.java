@@ -107,6 +107,15 @@ class Lang {
         add("УЧАСТНИКИ", "MEMBERS");
         add("Новая группа", "New group");
         add("Фото группы", "Group photo");
+        add("Фото", "Photo");
+        add("Видео или файл", "Video or file");
+        add("Отправляю «{name}» — {percent}%", "Sending “{name}” — {percent}%");
+        add("«{name}» весит {size}, а больше {limit} сервер не принимает.",
+            "“{name}” is {size}; the server takes at most {limit}.");
+        add("Б", "B");
+        add("КБ", "KB");
+        add("МБ", "MB");
+        add("ГБ", "GB");
         add("Удалить группу", "Delete group");
         add("Переписка и вложения пропадут у всех. Отменить это нельзя.",
             "The conversation and its attachments disappear for everyone. This cannot be undone.");
