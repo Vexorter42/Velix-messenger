@@ -277,6 +277,7 @@ class Network:
     def __init__(self, events):
         self.events = events
         self.loop = None
+        self.pen = None                # замок на отправку, заводится в цикле
         self.websocket = None
 
     def connect(self, uris):
@@ -284,17 +285,34 @@ class Network:
             uris = [uris]
         threading.Thread(target=self._run, args=(list(uris),), daemon=True).start()
 
-    def send(self, frame, payload=None):
-        """Отправляет кадр, при необходимости следом двоичный."""
+    def send(self, frame, payload=None, wait=False):
+        """Отправляет кадр, при необходимости следом двоичный.
+
+        wait заставляет дождаться отправки. Это нужно тому, кто льёт файл
+        кусками: иначе он свалит в очередь весь гигабайт разом, и память
+        кончится ровно так же, как если бы мы слали одним куском.
+        """
         if self.websocket is None or self.loop is None:
-            return
+            return False
 
         async def deliver(websocket):
-            await websocket.send(frame)
-            if payload is not None:
-                await websocket.send(payload)
+            # Кадр и его содержимое должны уйти подряд. Без замка две
+            # отправки перемешались бы, и сервер принял бы чужой заголовок
+            # за содержимое файла
+            async with self.pen:
+                await websocket.send(frame)
+                if payload is not None:
+                    await websocket.send(payload)
 
-        asyncio.run_coroutine_threadsafe(deliver(self.websocket), self.loop)
+        задача = asyncio.run_coroutine_threadsafe(deliver(self.websocket),
+                                                  self.loop)
+        if not wait:
+            return True
+        try:
+            задача.result(timeout=120)
+            return True
+        except Exception:
+            return False
 
     def disconnect(self):
         if self.websocket is not None and self.loop is not None:
@@ -306,6 +324,7 @@ class Network:
         # закрыть цикл нового — тот ещё работает.
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
+        self.pen = asyncio.Lock()      # очередь на отправку, одна на всех
         self.loop = loop
         try:
             loop.run_until_complete(self._try_all(uris))
@@ -444,6 +463,9 @@ class VelixApp(ctk.CTk):
         self.unread = {}               # переписка -> сколько пришло без нас
         self.stats = None              # последняя сводка для панели
         self.zoom = None               # приближение открытой фотографии
+        self.was_open = None           # где человек был до обрыва связи
+        self.retry_at = 0              # какая по счёту попытка вернуться
+        self.retry_job = None          # отложенная попытка, чтобы отменить
         self.limits = {}               # пределы вложений, их называет сервер
         self.sending = {}              # что сейчас уходит на сервер
         self.is_admin = False          # хозяин чата: решает сервер
@@ -1647,7 +1669,11 @@ class VelixApp(ctk.CTk):
                         кусок = файл.read(размер_куска)
                         if not кусок:
                             break
-                        self.network.send(protocol.chunk_header(ticket), кусок)
+                        # Ждём, пока кусок уйдёт: иначе в очереди окажется
+                        # весь файл целиком
+                        if not self.network.send(protocol.chunk_header(ticket),
+                                                 кусок, wait=True):
+                            return
             except OSError as error:
                 self.after(0, lambda: self._service_label(
                     t("Не удалось прочитать файл: {error}", error=error)))
@@ -1700,6 +1726,8 @@ class VelixApp(ctk.CTk):
 
     def _on_leave(self):
         """Возврат к выбору аккаунта — сессия сохраняется."""
+        self._stop_retrying()
+        self.token = None
         self.network.disconnect()
         self.primary_button.configure(text=t("ВОЙТИ"), state="normal")
         self.password_entry.delete(0, "end")
@@ -1774,6 +1802,7 @@ class VelixApp(ctk.CTk):
             self.network.send(self.pending_login)
 
     def _on_welcome(self, message):
+        self._stop_retrying()
         self.recover_mode = False
         self.user = dict(message.get("user") or {})
         self.token = message.get("token")
@@ -1840,8 +1869,18 @@ class VelixApp(ctk.CTk):
             self.conversations = message.get("items") or []
             self._refresh_side_list()
             self._update_header()
+            известные = {one["id"] for one in self.conversations}
+
             if self.conversation is None and self.conversations:
-                self._open(self.conversations[0]["id"])
+                # После обрыва возвращаемся туда, где человек был, а не
+                # в первую попавшуюся переписку
+                куда = (self.was_open if self.was_open in известные
+                        else self.conversations[0]["id"])
+                self._open(куда, force=True)
+            elif self.conversation in известные:
+                # Связь могла пропасть в тот самый миг, когда мы просили
+                # историю: просим заново, иначе лента так и будет пустой
+                self._open(self.conversation, force=True)
             elif not self.conversations:
                 self._nothing_open()
         elif kind == "conversation":
@@ -2028,13 +2067,48 @@ class VelixApp(ctk.CTk):
 
     def _on_disconnected(self):
         self.status_dot.configure(text_color=OFFLINE)
-        self.header_subtitle.configure(text=t("нет связи с сервером"))
         self.message_entry.configure(state="disabled")
         self.send_button.configure(state="disabled")
         self.attach_button.configure(state="disabled")
-        if self.chat_view.winfo_ismapped():
-            self._service_label(
-                t("Соединение потеряно. Нажмите «Сменить», чтобы войти заново."))
+
+        if self.token and self.server:
+            self.header_subtitle.configure(text=t("нет связи · возвращаемся…"))
+            self._retry_connect()
+        else:
+            self.header_subtitle.configure(text=t("нет связи с сервером"))
+            if self.chat_view.winfo_ismapped():
+                self._service_label(
+                    t("Соединение потеряно. Нажмите «Сменить», "
+                      "чтобы войти заново."))
+
+    def _retry_connect(self):
+        """Возвращается на связь сам, с растущей паузой.
+
+        Раньше окно просто говорило «нажмите Сменить» и сидело так до
+        последнего: интернет мигнул — и переписка стояла пустая, потому что
+        запрос истории уходил в никуда.
+        """
+        if self.retry_job is not None:
+            self.after_cancel(self.retry_job)
+
+        пауза = min(1000 * 2 ** self.retry_at, 30000)
+        self.retry_at = min(self.retry_at + 1, 6)
+
+        def попробовать():
+            self.retry_job = None
+            if self.network.websocket is not None or not self.token:
+                return
+            self.pending_login = protocol.auth_message(self.token)
+            self.network.connect(connection_uris(self.server))
+
+        self.retry_job = self.after(пауза, попробовать)
+
+    def _stop_retrying(self):
+        """Больше не возвращаемся: человек ушёл сам."""
+        if self.retry_job is not None:
+            self.after_cancel(self.retry_job)
+            self.retry_job = None
+        self.retry_at = 0
 
     def _on_error(self, text):
         self.pending_login = None
@@ -2198,18 +2272,24 @@ class VelixApp(ctk.CTk):
         for child in row.winfo_children():
             child.bind("<Button-1>", lambda event, i=person["id"]: self._start_direct(i))
 
-    def _open(self, conversation_id):
+    def _open(self, conversation_id, force=False):
         """Открывает переписку и просит её историю."""
-        if conversation_id == self.conversation:
+        if conversation_id == self.conversation and not force:
             return
         self.conversation = conversation_id
+        self.was_open = conversation_id
         self.unread.pop(conversation_id, None)
         self._cancel_reply()
         self._clear_messages()
         self._refresh_side_list()
         self._update_header()
         self._refresh_pin_bar()
-        self.network.send(protocol.open_request(conversation_id))
+
+        if not self.network.send(protocol.open_request(conversation_id)):
+            # Связи нет: без этого переписка осталась бы пустой навсегда —
+            # запрос ушёл в никуда, а перерисовать её больше нечему
+            self._service_label(t("Нет связи. Переписка откроется, "
+                                  "как только она вернётся."))
 
     def _start_direct(self, user_id):
         # Номер переписки знает только сервер, поэтому просто помечаем, что

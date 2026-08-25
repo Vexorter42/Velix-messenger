@@ -276,6 +276,9 @@ ENGLISH = {
         "people: {members}, messages: {count}",
     "ПЕРЕПИСКИ": "CONVERSATIONS",
     "ПРЕДЕЛЫ ВЛОЖЕНИЙ": "ATTACHMENT LIMITS",
+    "Нет связи. Переписка откроется, как только она вернётся.":
+        "No connection. The conversation will open as soon as it is back.",
+    "нет связи · возвращаемся…": "no connection · coming back…",
     "Файлы, МБ": "Files, MB",
     "Видео, МБ": "Video, MB",
     "Сохранить пределы": "Save limits",
