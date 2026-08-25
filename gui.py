@@ -438,6 +438,7 @@ class VelixApp(ctk.CTk):
         self.pinned = {}               # переписка -> закреплённое сообщение
         self.unread = {}               # переписка -> сколько пришло без нас
         self.stats = None              # последняя сводка для панели
+        self.zoom = None               # приближение открытой фотографии
         self.is_admin = False          # хозяин чата: решает сервер
 
         # Файл, оставшийся от прошлого обновления, больше не нужен
@@ -2954,20 +2955,142 @@ class VelixApp(ctk.CTk):
                       command=lambda: self._close_full(overlay)).place(
             relx=1.0, rely=0.0, x=-20, y=20, anchor="ne")
 
-        for widget in (overlay, picture):
-            widget.configure(cursor="hand2")
-            widget.bind("<Button-1>", lambda event: self._close_full(overlay))
-        self.bind("<Escape>", lambda event: self._close_full(overlay))
-
         if len(frames) > 1:
             delay = max(30, int(image.info.get("duration", 80)))
             self.animations[picture] = frames
             self._animate(picture, frames, 0, delay)
+            # Гифку не приближаем: она и так живёт своей жизнью
+            for widget in (overlay, picture):
+                widget.configure(cursor="hand2")
+                widget.bind("<Button-1>", lambda event: self._close_full(overlay))
+            self.bind("<Escape>", lambda event: self._close_full(overlay))
+            return
+
+        self._make_zoom(overlay, picture, data, box)
+
+    def _make_zoom(self, overlay, picture, data, box):
+        """Приближение картинки: колесо, перетаскивание, кнопки и клавиши.
+
+        Рисуем только тот кусок снимка, который сейчас виден. Растянуть
+        картинку целиком на восемь размеров — это сотни мегабайт в памяти
+        ради того, что всё равно не поместится на экране.
+        """
+        try:
+            whole = Image.open(io.BytesIO(data)).convert("RGBA")
+        except Exception:
+            return
+
+        ширина, высота = box
+        # Во сколько раз снимок ужат, чтобы влезть в окно целиком
+        поместилось = min(ширина / whole.width, высота / whole.height, 1.0)
+
+        # cx и cy — куда смотрим, в долях снимка
+        state = {"scale": 1.0, "cx": 0.5, "cy": 0.5, "grab": None}
+
+        подпись = ctk.CTkLabel(overlay, text="100%", font=self.font_small,
+                               text_color=MUTED, fg_color=INPUT_BG,
+                               corner_radius=10, width=64, height=26)
+        подпись.place(relx=0.5, rely=1.0, y=-24, anchor="s")
+
+        def нарисовать():
+            масштаб = поместилось * state["scale"]
+
+            # Какой кусок снимка помещается в окно при таком приближении
+            видно_ш = min(whole.width, ширина / масштаб)
+            видно_в = min(whole.height, высота / масштаб)
+
+            левый = min(max(state["cx"] * whole.width - видно_ш / 2, 0),
+                        whole.width - видно_ш)
+            верхний = min(max(state["cy"] * whole.height - видно_в / 2, 0),
+                          whole.height - видно_в)
+            state["cx"] = (левый + видно_ш / 2) / whole.width
+            state["cy"] = (верхний + видно_в / 2) / whole.height
+
+            кусок = whole.crop((int(левый), int(верхний),
+                                int(левый + видно_ш), int(верхний + видно_в)))
+            размер = (max(int(видно_ш * масштаб), 16),
+                      max(int(видно_в * масштаб), 16))
+            готовое = кусок.resize(размер, Image.LANCZOS)
+
+            картинка = ctk.CTkImage(light_image=готовое, dark_image=готовое,
+                                    size=размер)
+            self.images.append(картинка)
+            picture.configure(image=картинка)
+            подпись.configure(text=f"{int(масштаб * 100)}%")
+
+        def приблизить(во_сколько):
+            прежний = state["scale"]
+            state["scale"] = min(max(прежний * во_сколько, 0.25), 8.0)
+            if state["scale"] != прежний:
+                нарисовать()
+
+        def целиком():
+            state.update(scale=1.0, cx=0.5, cy=0.5)
+            нарисовать()
+
+        def колесом(event):
+            приблизить(1.25 if event.delta > 0 else 1 / 1.25)
+            return "break"
+
+        def взять(event):
+            state["grab"] = (event.x_root, event.y_root, False)
+
+        def тянуть(event):
+            if state["grab"] is None:
+                return
+            начало_x, начало_y, _ = state["grab"]
+            сдвиг_x, сдвиг_y = event.x_root - начало_x, event.y_root - начало_y
+            if abs(сдвиг_x) < 3 and abs(сдвиг_y) < 3:
+                return
+
+            state["grab"] = (event.x_root, event.y_root, True)
+            масштаб = поместилось * state["scale"]
+            state["cx"] -= сдвиг_x / (whole.width * масштаб)
+            state["cy"] -= сдвиг_y / (whole.height * масштаб)
+            нарисовать()
+
+        def отпустить(event):
+            # Щелчок без перетаскивания на целой картинке — закрыть просмотр
+            тащили = state["grab"] is not None and state["grab"][2]
+            state["grab"] = None
+            if not тащили and state["scale"] <= 1.0:
+                self._close_full(overlay)
+
+        кнопки = ctk.CTkFrame(overlay, fg_color="transparent")
+        кнопки.place(relx=0.5, rely=1.0, y=-60, anchor="s")
+        for надпись, дело in (("−", lambda: приблизить(1 / 1.4)),
+                              ("1:1", целиком),
+                              ("+", lambda: приблизить(1.4))):
+            ctk.CTkButton(кнопки, text=надпись, width=44, height=32,
+                          corner_radius=10, font=self.font_button,
+                          fg_color=INPUT_BG, hover_color=SEPARATOR,
+                          text_color=TEXT, command=дело).pack(side="left", padx=4)
+
+        picture.configure(cursor="fleur")
+        picture.bind("<MouseWheel>", колесом)
+        picture.bind("<Button-1>", взять)
+        picture.bind("<B1-Motion>", тянуть)
+        picture.bind("<ButtonRelease-1>", отпустить)
+        picture.bind("<Double-Button-1>",
+                     lambda event: приблизить(2.0) if state["scale"] <= 1.0
+                     else целиком())
+        overlay.bind("<MouseWheel>", колесом)
+        overlay.bind("<Button-1>", lambda event: self._close_full(overlay))
+
+        self.bind("<Escape>", lambda event: self._close_full(overlay))
+        self.bind("<plus>", lambda event: приблизить(1.4))
+        self.bind("<minus>", lambda event: приблизить(1 / 1.4))
+        self.zoom = state          # проверкам нужно видеть, что происходит
+        нарисовать()
+
 
     def _close_full(self, overlay):
         """Закрывает просмотр картинки."""
         self.viewer = None
+        self.zoom = None
         self.unbind("<Escape>")
+        self.unbind("<plus>")
+        self.unbind("<minus>")
         for widget in list(self.animations):
             if not widget.winfo_exists():
                 self.animations.pop(widget, None)
