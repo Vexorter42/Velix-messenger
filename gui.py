@@ -42,6 +42,10 @@ PORT = 8765
 MAX_PICTURE = (360, 360)
 
 # Кадров в гифке берём не больше: длинные ролики иначе съедают память
+# Насколько листать за один щелчок колеса. CustomTkinter двигает на
+# двадцать пикселей — за такой прокруткой не поспеть
+WHEEL_STEP = 110
+
 MAX_GIF_FRAMES = 120
 
 AVATAR_SMALL = 36
@@ -464,6 +468,8 @@ class VelixApp(ctk.CTk):
         self.stats = None              # последняя сводка для панели
         self.zoom = None               # приближение открытой фотографии
         self.was_open = None           # где человек был до обрыва связи
+        self.waiting_for = None        # чью историю ждём прямо сейчас
+        self.open_token = 0            # какой заход в переписку нынешний
         self.retry_at = 0              # какая по счёту попытка вернуться
         self.retry_job = None          # отложенная попытка, чтобы отменить
         self.limits = {}               # пределы вложений, их называет сервер
@@ -864,6 +870,10 @@ class VelixApp(ctk.CTk):
             main, fg_color="transparent", corner_radius=0,
             scrollbar_button_color=SEPARATOR, scrollbar_button_hover_color=MUTED)
         self.messages.grid(row=2, column=0, sticky="nsew")
+
+        # Заменяем общую привязку колеса на свою: CustomTkinter вешает её
+        # на всё окно сразу, поэтому и снимаем её так же
+        self.bind_all("<MouseWheel>", self._on_wheel)
 
         # Полоска «отвечаем на …» появляется над строкой ввода
         self.reply_bar = ctk.CTkFrame(main, fg_color=INPUT_BG, corner_radius=0)
@@ -2174,6 +2184,43 @@ class VelixApp(ctk.CTk):
 
     # ------------------------------------------------------------ переписки
 
+    def _on_wheel(self, event):
+        """Колесо листает крупнее.
+
+        CustomTkinter крутит по двадцать пикселей за щелчок — это ползком.
+        Своя привязка заменяет общую: она находит список под указателем и
+        двигает его на человеческий шаг.
+        """
+        frame = self._scrollable_under(event)
+        if frame is None:
+            return None
+
+        canvas = frame._parent_canvas
+        if canvas.yview() == (0.0, 1.0):
+            return None      # всё и так помещается
+
+        щелчков = int(event.delta / 120) or (1 if event.delta > 0 else -1)
+        canvas.yview("scroll", -щелчков * WHEEL_STEP, "units")
+        return "break"
+
+    def _scrollable_under(self, event):
+        """Какой из списков сейчас под указателем."""
+        известные = [one for one in (self.messages, self.side_list,
+                                     getattr(self, "admin_list", None))
+                     if one is not None]
+        try:
+            widget = self.winfo_containing(event.x_root, event.y_root)
+        except Exception:
+            return None
+
+        while widget is not None:
+            for frame in известные:
+                if widget in (frame, frame._parent_canvas,
+                              getattr(frame, "_parent_frame", None)):
+                    return frame
+            widget = getattr(widget, "master", None)
+        return None
+
     def _refresh_side_list(self):
         """Перерисовывает список: переписки, а по запросу — и люди."""
         for widget in self.side_list.winfo_children():
@@ -2316,6 +2363,15 @@ class VelixApp(ctk.CTk):
             # запрос ушёл в никуда, а перерисовать её больше нечему
             self._service_label(t("Нет связи. Переписка откроется, "
                                   "как только она вернётся."))
+            return
+
+        # Сокет мог умереть молча — например, после сна ноутбука. Тогда
+        # запрос уходит «в трубу», ответа нет, и лента остаётся пустой.
+        # Через несколько секунд спрашиваем ещё раз, потом честно говорим.
+        self.waiting_for = conversation_id
+        self.open_token += 1
+        self.after(4000, self._nudge_history, conversation_id, 1,
+                   self.open_token)
 
     def _start_direct(self, user_id):
         # Номер переписки знает только сервер, поэтому просто помечаем, что
@@ -2442,6 +2498,7 @@ class VelixApp(ctk.CTk):
         elif message.get("conversation") != self.conversation:
             return
 
+        self.waiting_for = None
         self.quotes.update(message.get("quotes") or {})
         for key, value in (message.get("reactions") or {}).items():
             self.reactions[int(key)] = value
@@ -2472,6 +2529,29 @@ class VelixApp(ctk.CTk):
                          if item.get("id") and item.get("user") != self.user.get("id")])
         if self.loaded_items:
             self.oldest = self.loaded_items[0].get("id")
+
+    def _nudge_history(self, conversation_id, попытка, пропуск):
+        """История не пришла — просим ещё раз, а потом сознаёмся.
+
+        Пропуск отличает нынешний заход от прежних: без него сторож от
+        старого захода срабатывал уже после того, как история пришла, и
+        стирал только что показанную ленту.
+        """
+        if пропуск != self.open_token:
+            return          # это сторож от прежнего захода
+        if self.conversation != conversation_id or self.waiting_for is None:
+            return          # уже пришла или человек ушёл в другую переписку
+
+        if попытка <= 2 and self.network.send(
+                protocol.open_request(conversation_id)):
+            self.after(4000, self._nudge_history, conversation_id,
+                       попытка + 1, пропуск)
+            return
+
+        # Рвать связь самим не стоит: если сокет и правда умер, это заметит
+        # сама библиотека — она шлёт пинги и закроет соединение, а окно
+        # переподключится. Наше дело — не оставлять человека перед пустотой.
+        self._service_label(t("Сервер не ответил. Ждём связи…"))
 
     def _load_older(self):
         if self.oldest:

@@ -278,6 +278,8 @@ ENGLISH = {
     "ПРЕДЕЛЫ ВЛОЖЕНИЙ": "ATTACHMENT LIMITS",
     "Поиск: @username или слово": "Search: @username or a word",
     "ЛЮДИ": "PEOPLE",
+    "Сервер не ответил. Ждём связи…":
+        "The server did not answer. Waiting for the connection…",
     "Создайте группу или найдите человека по @username.":
         "Create a group, or find someone by @username.",
     "Позвать людей": "Invite people",
