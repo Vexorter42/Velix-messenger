@@ -1,6 +1,8 @@
 import asyncio
 import os
+import shutil
 import ssl
+import tempfile
 import time
 import uuid
 from http import HTTPStatus
@@ -66,6 +68,26 @@ UPDATES_DIR = Path(os.environ.get("VELIX_UPDATES")
 
 # Аватарка — картинка, и большая тут ни к чему
 MAX_AVATAR_SIZE = 4 * 1024 * 1024
+
+# Сколько позволено весить файлу и видео. Числа лежат в базе и меняются
+# из панели управления; здесь — то, с чем сервер живёт прямо сейчас
+limits = {"file": protocol.DEFAULT_FILE_LIMIT,
+          "video": protocol.DEFAULT_VIDEO_LIMIT}
+
+# Незаконченные загрузки: каждой свой временный файл
+uploads = {}
+
+
+async def load_limits():
+    """Поднимает пределы из базы: их мог поменять хозяин чата."""
+    saved = await storage.settings()
+    for name in ("file", "video"):
+        try:
+            value = int(saved.get(f"limit_{name}", 0))
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            limits[name] = value
 
 # Множество для хранения всех активных подключений
 connected_clients = set()
@@ -944,15 +966,26 @@ async def handle_media(websocket, user, message):
 
 
 async def handle_fetch(websocket, message):
-    """Отдаёт содержимое вложения по запросу клиента."""
-    found = await storage.media_bytes(str(message.get("id") or ""))
-    if found is None:
+    """Отдаёт содержимое вложения — большое кусками, маленькое целиком."""
+    media_id = str(message.get("id") or "")
+    described = await storage.media_described(media_id)
+    if described is None:
         await websocket.send(protocol.error_message("Вложение не найдено.", "attachment_missing"))
         return
 
-    kind, name, data = found
-    await websocket.send(protocol.blob_header(message["id"], kind, name))
-    await websocket.send(data)
+    kind, name, path = described
+    size = path.stat().st_size
+    parts = max(1, -(-size // protocol.CHUNK_SIZE))
+
+    await websocket.send(protocol.blob_header(media_id, kind, name, size, parts))
+
+    # Читаем по куску: держать в памяти гигабайтное видео малина не сможет
+    with open(path, "rb") as файл:
+        while True:
+            кусок = await asyncio.to_thread(файл.read, protocol.CHUNK_SIZE)
+            if not кусок:
+                break
+            await websocket.send(кусок)
 
 
 async def handle_profile(websocket, user, message):
@@ -1045,7 +1078,147 @@ async def handle_admin(websocket, user, message):
                 await client.send(protocol.conversations_message(
                     await storage.conversations(member)))
 
-    await websocket.send(protocol.admin_message(await storage.stats()))
+    elif what == "limits":
+        for name in ("file", "video"):
+            try:
+                value = int(message.get(name) or 0)
+            except (TypeError, ValueError):
+                continue
+            # Меньше мегабайта и больше десяти гигабайт — явно опечатка
+            if 1024 * 1024 <= value <= 10 * 1024 ** 3:
+                limits[name] = value
+                await storage.set_setting(f"limit_{name}", value)
+        print(f"[Лог]: {user['name']} поменял пределы: "
+              f"файл {protocol.human_size(limits['file'])}, "
+              f"видео {protocol.human_size(limits['video'])}")
+
+    stats = await storage.stats()
+    stats["limits"] = dict(limits)
+    await websocket.send(protocol.admin_message(stats))
+
+
+async def handle_upload(websocket, user, message):
+    """Заявка на большое вложение: заводим временный файл под него."""
+    name = clean_filename(message.get("name"))
+    conversation = conversation_of(message)
+    reply_to = reply_of(message)
+    kind = protocol.kind_of(name)
+
+    try:
+        size = int(message.get("size") or 0)
+    except (TypeError, ValueError):
+        size = 0
+
+    предел = protocol.limit_for(kind, limits)
+    if size <= 0 or size > предел:
+        await websocket.send(protocol.error_message(
+            f"Файл больше {protocol.human_size(предел)}, не приняли.",
+            "file_too_big", limit=protocol.human_size(предел)))
+        return
+
+    if not await allowed(websocket, user, conversation):
+        return
+
+    # Место на диске кончается тише, чем хотелось бы: проверяем заранее
+    свободно = shutil.disk_usage(storage.MEDIA_DIR).free
+    if size > свободно - 200 * 1024 * 1024:
+        await websocket.send(protocol.error_message(
+            "На сервере не хватает места для такого файла.", "no_space"))
+        return
+
+    ticket = uuid.uuid4().hex
+    holder = Path(tempfile.gettempdir()) / f"velix-upload-{ticket}"
+    uploads[ticket] = {"user": user["id"], "name": name, "kind": kind,
+                       "size": size, "conversation": conversation,
+                       "reply_to": reply_to, "local": message.get("local"),
+                       "path": holder, "sent": 0,
+                       "file": open(holder, "wb"), "socket": websocket}
+
+    await websocket.send(protocol.upload_ready(ticket))
+
+
+async def handle_chunk(websocket, user, message):
+    """Очередной кусок большого вложения."""
+    ticket = str(message.get("ticket") or "")
+    upload = uploads.get(ticket)
+
+    payload = await websocket.recv()
+    if upload is None or upload["user"] != user["id"]:
+        return          # заявку уже отменили — байты просто выбрасываем
+    if not isinstance(payload, (bytes, bytearray)):
+        await drop_upload(ticket)
+        await websocket.send(protocol.error_message(
+            "Ожидались данные файла.", "expected_file"))
+        return
+
+    upload["sent"] += len(payload)
+    if upload["sent"] > upload["size"]:
+        await drop_upload(ticket)
+        await websocket.send(protocol.error_message(
+            "Файл оказался больше заявленного.", "file_too_big",
+            limit=protocol.human_size(upload["size"])))
+        return
+
+    await asyncio.to_thread(upload["file"].write, bytes(payload))
+
+    if upload["sent"] < upload["size"]:
+        await websocket.send(protocol.upload_progress(
+            ticket, upload["sent"], upload["size"]))
+        return
+
+    await finish_upload(websocket, user, ticket)
+
+
+async def finish_upload(websocket, user, ticket):
+    """Вложение доехало целиком — заводим сообщение и рассказываем всем."""
+    upload = uploads.pop(ticket, None)
+    if upload is None:
+        return
+    upload["file"].close()
+
+    message_id, media_id, created_at = await storage.save_media_file(
+        user["id"], user["name"], upload["kind"], upload["name"],
+        upload["path"], upload["size"], upload["conversation"],
+        upload["reply_to"])
+    print(f"[Лог]: {user['name']} прислал {upload['kind']} '{upload['name']}' "
+          f"({protocol.human_size(upload['size'])}, кусками)")
+
+    frame = {"type": "media", "id": message_id, "media": media_id,
+             "nick": user["name"], "kind": upload["kind"], "name": upload["name"],
+             "size": upload["size"], "at": created_at,
+             "conversation": upload["conversation"], "user": user["id"]}
+    if upload["reply_to"]:
+        frame["reply_to"] = upload["reply_to"]
+
+    if user.get("avatar"):
+        frame["avatar"] = user["avatar"]
+
+    await websocket.send(protocol.ack_message(upload["local"], message_id,
+                                              created_at, media_id))
+    reached = await send_to_conversation(upload["conversation"],
+                                         protocol.encode(frame), websocket)
+    await note_delivery(message_id, user["id"], reached)
+    await notify_absent(upload["conversation"], user["id"], user["name"],
+                        "прислал вложение")
+
+
+async def drop_upload(ticket):
+    """Забывает незаконченную загрузку вместе с её временным файлом."""
+    upload = uploads.pop(ticket, None)
+    if upload is None:
+        return
+    try:
+        upload["file"].close()
+        Path(upload["path"]).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+async def forget_uploads(websocket):
+    """Соединение оборвалось — недокачанное убираем."""
+    for ticket in [key for key, one in uploads.items()
+                   if one["socket"] is websocket]:
+        await drop_upload(ticket)
 
 
 async def handle_avatar(websocket, user, message):
@@ -1106,7 +1279,9 @@ async def chat_handler(websocket):
 
     try:
         await websocket.send(protocol.welcome_message(
-            user, token, available_update(), recovery, await is_admin(user)))
+            user, token, available_update(), recovery, await is_admin(user),
+            {"file": limits["file"], "video": limits["video"],
+             "image": protocol.MAX_MEDIA_SIZE, "chunk": protocol.CHUNK_SIZE}))
         # Историю отдаём до регистрации в connected_clients, иначе новые
         # сообщения чата могли бы вклиниться в середину выгрузки.
         items = await storage.conversations(user["id"])
@@ -1153,6 +1328,12 @@ async def chat_handler(websocket):
                 await handle_media(websocket, user, message)
             elif kind == "fetch":
                 await handle_fetch(websocket, message)
+            elif kind == "upload":
+                await handle_upload(websocket, user, message)
+            elif kind == "chunk":
+                await handle_chunk(websocket, user, message)
+            elif kind == "upload_cancel":
+                await drop_upload(str(message.get("ticket") or ""))
             elif kind == "open":
                 await handle_open(websocket, user, message)
             elif kind == "direct":
@@ -1206,6 +1387,7 @@ async def chat_handler(websocket):
         pass
     finally:
         connected_clients.discard(websocket)
+        await forget_uploads(websocket)
         if forget_online(user["id"], websocket):
             await announce_presence(user["id"], False)
         print(f"[Сервер]: Вышел {user['login']}. Активных: {len(connected_clients)}")
@@ -1230,8 +1412,11 @@ def build_ssl_context():
 
 async def main():
     await storage.init()
+    await load_limits()
     print(f"[Сервер]: База лежит в {storage.DB_PATH}")
     print(f"[Сервер]: Вложения складываются в {storage.MEDIA_DIR}")
+    print(f"[Сервер]: Файлы до {protocol.human_size(limits['file'])}, "
+          f"видео до {protocol.human_size(limits['video'])}")
 
     context = build_ssl_context()
 

@@ -170,6 +170,14 @@ def _init_sync(path, media_dir):
             )
             """
         )
+        _connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS settings (
+                name  TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+            """
+        )
         # База могла остаться от прежней версии — дописываем недостающие столбцы
         existing = {row[1] for row in _connection.execute("PRAGMA table_info(messages)")}
         for column, definition in MESSAGE_COLUMNS.items():
@@ -761,6 +769,50 @@ def _save_media_sync(user_id, nickname, kind, name, data, conversation_id, reply
     return cursor.lastrowid, media_id, created_at
 
 
+def _settings_sync():
+    with _lock:
+        rows = _connection.execute("SELECT name, value FROM settings").fetchall()
+    return {name: value for name, value in rows}
+
+
+def _set_setting_sync(name, value):
+    with _lock:
+        _connection.execute(
+            "INSERT OR REPLACE INTO settings (name, value) VALUES (?, ?)",
+            (str(name), str(value)))
+        _connection.commit()
+
+
+def _media_path_sync(media_id):
+    """Где лежит вложение — нужно, чтобы отдавать его по кускам."""
+    matches = list(_media_dir.glob(f"{media_id}*"))
+    return matches[0] if matches else None
+
+
+def _save_media_file_sync(user_id, nickname, kind, name, path, size,
+                          conversation_id, reply_to):
+    """Записывает вложение, которое уже лежит готовым файлом.
+
+    Большое видео нельзя держать в памяти целиком — оно приезжает кусками
+    во временный файл, и сюда попадает только имя этого файла.
+    """
+    media_id = uuid.uuid4().hex
+    suffix = Path(name).suffix.lower()[:16]
+    Path(path).replace(_media_dir / f"{media_id}{suffix}")
+
+    created_at = now()
+    with _lock:
+        cursor = _connection.execute(
+            "INSERT INTO messages (nickname, text, created_at, kind,"
+            " media_id, media_name, media_size, user_id, conversation_id, reply_to)"
+            " VALUES (?, '', ?, ?, ?, ?, ?, ?, ?, ?)",
+            (nickname, created_at, kind, media_id, name, size, user_id,
+             conversation_id, reply_to),
+        )
+        _connection.commit()
+    return cursor.lastrowid, media_id, created_at
+
+
 def _media_bytes_sync(media_id):
     with _lock:
         row = _connection.execute(
@@ -1250,6 +1302,48 @@ async def save_message(user_id, nickname, text, conversation_id=GENERAL_ID,
     """Сохраняет текстовое сообщение, возвращает (номер, время в UTC)."""
     return await asyncio.to_thread(_save_message_sync, user_id, nickname, text,
                                    conversation_id, reply_to, forwarded)
+
+
+async def settings():
+    """Настройки сервера, которые меняются на ходу."""
+    return await asyncio.to_thread(_settings_sync)
+
+
+async def set_setting(name, value):
+    """Запоминает настройку."""
+    await asyncio.to_thread(_set_setting_sync, name, value)
+
+
+async def media_path(media_id):
+    """Путь к файлу вложения или None."""
+    return await asyncio.to_thread(_media_path_sync, media_id)
+
+
+def _media_described_sync(media_id):
+    """Вид, имя и путь вложения — всё, что нужно, чтобы его отдать."""
+    with _lock:
+        row = _connection.execute(
+            "SELECT kind, media_name FROM messages WHERE media_id = ?",
+            (media_id,)).fetchone()
+    if row is None:
+        return None
+
+    matches = list(_media_dir.glob(f"{media_id}*"))
+    if not matches:
+        return None
+    return row[0], row[1] or "файл", matches[0]
+
+
+async def media_described(media_id):
+    """Вид, имя и путь вложения или None."""
+    return await asyncio.to_thread(_media_described_sync, media_id)
+
+
+async def save_media_file(user_id, nickname, kind, name, path, size,
+                          conversation_id=GENERAL_ID, reply_to=None):
+    """Сохраняет вложение, уже лежащее готовым файлом."""
+    return await asyncio.to_thread(_save_media_file_sync, user_id, nickname, kind,
+                                   name, path, size, conversation_id, reply_to)
 
 
 async def save_media(user_id, nickname, kind, name, data,

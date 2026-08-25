@@ -275,6 +275,12 @@ ENGLISH = {
     "людей: {members}, сообщений: {count}":
         "people: {members}, messages: {count}",
     "ПЕРЕПИСКИ": "CONVERSATIONS",
+    "ПРЕДЕЛЫ ВЛОЖЕНИЙ": "ATTACHMENT LIMITS",
+    "Файлы, МБ": "Files, MB",
+    "Видео, МБ": "Video, MB",
+    "Сохранить пределы": "Save limits",
+    "Отправляю «{name}» — 0%": "Sending “{name}” — 0%",
+    "Отправляю «{name}» — {percent}%": "Sending “{name}” — {percent}%",
     "Личная переписка": "Direct chat",
     "Удалить {name}?": "Delete {name}?",
     "Учётная запись пропадёт, сообщения останутся.":

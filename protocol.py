@@ -8,13 +8,23 @@
 import json
 from pathlib import Path
 
-VERSION = 5
+VERSION = 6
 
 # Первая группа заведена на сервере первой; общего чата больше нет
 GENERAL_ID = 1
 
-# Больше этого файлы не принимаем — и сокет не забьётся, и малина цела
+# Картинку принимаем целиком одним кадром: она всё равно ужимается, и
+# после сжатия снимок с телефона весит меньше мегабайта
 MAX_MEDIA_SIZE = 25 * 1024 * 1024
+
+# Файлы и видео ездят кусками, поэтому их предел — не про кадр, а про то,
+# сколько мы согласны хранить. Хозяин чата меняет эти числа в панели.
+DEFAULT_FILE_LIMIT = 500 * 1024 * 1024
+DEFAULT_VIDEO_LIMIT = 1024 * 1024 * 1024
+
+# Кусок, которым передаётся большое вложение. Четыре мегабайта — это и
+# памяти немного, и кадров не миллион
+CHUNK_SIZE = 4 * 1024 * 1024
 
 # Обновление приложения приезжает одним куском и весит заметно больше
 # вложения, поэтому запас считаем по нему
@@ -22,6 +32,16 @@ MAX_UPDATE_SIZE = 80 * 1024 * 1024
 
 # Запас поверх лимита: в кадр кроме файла попадают и служебные байты
 MAX_FRAME_SIZE = max(MAX_MEDIA_SIZE, MAX_UPDATE_SIZE) + 1024 * 1024
+
+
+def limit_for(kind, limits=None):
+    """Сколько позволено весить вложению такого вида."""
+    limits = limits or {}
+    if kind == "video":
+        return int(limits.get("video", DEFAULT_VIDEO_LIMIT))
+    if kind in ("image", "gif"):
+        return MAX_MEDIA_SIZE
+    return int(limits.get("file", DEFAULT_FILE_LIMIT))
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 GIF_SUFFIXES = {".gif"}
@@ -85,6 +105,33 @@ def media_header(nickname, kind, name, size, conversation=1, reply_to=None,
 
 def fetch_request(media_id):
     return encode({"type": "fetch", "id": media_id})
+
+
+def upload_request(name, size, conversation=1, reply_to=None, local=None):
+    """Заявка на большое вложение: следом оно поедет кусками."""
+    return encode({"type": "upload", "name": name, "size": size,
+                   "conversation": conversation, "reply_to": reply_to,
+                   "local": local})
+
+
+def upload_ready(ticket, chunk=CHUNK_SIZE, sent=0):
+    """Сервер готов принимать; sent говорит, сколько уже дошло."""
+    return encode({"type": "upload_ready", "ticket": ticket, "chunk": chunk,
+                   "sent": sent})
+
+
+def chunk_header(ticket):
+    """Описание куска; следом идёт кадр с самими байтами."""
+    return encode({"type": "chunk", "ticket": ticket})
+
+
+def upload_progress(ticket, sent, size):
+    return encode({"type": "upload_progress", "ticket": ticket, "sent": sent,
+                   "size": size})
+
+
+def upload_cancel(ticket):
+    return encode({"type": "upload_cancel", "ticket": ticket})
 
 
 # --- переписки ---
@@ -273,7 +320,8 @@ def avatar_header(name, size):
     return encode({"type": "avatar", "name": name, "size": size})
 
 
-def welcome_message(user, token, update=None, recovery=None, admin=False):
+def welcome_message(user, token, update=None, recovery=None, admin=False,
+                    limits=None):
     """Приветствие после входа.
 
     recovery появляется один раз — при регистрации и после смены пароля:
@@ -285,6 +333,10 @@ def welcome_message(user, token, update=None, recovery=None, admin=False):
     payload = {"type": "welcome", "user": user, "token": token}
     if admin:
         payload["admin"] = True
+    if limits:
+        # Клиент должен знать пределы заранее: сказать «файл слишком
+        # большой» до отправки честнее, чем после гигабайта по сети
+        payload["limits"] = limits
     if update:
         payload["update"] = update
     if recovery:
@@ -332,8 +384,10 @@ def error_message(text, code=None, **args):
     return _trouble("error", text, code, args)
 
 
-def blob_header(media_id, kind, name):
-    return encode({"type": "blob", "id": media_id, "kind": kind, "name": name})
+def blob_header(media_id, kind, name, size=0, parts=1):
+    """Описание вложения; следом идут parts кадров с его содержимым."""
+    return encode({"type": "blob", "id": media_id, "kind": kind, "name": name,
+                   "size": size, "parts": parts})
 
 
 def human_size(size):

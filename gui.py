@@ -350,8 +350,13 @@ class Network:
                     if message is None:
                         continue
                     if message.get("type") in ("blob", "update_blob"):
-                        # За описанием вложения сразу идёт кадр с содержимым
-                        message["data"] = await websocket.recv()
+                        # За описанием идут кадры с содержимым: большое
+                        # вложение приезжает не одним куском
+                        куски = []
+                        сколько = max(1, int(message.get("parts") or 1))
+                        for _ in range(сколько):
+                            куски.append(await websocket.recv())
+                        message["data"] = b"".join(куски)
                     self.events.put(("message", message))
 
         except ConnectionRefusedError:
@@ -439,6 +444,8 @@ class VelixApp(ctk.CTk):
         self.unread = {}               # переписка -> сколько пришло без нас
         self.stats = None              # последняя сводка для панели
         self.zoom = None               # приближение открытой фотографии
+        self.limits = {}               # пределы вложений, их называет сервер
+        self.sending = {}              # что сейчас уходит на сервер
         self.is_admin = False          # хозяин чата: решает сервер
 
         # Файл, оставшийся от прошлого обновления, больше не нужен
@@ -1190,6 +1197,8 @@ class VelixApp(ctk.CTk):
         for widget in self.admin_list.winfo_children():
             widget.destroy()
 
+        self._admin_limits(stats.get("limits") or {})
+
         ctk.CTkLabel(self.admin_list, text=t("УЧАСТНИКИ"), font=self.font_small,
                      text_color=MUTED, anchor="w").pack(fill="x", pady=(4, 2))
         for person in stats.get("users", []):
@@ -1208,6 +1217,51 @@ class VelixApp(ctk.CTk):
                 t("людей: {members}, сообщений: {count}",
                   members=room.get("members", 0), count=room.get("messages", 0)),
                 lambda r=room: self._admin_drop_room(r))
+
+    def _admin_limits(self, limits):
+        """Пределы вложений: сколько позволено весить файлу и видео."""
+        ctk.CTkLabel(self.admin_list, text=t("ПРЕДЕЛЫ ВЛОЖЕНИЙ"),
+                     font=self.font_small, text_color=MUTED,
+                     anchor="w").pack(fill="x", pady=(4, 2))
+
+        карточка = ctk.CTkFrame(self.admin_list, fg_color=INPUT_BG, corner_radius=8)
+        карточка.pack(fill="x", pady=2)
+
+        self.limit_entries = {}
+        for имя, подпись, по_умолчанию in (
+                ("file", t("Файлы, МБ"), protocol.DEFAULT_FILE_LIMIT),
+                ("video", t("Видео, МБ"), protocol.DEFAULT_VIDEO_LIMIT)):
+            строка = ctk.CTkFrame(карточка, fg_color="transparent")
+            строка.pack(fill="x", padx=10, pady=6)
+            ctk.CTkLabel(строка, text=подпись, font=self.font_body,
+                         text_color=TEXT, anchor="w").pack(side="left")
+
+            поле = ctk.CTkEntry(строка, width=110, height=30, corner_radius=8,
+                                font=self.font_body, fg_color=SIDEBAR,
+                                border_width=0, text_color=TEXT)
+            поле.insert(0, str(int(limits.get(имя, по_умолчанию)) // (1024 * 1024)))
+            поле.pack(side="right")
+            self.limit_entries[имя] = поле
+
+        ctk.CTkButton(карточка, text=t("Сохранить пределы"), height=32,
+                      corner_radius=8, font=self.font_small, fg_color=ACCENT,
+                      hover_color=ACCENT_HOVER, text_color=ON_ACCENT,
+                      command=self._admin_save_limits).pack(fill="x", padx=10,
+                                                            pady=(2, 10))
+
+    def _admin_save_limits(self):
+        значения = {}
+        for имя, поле in self.limit_entries.items():
+            try:
+                мегабайты = int(поле.get().strip())
+            except ValueError:
+                continue
+            # Меньше мегабайта и больше десяти гигабайт сервер всё равно
+            # не примет — незачем и спрашивать
+            if 1 <= мегабайты <= 10 * 1024:
+                значения[имя] = мегабайты * 1024 * 1024
+        if значения:
+            self.network.send(protocol.admin_request("limits", **значения))
 
     def _admin_row(self, title, note, on_delete):
         row = ctk.CTkFrame(self.admin_list, fg_color=INPUT_BG, corner_radius=8)
@@ -1524,12 +1578,97 @@ class VelixApp(ctk.CTk):
         return None  # в буфере текст — пусть вставится как обычно
 
     def _send_file(self, path):
+        kind = protocol.kind_of(path.name)
         try:
-            data = path.read_bytes()
+            size = path.stat().st_size
         except OSError as error:
             self._service_label(t("Не удалось прочитать файл: {error}", error=error))
             return
-        self._send_bytes(path.name, data)
+
+        предел = protocol.limit_for(kind, self.limits)
+        if size > предел:
+            self._service_label(t(
+                "«{name}» весит {size}, а больше {limit} сервер не принимает.",
+                name=path.name, size=protocol.human_size(size),
+                limit=protocol.human_size(предел)))
+            return
+
+        # Картинку отправляем целиком: сервер её ещё и ужмёт. Всё остальное
+        # едет кусками — гигабайтное видео в памяти держать негде
+        if kind in ("image", "gif"):
+            try:
+                self._send_bytes(path.name, path.read_bytes())
+            except OSError as error:
+                self._service_label(t("Не удалось прочитать файл: {error}",
+                                      error=error))
+            return
+
+        self._start_upload(path, kind, size)
+
+    def _start_upload(self, path, kind, size):
+        """Заводит порционную отправку и показывает, как она идёт."""
+        self.local_number += 1
+        local = f"l{self.local_number}"
+
+        now = datetime.now()
+        self._ensure_date(now.strftime("%d.%m"))
+        self.loaded_items.append({"kind": kind, "name": path.name, "size": size,
+                                  "nick": self.user.get("name", t("Я")),
+                                  "user": self.user.get("id"), "local": local,
+                                  "at": now.astimezone().isoformat(),
+                                  "conversation": self.conversation})
+        строка = self._service_label(t("Отправляю «{name}» — 0%", name=path.name))
+
+        self.sending[local] = {"path": path, "size": size, "name": path.name,
+                               "label": строка, "ticket": None}
+        self.network.send(protocol.upload_request(path.name, size,
+                                                  self.conversation,
+                                                  self.reply_to, local))
+        self._cancel_reply()
+
+    def _on_upload_ready(self, message):
+        """Сервер готов принимать — начинаем слать куски из отдельного потока."""
+        ticket = message.get("ticket")
+        local = message.get("local")
+        отправка = self.sending.get(local) or next(
+            (one for one in self.sending.values() if one["ticket"] is None), None)
+        if отправка is None:
+            return
+
+        отправка["ticket"] = ticket
+        размер_куска = int(message.get("chunk") or protocol.CHUNK_SIZE)
+
+        def качать():
+            # Файл читаем в своём потоке: гигабайт по кускам — это надолго,
+            # а окно должно оставаться живым
+            try:
+                with open(отправка["path"], "rb") as файл:
+                    while True:
+                        кусок = файл.read(размер_куска)
+                        if not кусок:
+                            break
+                        self.network.send(protocol.chunk_header(ticket), кусок)
+            except OSError as error:
+                self.after(0, lambda: self._service_label(
+                    t("Не удалось прочитать файл: {error}", error=error)))
+
+        threading.Thread(target=качать, daemon=True).start()
+
+    def _on_upload_progress(self, message):
+        """Сколько уже дошло — подписываем это в переписке."""
+        ticket = message.get("ticket")
+        отправка = next((one for one in self.sending.values()
+                         if one["ticket"] == ticket), None)
+        if отправка is None:
+            return
+
+        доля = int(100 * int(message.get("sent") or 0)
+                   / max(int(message.get("size") or 1), 1))
+        строка = отправка["label"]
+        if строка is not None and строка.winfo_exists():
+            for widget in строка.winfo_children():
+                widget.configure(text=t("Отправляю «{name}» — {percent}%",
+                                        name=отправка["name"], percent=доля))
 
     def _send_bytes(self, name, data):
         if len(data) > protocol.MAX_MEDIA_SIZE:
@@ -1640,6 +1779,7 @@ class VelixApp(ctk.CTk):
         self.token = message.get("token")
         self.available_update = message.get("update")
         self.is_admin = bool(message.get("admin"))
+        self.limits = message.get("limits") or {}
         self.pending_login = None
 
         store.remember_account(self.config_data, self.user.get("login", ""),
@@ -1726,6 +1866,10 @@ class VelixApp(ctk.CTk):
             self._on_pinned(message)
         elif kind == "admin":
             self._on_admin(message)
+        elif kind == "upload_ready":
+            self._on_upload_ready(message)
+        elif kind == "upload_progress":
+            self._on_upload_progress(message)
         elif kind == "search":
             self._show_search(message)
         elif kind in ("text", "media"):
@@ -2715,12 +2859,40 @@ class VelixApp(ctk.CTk):
         label.configure(text=marks.get(state, "✓"),
                         text_color=TICK_READ if state == "read" else TICK_SENT)
 
+    def _finish_upload(self, local, message):
+        """Отправка закончилась: убираем строчку о ходе, показываем вложение."""
+        отправка = self.sending.pop(local, None)
+        if отправка is None:
+            return
+
+        строка = отправка["label"]
+        if строка is not None and строка.winfo_exists():
+            строка.destroy()
+
+        запись = next((one for one in self.loaded_items
+                       if one.get("local") == local), None)
+        if запись is None:
+            return
+        запись["media"] = message.get("media")
+
+        self._add_media_bubble(self.user.get("name", t("Я")), own=True,
+                               kind=запись.get("kind"),
+                               media_id=message.get("media"),
+                               name=запись.get("name"),
+                               size=запись.get("size"),
+                               time_text=local_time(message.get("at")).strftime("%H:%M"),
+                               data=None, item=запись)
+
     def _on_ack(self, message):
         """Сервер принял сообщение и назвал его настоящий номер."""
         local = message.get("local")
         message_id = message.get("id")
         if not message_id:
             return
+
+        if local in self.sending:
+            # Большой файл доехал: показываем его вместо строчки о ходе
+            self._finish_upload(local, message)
 
         for item in self.loaded_items:
             if local and item.get("local") == local:
