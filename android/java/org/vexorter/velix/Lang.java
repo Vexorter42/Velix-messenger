@@ -82,6 +82,23 @@ class Lang {
         add("У меня уже есть аккаунт", "I already have an account");
         add("Вход в аккаунт", "Sign in");
         add("Нужен код приглашения", "An invite code is required");
+        add("Код восстановления", "Recovery code");
+        add("Забыли пароль?", "Forgot your password?");
+        add("Восстановление пароля", "Password recovery");
+        add("Новый пароль", "New password");
+        add("Сменить пароль", "Change password");
+        add("Вернуться ко входу", "Back to sign-in");
+        add("Заполните логин, код и новый пароль.",
+            "Fill in the username, the code and the new password.");
+        add("Сохраните код восстановления", "Save your recovery code");
+        add("По нему меняют пароль, если его забыли. Другого способа нет: "
+            + "почту мы не спрашиваем, а сервер стоит у вас дома.",
+            "It is what changes your password if you forget it. There is "
+            + "no other way: we ask for no email, and the server sits in "
+            + "your home.");
+        add("Код скопирован", "Code copied");
+        add("Понятно", "Got it");
+        add("Код восстановления не подошёл.", "That recovery code did not work.");
         add("Заполните логин и пароль.", "Fill in the username and password.");
         add("Подключаемся…", "Connecting…");
 
@@ -114,6 +131,7 @@ class Lang {
         add("Показать более старые", "Show older messages");
         add("Ответить", "Reply");
         add("Реакция", "Reaction");
+        add("Копировать", "Copy");
         add("Копировать текст", "Copy text");
         add("Копировать фото", "Copy photo");
         add("Копировать файл", "Copy file");
@@ -176,6 +194,7 @@ class Lang {
         SERVER.put("invite_bad",
                 "Код приглашения не подошёл: его либо нет, либо им уже воспользовались.");
         SERVER.put("invite_taken", "Код приглашения только что заняли. Попросите новый.");
+        SERVER.put("recovery_bad", "Код восстановления не подошёл.");
         SERVER.put("login_taken", "Такой логин уже занят.");
         SERVER.put("bad_credentials", "Неверный логин или пароль.");
         SERVER.put("locked_out",

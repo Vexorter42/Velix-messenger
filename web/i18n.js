@@ -15,6 +15,20 @@ const EN = {
   // --- экраны
   "Вход в аккаунт": "Sign in",
   "Нужен код приглашения": "An invite code is required",
+  "Код восстановления": "Recovery code",
+  "Забыли пароль?": "Forgot your password?",
+  "Восстановление пароля": "Password recovery",
+  "Новый пароль": "New password",
+  "Сменить пароль": "Change password",
+  "Вернуться ко входу": "Back to sign-in",
+  "Заполните логин, код и новый пароль.":
+      "Fill in the username, the code and the new password.",
+  "Сохраните код восстановления": "Save your recovery code",
+  "По нему меняют пароль, если его забыли. Другого способа нет: почту мы не спрашиваем, а сервер стоит у вас дома.":
+      "It is what changes your password if you forget it. There is no other way: we ask for no email, and the server sits in your home.",
+  "Код скопирован": "Code copied",
+  "Понятно": "Got it",
+  "Код восстановления не подошёл.": "That recovery code did not work.",
   "Логин": "Username",
   "Пароль": "Password",
   "Как вас зовут": "Your name",
@@ -123,6 +137,7 @@ const SERVER_MESSAGES = {
   invite_required: "Нужен код приглашения — попросите его у того, кто держит чат.",
   invite_bad: "Код приглашения не подошёл: его либо нет, либо им уже воспользовались.",
   invite_taken: "Код приглашения только что заняли. Попросите новый.",
+  recovery_bad: "Код восстановления не подошёл.",
   login_taken: "Такой логин уже занят.",
   bad_credentials: "Неверный логин или пароль.",
   locked_out: "Слишком много неудачных попыток. Попробуйте через {minutes} мин.",

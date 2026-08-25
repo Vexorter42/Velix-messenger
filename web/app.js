@@ -46,12 +46,72 @@ function titleOf(item) {
   return (item || {}).title || t("Общий чат");
 }
 
+let recoverMode = false;
+
 function drawAuthMode() {
+  $("name").hidden = !registerMode;
+  $("invite").hidden = !registerMode;
+  $("recovery-code").hidden = !recoverMode;
+  $("forgot").hidden = registerMode || recoverMode;
+  $("password").placeholder = recoverMode ? t("Новый пароль") : t("Пароль");
+
+  if (recoverMode) {
+    $("primary").textContent = t("Сменить пароль");
+    $("switch-mode").textContent = t("Вернуться ко входу");
+    $("auth-subtitle").textContent = t("Восстановление пароля");
+    return;
+  }
+
   $("primary").textContent = registerMode ? t("Создать аккаунт") : t("Войти");
   $("switch-mode").textContent = registerMode ? t("У меня уже есть аккаунт")
                                               : t("Создать аккаунт");
   $("auth-subtitle").textContent = registerMode ? t("Нужен код приглашения")
                                                 : t("Вход в аккаунт");
+}
+
+function showRecovery(code) {
+  // Код виден ровно один раз: дальше на сервере лежит только его хеш
+  const sheet = document.createElement("div");
+  sheet.className = "sheet";
+  const card = document.createElement("div");
+  card.className = "sheet-card";
+  sheet.append(card);
+
+  const title = document.createElement("strong");
+  title.textContent = t("Сохраните код восстановления");
+  card.append(title);
+
+  const value = document.createElement("p");
+  value.className = "recovery-code";
+  value.textContent = code;
+  card.append(value);
+
+  const explain = document.createElement("p");
+  explain.className = "muted small";
+  explain.textContent = t("По нему меняют пароль, если его забыли. Другого "
+      + "способа нет: почту мы не спрашиваем, а сервер стоит у вас дома.");
+  card.append(explain);
+
+  const copy = document.createElement("button");
+  copy.className = "sheet-button";
+  copy.textContent = t("Копировать");
+  copy.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(code);
+      copy.textContent = t("Код скопирован");
+    } catch (error) {
+      copy.textContent = t("Не удалось скопировать: {error}", {error});
+    }
+  });
+  card.append(copy);
+
+  const done = document.createElement("button");
+  done.className = "primary";
+  done.textContent = t("Понятно");
+  done.addEventListener("click", () => sheet.remove());
+  card.append(done);
+
+  document.body.append(sheet);
 }
 
 function show(name) {
@@ -175,7 +235,12 @@ function onWelcome(message) {
   localStorage.setItem("velix.token", message.token || "");
   localStorage.setItem("velix.login", user.login || "");
 
-  conversation = 1;
+  // Код приходит только при регистрации и после смены пароля
+  recoverMode = false;
+  drawAuthMode();
+  if (message.recovery) showRecovery(message.recovery);
+
+  conversation = null;
   conversations = [];
   people = [];
   online = new Set();
@@ -892,9 +957,18 @@ async function sendFile(file) {
 // ---------------------------------------------------------------- события
 
 $("switch-mode").addEventListener("click", () => {
-  registerMode = !registerMode;
-  $("name").hidden = !registerMode;
-  $("invite").hidden = !registerMode;
+  if (recoverMode) {
+    recoverMode = false;
+  } else {
+    registerMode = !registerMode;
+  }
+  drawAuthMode();
+  $("auth-error").textContent = "";
+});
+
+$("forgot").addEventListener("click", () => {
+  recoverMode = true;
+  registerMode = false;
   drawAuthMode();
   $("auth-error").textContent = "";
 });
@@ -907,8 +981,19 @@ $("primary").addEventListener("click", () => {
     return;
   }
 
+  if (recoverMode && !$("recovery-code").value.trim()) {
+    $("auth-error").textContent = t("Заполните логин, код и новый пароль.");
+    return;
+  }
+
   $("primary").disabled = true;
   $("auth-error").textContent = "";
+
+  if (recoverMode) {
+    connect({type: "recover", login, password,
+             code: $("recovery-code").value.trim()});
+    return;
+  }
   connect(registerMode
     ? {type: "register", login, password, name: $("name").value.trim() || login,
        invite: $("invite").value.trim()}

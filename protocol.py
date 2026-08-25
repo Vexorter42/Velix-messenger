@@ -210,6 +210,12 @@ def search_result(query, items):
 
 # --- вход и профиль ---
 
+def recover_request(login, code, password):
+    """Сменить пароль по коду восстановления."""
+    return encode({"type": "recover", "login": login, "code": code,
+                   "password": password})
+
+
 def register_message(login, password, name, invite=""):
     return encode({"type": "register", "login": login, "password": password,
                    "name": name, "invite": invite})
@@ -235,10 +241,17 @@ def avatar_header(name, size):
     return encode({"type": "avatar", "name": name, "size": size})
 
 
-def welcome_message(user, token, update=None):
+def welcome_message(user, token, update=None, recovery=None):
+    """Приветствие после входа.
+
+    recovery появляется один раз — при регистрации и после смены пароля:
+    показать код можно только тогда, дальше на сервере лежит лишь его хеш.
+    """
     payload = {"type": "welcome", "user": user, "token": token}
     if update:
         payload["update"] = update
+    if recovery:
+        payload["recovery"] = recovery
     return encode(payload)
 
 

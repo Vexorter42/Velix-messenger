@@ -37,7 +37,7 @@ The server is a single `python server.py` away.
 | 💬 **Conversations** | Groups you create and invite people into, plus one-to-one direct chats. Reply, react, pin, forward, copy, delete-your-own, full-text search, typing indicator, who-is-online — from a message menu that opens on right-click or long-press. |
 | ✓✓ **Delivery ticks** | One grey tick — the server took it. Two grey — it reached everyone in the conversation. Two blue — everyone read it. |
 | 📷 **Attachments** | Photos, GIFs (animated in place), video and any other file. Tap a photo to open it full-window. Paste a screenshot straight from the clipboard. Images are compressed server-side — a 7.5 MB phone photo lands at ~400 KB. |
-| 👤 **Accounts** | Invite-only registration, scrypt password hashing, session tokens, brute-force lockout. Profile with a name, a bio and a photo. |
+| 👤 **Accounts** | Invite-only registration, scrypt password hashing, session tokens, brute-force lockout. A recovery code instead of email resets. Profile with a name, a bio and a photo. |
 | 🔒 **Encryption** | TLS 1.3 (`wss://`) with a Let's Encrypt certificate. The client falls back to plain `ws://` only if the server has no certificate — and says so on screen. |
 | 📱 **Phones** | A native Android app (`Velix.apk`) — real Android views, not a web page in a frame. The web client is still there for iPhones and for push notifications. |
 | 🔄 **Updates** | A button in Settings. The server hands out the fresh build, the client swaps itself and restarts — no reinstall. |
@@ -152,6 +152,29 @@ when the app is closed.
 The pages live in `web/` and are served from `server.py` itself, so there is no
 second web server and no second port to forward. A plain GET returns a file; a
 request carrying `Upgrade: websocket` goes to the chat.
+
+## Forgotten passwords
+
+There is no email reset here — we ask for no email, and the server sits in
+someone's home. Instead every account gets a **recovery code** when it is
+created: four groups of four characters, shown once, stored only as a scrypt
+hash. "Forgot your password?" on the sign-in screen asks for the username, that
+code and a new password.
+
+The code is single-use: after it works you are given a fresh one. Changing the
+password also drops every session, so anyone who had the old password is signed
+out.
+
+If the code is lost too, whoever runs the server issues a new one and hands it
+over in person — the same way invite codes travel:
+
+```bash
+python recover.py gosha     # issue a new code
+python recover.py --list    # who has a code and who does not
+```
+
+Guessing the code is rate-limited exactly like guessing the password: five
+misses lock that username for five minutes.
 
 ## Interface language
 
@@ -281,6 +304,7 @@ anything fails halfway, the old file comes back.
 | `tray.py`, `autostart.py` | Tray icon, start with Windows |
 | `updates.py`, `version.py` | Updating in place |
 | `invite.py` | Invite codes |
+| `recover.py` | Recovery codes for a forgotten password |
 | `backup.sh`, `publish-update.sh`, `test-server.sh` | Server-side chores |
 
 A message travels as a JSON text frame; the bytes of an attachment follow in a

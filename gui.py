@@ -521,6 +521,7 @@ class VelixApp(ctk.CTk):
         self.password_entry = self._entry(self.form, t("Пароль"), show="•")
         self.name_entry = self._entry(self.form, t("Как вас зовут"))
         self.invite_entry = self._entry(self.form, t("Код приглашения"))
+        self.code_entry = self._entry(self.form, t("Код восстановления"))
 
         self.primary_button = ctk.CTkButton(
             self.form, text=t("ВОЙТИ"), width=300, height=46, corner_radius=10,
@@ -531,6 +532,12 @@ class VelixApp(ctk.CTk):
             self.form, text=t("Создать аккаунт"), width=300, height=32,
             corner_radius=8, font=self.font_small, fg_color="transparent",
             hover_color=INPUT_BG, text_color=ACCENT, command=self._toggle_mode)
+
+        self.forgot_button = ctk.CTkButton(
+            self.form, text=t("Забыли пароль?"), width=300, height=28,
+            corner_radius=8, font=self.font_small, fg_color="transparent",
+            hover_color=INPUT_BG, text_color=MUTED,
+            command=lambda: self._show_form(recover=True))
 
         self.back_button = ctk.CTkButton(
             card, text=t("К списку аккаунтов"), width=300, height=32,
@@ -548,6 +555,7 @@ class VelixApp(ctk.CTk):
             entry.bind("<Control-KeyPress>", self._on_entry_shortcut)
 
         self.register_mode = False
+        self.recover_mode = False
 
     def _entry(self, master, placeholder, show=None):
         entry = ctk.CTkEntry(
@@ -619,34 +627,59 @@ class VelixApp(ctk.CTk):
         for child in lines.winfo_children():
             child.bind("<Button-1>", lambda event, item=account: self._enter_saved(item))
 
-    def _show_form(self, register):
-        """Показывает форму входа или регистрации."""
+    def _show_form(self, register=False, recover=False):
+        """Показывает форму входа, регистрации или восстановления."""
         self.register_mode = register
+        self.recover_mode = recover
         self.saved_box.pack_forget()
         self.form.pack(padx=48, fill="x", before=self.auth_error)
 
         for entry in (self.server_entry, self.login_entry, self.password_entry,
-                      self.name_entry, self.invite_entry):
+                      self.name_entry, self.invite_entry, self.code_entry):
             entry.pack_forget()
         self.primary_button.pack_forget()
         self.switch_button.pack_forget()
+        self.forgot_button.pack_forget()
 
         self.server_entry.pack(pady=(0, 10))
         self.login_entry.pack(pady=(0, 10))
+        if recover:
+            self.code_entry.pack(pady=(0, 10))
         self.password_entry.pack(pady=(0, 10))
         if register:
             self.name_entry.pack(pady=(0, 10))
             self.invite_entry.pack(pady=(0, 10))
 
-        self.primary_button.configure(
-            text=t("СОЗДАТЬ АККАУНТ") if register else t("ВОЙТИ"))
+        # В восстановлении просят не старый пароль, а новый
+        self.password_entry.configure(
+            placeholder_text=t("Новый пароль") if recover else t("Пароль"))
+
+        if recover:
+            self.primary_button.configure(text=t("СМЕНИТЬ ПАРОЛЬ"))
+        else:
+            self.primary_button.configure(
+                text=t("СОЗДАТЬ АККАУНТ") if register else t("ВОЙТИ"))
         self.primary_button.pack(pady=(6, 6))
-        self.switch_button.configure(text=t("У меня уже есть аккаунт") if register
-                                     else t("Создать аккаунт"))
+
+        if recover:
+            self.switch_button.configure(text=t("Вернуться ко входу"),
+                                         command=lambda: self._show_form())
+        else:
+            self.switch_button.configure(
+                text=t("У меня уже есть аккаунт") if register
+                else t("Создать аккаунт"), command=self._toggle_mode)
         self.switch_button.pack()
 
-        self.auth_subtitle.configure(
-            text=t("Нужен код приглашения") if register else t("Вход в аккаунт"))
+        if not register and not recover:
+            self.forgot_button.pack(pady=(2, 0))
+
+        if recover:
+            subtitle = t("Восстановление пароля")
+        elif register:
+            subtitle = t("Нужен код приглашения")
+        else:
+            subtitle = t("Вход в аккаунт")
+        self.auth_subtitle.configure(text=subtitle)
         self.auth_error.configure(text="")
 
         if self.config_data.get("accounts"):
@@ -1148,6 +1181,20 @@ class VelixApp(ctk.CTk):
         login = self.login_entry.get().strip()
         password = self.password_entry.get()
 
+        if self.recover_mode:
+            code = self.code_entry.get().strip()
+            if not login or not code or not password:
+                self.auth_error.configure(
+                    text=t("Заполните логин, код и новый пароль."))
+                return
+            self.pending_login = protocol.recover_request(login, code, password)
+            self.server = server
+            self.login = login
+            self.auth_error.configure(text="")
+            self.primary_button.configure(text=t("ПОДКЛЮЧЕНИЕ…"), state="disabled")
+            self.network.connect(connection_uris(server))
+            return
+
         if not login or not password:
             self.auth_error.configure(text=t("Заполните логин и пароль."))
             return
@@ -1442,6 +1489,7 @@ class VelixApp(ctk.CTk):
             self.network.send(self.pending_login)
 
     def _on_welcome(self, message):
+        self.recover_mode = False
         self.user = dict(message.get("user") or {})
         self.token = message.get("token")
         self.available_update = message.get("update")
@@ -1451,7 +1499,8 @@ class VelixApp(ctk.CTk):
                                self.user.get("name", ""), self.server, self.token)
         store.save(self.config_data)
 
-        self.conversation = 1
+        # Общего чата больше нет: пока переписки не пришли, открывать нечего
+        self.conversation = None
         self.conversations = []
         self.people = []
         self.online = set()
@@ -1460,6 +1509,10 @@ class VelixApp(ctk.CTk):
         self._clear_messages()
         self.pending_media.clear()
         self.avatar_waiters.clear()
+
+        # Код приходит только при регистрации и после смены пароля
+        if message.get("recovery"):
+            self.after(400, lambda: self._show_recovery(message["recovery"]))
         self.images.clear()
         self.animations.clear()
         self.empty_hint = self._service_label(t("Пока тихо. Напишите первым."))
@@ -1548,6 +1601,46 @@ class VelixApp(ctk.CTk):
             self._paint_avatar(self.profile_avatar, self.user.get("name", "?"),
                                self.user.get("avatar"), AVATAR_LARGE)
             self.profile_hint.configure(text=t("Сохранено"), text_color=ONLINE)
+
+    def _show_recovery(self, code):
+        """Показывает код восстановления — единственный раз, когда он виден."""
+        window = ctk.CTkToplevel(self)
+        window.title(t("Сохраните код восстановления"))
+        window.geometry("420x260")
+        window.transient(self)
+        window.configure(fg_color=SIDEBAR)
+
+        ctk.CTkLabel(window, text=t("Сохраните код восстановления"),
+                     font=self.font_name, text_color=TEXT).pack(pady=(22, 8))
+
+        ctk.CTkLabel(window, text=code, font=self.font_title,
+                     text_color=ACCENT).pack(pady=(0, 10))
+
+        ctk.CTkLabel(
+            window,
+            text=t("По нему меняют пароль, если его забыли. Другого способа нет: "
+                   "почту мы не спрашиваем, а сервер стоит у вас дома."),
+            font=self.font_small, text_color=MUTED, wraplength=340,
+            justify="left").pack(padx=30)
+
+        def copy():
+            self.clipboard_clear()
+            self.clipboard_append(code)
+            hint.configure(text=t("Код скопирован"))
+
+        ctk.CTkButton(window, text=t("Копировать"), width=300, height=38,
+                      corner_radius=10, font=self.font_small, fg_color=INPUT_BG,
+                      hover_color=SEPARATOR, text_color=TEXT,
+                      command=copy).pack(pady=(14, 4))
+
+        hint = ctk.CTkLabel(window, text="", font=self.font_small,
+                            text_color=ONLINE)
+        hint.pack()
+
+        ctk.CTkButton(window, text=t("Понятно"), width=300, height=32,
+                      corner_radius=8, font=self.font_small,
+                      fg_color="transparent", hover_color=INPUT_BG,
+                      text_color=MUTED, command=window.destroy).pack(pady=(2, 12))
 
     def _on_authfail(self, text):
         self.pending_login = None

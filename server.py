@@ -656,7 +656,7 @@ async def handle_register(websocket, message):
     if problem:
         code, args = accounts.code_for(problem)
         await websocket.send(protocol.authfail_message(problem, code, **args))
-        return None
+        return None, None
 
     invite = accounts.clean_invite(message.get("invite"))
     if not OPEN_REGISTRATION:
@@ -664,31 +664,83 @@ async def handle_register(websocket, message):
             await websocket.send(protocol.authfail_message(
                 "Нужен код приглашения — попросите его у того, кто держит чат.",
                 "invite_required"))
-            return None
+            return None, None
         if not await storage.invite_exists(invite):
             await websocket.send(protocol.authfail_message(
                 "Код приглашения не подошёл: его либо нет, либо им уже воспользовались.",
                 "invite_bad"))
-            return None
+            return None, None
 
     name = accounts.clean_name(message.get("name"), login)
     # scrypt считается заметное время и грузит процессор — уводим в поток,
     # чтобы чат не замирал на время регистрации
     password_hash = await asyncio.to_thread(accounts.hash_password, password)
 
-    user = await storage.create_user(login, password_hash, name)
+    # Код восстановления показываем один раз: на сервере остаётся только хеш
+    recovery = accounts.new_recovery()
+    recovery_hash = await asyncio.to_thread(accounts.hash_password, recovery)
+
+    user = await storage.create_user(login, password_hash, name, recovery_hash)
     if user is None:
         await websocket.send(protocol.authfail_message("Такой логин уже занят.", "login_taken"))
-        return None
+        return None, None
 
     if not OPEN_REGISTRATION and not await storage.take_invite(invite, user["id"]):
         # Кто-то успел воспользоваться кодом, пока считался хеш пароля
         await websocket.send(protocol.authfail_message(
             "Код приглашения только что заняли. Попросите новый.", "invite_taken"))
-        return None
+        return None, None
 
     print(f"[Сервер]: Зарегистрирован {login} ({name})")
-    return user
+    return user, recovery
+
+
+async def handle_recover(websocket, message):
+    """Меняет пароль по коду восстановления и выдаёт новый код."""
+    login = str(message.get("login") or "").strip()
+    code = accounts.clean_invite(message.get("code"))
+    password = message.get("password")
+
+    waiting = locked_for(login.lower())
+    if waiting:
+        await websocket.send(protocol.authfail_message(
+            f"Слишком много неудачных попыток. Попробуйте через {waiting // 60 + 1} мин.",
+            "locked_out", minutes=waiting // 60 + 1))
+        return None, None
+
+    problem = accounts.check_password(password)
+    if problem:
+        name, args = accounts.code_for(problem)
+        await websocket.send(protocol.authfail_message(problem, name, **args))
+        return None, None
+
+    user_id, stored = await storage.recovery_row(login)
+    if user_id is None or not stored:
+        # Считаем хеш вхолостую: по времени ответа не должно быть заметно,
+        # есть такой логин или нет
+        await asyncio.to_thread(accounts.hash_password, str(password or ""))
+        note_failure(login.lower())
+        await websocket.send(protocol.authfail_message(
+            "Код восстановления не подошёл.", "recovery_bad"))
+        return None, None
+
+    if not await asyncio.to_thread(accounts.verify_password, code, stored):
+        note_failure(login.lower())
+        await websocket.send(protocol.authfail_message(
+            "Код восстановления не подошёл.", "recovery_bad"))
+        return None, None
+
+    note_success(login.lower())
+    password_hash = await asyncio.to_thread(accounts.hash_password, password)
+    await storage.set_password(user_id, password_hash)
+
+    # Код одноразовый: взамен использованного сразу выдаём новый
+    fresh = accounts.new_recovery()
+    await storage.set_recovery(user_id,
+                               await asyncio.to_thread(accounts.hash_password, fresh))
+
+    print(f"[Сервер]: {login} сменил пароль по коду восстановления")
+    return await storage.user_by_id(user_id), fresh
 
 
 async def handle_login(websocket, message):
@@ -738,9 +790,12 @@ async def authenticate(websocket):
 
         kind = message.get("type")
         user = None
+        recovery = None
 
         if kind == "register":
-            user = await handle_register(websocket, message)
+            user, recovery = await handle_register(websocket, message)
+        elif kind == "recover":
+            user, recovery = await handle_recover(websocket, message)
         elif kind == "login":
             user = await handle_login(websocket, message)
         elif kind == "auth":
@@ -764,7 +819,7 @@ async def authenticate(websocket):
             token = accounts.new_token()
             await storage.remember_token(token, user["id"])
 
-        return user, token
+        return user, token, recovery
 
 
 # ---------------------------------------------------------------- сообщения
@@ -926,13 +981,13 @@ async def handle_avatar(websocket, user, message):
 async def chat_handler(websocket):
     """Функция обрабатывает каждое новое подключение."""
     try:
-        user, token = await authenticate(websocket)
+        user, token, recovery = await authenticate(websocket)
     except websockets.exceptions.ConnectionClosed:
         return
 
     try:
         await websocket.send(protocol.welcome_message(user, token,
-                                                      available_update()))
+                                                      available_update(), recovery))
         # Историю отдаём до регистрации в connected_clients, иначе новые
         # сообщения чата могли бы вклиниться в середину выгрузки.
         items = await storage.conversations(user["id"])

@@ -64,6 +64,7 @@ SERVER_MESSAGES = {
     "invite_required": "Нужен код приглашения — попросите его у того, кто держит чат.",
     "invite_bad": "Код приглашения не подошёл: его либо нет, либо им уже воспользовались.",
     "invite_taken": "Код приглашения только что заняли. Попросите новый.",
+    "recovery_bad": "Код восстановления не подошёл.",
     "login_taken": "Такой логин уже занят.",
     "bad_credentials": "Неверный логин или пароль.",
     "locked_out": "Слишком много неудачных попыток. Попробуйте через {minutes} мин.",
@@ -139,6 +140,7 @@ ENGLISH = {
     "Пароль": "Password",
     "Как вас зовут": "Your name",
     "Код приглашения": "Invite code",
+    "Код восстановления": "Recovery code",
     "ВОЙТИ": "SIGN IN",
     "СОЗДАТЬ АККАУНТ": "CREATE ACCOUNT",
     "ПОДКЛЮЧЕНИЕ…": "CONNECTING…",
@@ -149,6 +151,18 @@ ENGLISH = {
     "Войти в другой аккаунт": "Sign in to another account",
     "Вход в аккаунт": "Sign in",
     "Нужен код приглашения": "An invite code is required",
+    "Забыли пароль?": "Forgot your password?",
+    "Восстановление пароля": "Password recovery",
+    "Новый пароль": "New password",
+    "СМЕНИТЬ ПАРОЛЬ": "CHANGE PASSWORD",
+    "Вернуться ко входу": "Back to sign-in",
+    "Заполните логин, код и новый пароль.":
+        "Fill in the username, the code and the new password.",
+    "Сохраните код восстановления": "Save your recovery code",
+    "По нему меняют пароль, если его забыли. Другого способа нет: почту мы не спрашиваем, а сервер стоит у вас дома.":
+        "It is what changes your password if you forget it. There is no other way: we ask for no email, and the server sits in your home.",
+    "Код скопирован": "Code copied",
+    "Понятно": "Got it",
     "Заполните логин и пароль.": "Fill in the username and password.",
     "Входим как {name}…": "Signing in as {name}…",
 
@@ -318,6 +332,7 @@ ENGLISH = {
         "An invite code is required — ask whoever runs the chat for one.",
     "Код приглашения не подошёл: его либо нет, либо им уже воспользовались.":
         "That invite code did not work: it does not exist or has already been used.",
+    "Код восстановления не подошёл.": "That recovery code did not work.",
     "Код приглашения только что заняли. Попросите новый.":
         "That invite code was just used up. Ask for a new one.",
     "Такой логин уже занят.": "That username is already taken.",

@@ -64,6 +64,9 @@ public class MainActivity extends Activity implements Net.Listener {
     private EditText serverField, loginField, passwordField, nameField, inviteField;
     private TextView primaryButton, switchButton, authError, authSubtitle;
     private boolean registerMode;
+    private boolean recoverMode;
+    private EditText codeField;
+    private TextView forgotButton;
 
     // --- списки
     private LinearLayout chatsBox, peopleBox;
@@ -170,14 +173,16 @@ public class MainActivity extends Activity implements Net.Listener {
                 | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         nameField = Ui.field(this, Lang.t("Как вас зовут"));
         inviteField = Ui.field(this, Lang.t("Код приглашения"));
+        codeField = Ui.field(this, Lang.t("Код восстановления"));
 
-        for (EditText field : new EditText[]{serverField, loginField, passwordField,
-                                             nameField, inviteField}) {
+        for (EditText field : new EditText[]{serverField, loginField, codeField,
+                                             passwordField, nameField, inviteField}) {
             card.addView(field, Ui.wide());
             Ui.margins(field, 0, Ui.dp(this, 8), 0, 0);
         }
         nameField.setVisibility(View.GONE);
         inviteField.setVisibility(View.GONE);
+        codeField.setVisibility(View.GONE);
 
         primaryButton = Ui.button(this, Lang.t("Войти"), Ui.ACCENT, Ui.TEXT);
         primaryButton.setOnClickListener(new View.OnClickListener() {
@@ -194,19 +199,27 @@ public class MainActivity extends Activity implements Net.Listener {
         switchButton.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View view) {
-                registerMode = !registerMode;
-                nameField.setVisibility(registerMode ? View.VISIBLE : View.GONE);
-                inviteField.setVisibility(registerMode ? View.VISIBLE : View.GONE);
-                primaryButton.setText(registerMode ? Lang.t("Создать аккаунт")
-                                                   : Lang.t("Войти"));
-                switchButton.setText(registerMode ? Lang.t("У меня уже есть аккаунт")
-                                                  : Lang.t("Создать аккаунт"));
-                authSubtitle.setText(registerMode ? Lang.t("Нужен код приглашения")
-                                                  : Lang.t("Вход в аккаунт"));
-                authError.setText("");
+                if (recoverMode) {
+                    recoverMode = false;
+                } else {
+                    registerMode = !registerMode;
+                }
+                drawAuthMode();
             }
         });
         card.addView(switchButton, Ui.wide());
+
+        forgotButton = Ui.button(this, Lang.t("Забыли пароль?"), Color.TRANSPARENT,
+                Ui.MUTED);
+        forgotButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                recoverMode = true;
+                registerMode = false;
+                drawAuthMode();
+            }
+        });
+        card.addView(forgotButton, Ui.wide());
 
         authError = Ui.text(this, "", 14, Ui.DANGER);
         authError.setGravity(Gravity.CENTER);
@@ -216,11 +229,72 @@ public class MainActivity extends Activity implements Net.Listener {
         return scroll;
     }
 
+    /** Приводит экран входа к выбранному режиму. */
+    private void drawAuthMode() {
+        nameField.setVisibility(registerMode ? View.VISIBLE : View.GONE);
+        inviteField.setVisibility(registerMode ? View.VISIBLE : View.GONE);
+        codeField.setVisibility(recoverMode ? View.VISIBLE : View.GONE);
+        forgotButton.setVisibility(registerMode || recoverMode
+                ? View.GONE : View.VISIBLE);
+        passwordField.setHint(recoverMode ? Lang.t("Новый пароль")
+                                          : Lang.t("Пароль"));
+
+        if (recoverMode) {
+            primaryButton.setText(Lang.t("Сменить пароль"));
+            switchButton.setText(Lang.t("Вернуться ко входу"));
+            authSubtitle.setText(Lang.t("Восстановление пароля"));
+        } else {
+            primaryButton.setText(registerMode ? Lang.t("Создать аккаунт")
+                                               : Lang.t("Войти"));
+            switchButton.setText(registerMode ? Lang.t("У меня уже есть аккаунт")
+                                              : Lang.t("Создать аккаунт"));
+            authSubtitle.setText(registerMode ? Lang.t("Нужен код приглашения")
+                                              : Lang.t("Вход в аккаунт"));
+        }
+        authError.setText("");
+    }
+
+    /** Показывает код восстановления — единственный раз, когда он виден. */
+    private void showRecovery(final String code) {
+        LinearLayout card = Ui.column(this);
+        card.setPadding(Ui.dp(this, 24), Ui.dp(this, 12), Ui.dp(this, 24), 0);
+
+        TextView value = Ui.text(this, code, 22, Ui.ACCENT);
+        value.setGravity(Gravity.CENTER);
+        card.addView(value, Ui.wide());
+
+        card.addView(Ui.text(this,
+                Lang.t("По нему меняют пароль, если его забыли. Другого способа нет: "
+                        + "почту мы не спрашиваем, а сервер стоит у вас дома."),
+                14, Ui.MUTED), Ui.wide());
+
+        new AlertDialog.Builder(this)
+                .setTitle(Lang.t("Сохраните код восстановления"))
+                .setView(card)
+                .setCancelable(false)
+                .setPositiveButton(Lang.t("Понятно"), null)
+                .setNeutralButton(Lang.t("Копировать"),
+                        new DialogInterface.OnClickListener() {
+                            @Override
+                            public void onClick(DialogInterface dialog, int which) {
+                                ClipboardManager clipboard = (ClipboardManager)
+                                        getSystemService(Context.CLIPBOARD_SERVICE);
+                                clipboard.setPrimaryClip(
+                                        ClipData.newPlainText("velix", code));
+                                toast(Lang.t("Код скопирован"));
+                            }
+                        })
+                .show();
+    }
+
     private void signIn() {
         String login = loginField.getText().toString().trim();
         String password = passwordField.getText().toString();
-        if (login.isEmpty() || password.isEmpty()) {
-            authError.setText(Lang.t("Заполните логин и пароль."));
+        if (login.isEmpty() || password.isEmpty()
+                || (recoverMode && codeField.getText().toString().trim().isEmpty())) {
+            authError.setText(recoverMode
+                    ? Lang.t("Заполните логин, код и новый пароль.")
+                    : Lang.t("Заполните логин и пароль."));
             return;
         }
 
@@ -1231,6 +1305,13 @@ public class MainActivity extends Activity implements Net.Listener {
     @Override
     public void onOpen(boolean secure) {
         String token = prefs().getString("token", null);
+        if (recoverMode) {
+            net.send(Net.frame("recover",
+                    "login", loginField.getText().toString().trim(),
+                    "code", codeField.getText().toString().trim(),
+                    "password", passwordField.getText().toString()));
+            return;
+        }
         if (token != null && !registerMode) {
             net.send(Net.frame("auth", "token", token));
             return;
@@ -1255,6 +1336,14 @@ public class MainActivity extends Activity implements Net.Listener {
         if ("welcome".equals(kind)) {
             me = frame.optJSONObject("user");
             prefs().edit().putString("token", frame.optString("token")).apply();
+            if (recoverMode) {
+                recoverMode = false;
+                drawAuthMode();
+            }
+            String recovery = frame.optString("recovery", "");
+            if (!recovery.isEmpty()) {
+                showRecovery(recovery);
+            }
             conversations.clear();
             people.clear();
             show(listScreen);

@@ -337,3 +337,12 @@ main#messages button.link { align-self: center; width: auto; padding: 8px 16px; 
 }
 
 .sheet-card input[type="text"] { margin: 8px 0; }
+
+/* Код восстановления показывают один раз — пусть его будет видно */
+.recovery-code {
+  font-size: 22px;
+  letter-spacing: .06em;
+  color: var(--accent);
+  text-align: center;
+  margin: 10px 0;
+}

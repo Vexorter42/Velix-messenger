@@ -46,6 +46,9 @@ MESSAGE_COLUMNS = {
     "forwarded": "TEXT",
 }
 
+# Код восстановления пароля хранится хешем, как и сам пароль
+USER_COLUMNS = {"recovery_hash": "TEXT"}
+
 # Закреплённое сообщение переписки — тоже дописываемый столбец
 CONVERSATION_COLUMNS = {"pinned_id": "INTEGER"}
 
@@ -171,6 +174,11 @@ def _init_sync(path, media_dir):
             if column not in existing:
                 _connection.execute(f"ALTER TABLE messages ADD COLUMN {column} {definition}")
 
+        existing = {row[1] for row in _connection.execute("PRAGMA table_info(users)")}
+        for column, definition in USER_COLUMNS.items():
+            if column not in existing:
+                _connection.execute(f"ALTER TABLE users ADD COLUMN {column} {definition}")
+
         existing = {row[1] for row in
                     _connection.execute("PRAGMA table_info(conversations)")}
         for column, definition in CONVERSATION_COLUMNS.items():
@@ -213,13 +221,13 @@ def _row_to_user(row):
 USER_FIELDS = "id, login, name, bio, avatar_id"
 
 
-def _create_user_sync(login, password_hash, name):
+def _create_user_sync(login, password_hash, name, recovery_hash=None):
     with _lock:
         try:
             cursor = _connection.execute(
-                "INSERT INTO users (login, password_hash, name, created_at)"
-                " VALUES (?, ?, ?, ?)",
-                (login, password_hash, name, now()),
+                "INSERT INTO users (login, password_hash, name, created_at,"
+                " recovery_hash) VALUES (?, ?, ?, ?, ?)",
+                (login, password_hash, name, now(), recovery_hash),
             )
             _connection.commit()
         except sqlite3.IntegrityError:
@@ -228,6 +236,35 @@ def _create_user_sync(login, password_hash, name):
             f"SELECT {USER_FIELDS} FROM users WHERE id = ?", (cursor.lastrowid,)
         ).fetchone()
     return _row_to_user(row)
+
+
+def _recovery_row_sync(login):
+    """Логин, номер и хеш кода восстановления."""
+    with _lock:
+        row = _connection.execute(
+            "SELECT id, recovery_hash FROM users WHERE login = ?",
+            (str(login).strip(),)).fetchone()
+    return (row[0], row[1]) if row else (None, None)
+
+
+def _set_recovery_sync(user_id, recovery_hash):
+    with _lock:
+        _connection.execute("UPDATE users SET recovery_hash = ? WHERE id = ?",
+                            (recovery_hash, user_id))
+        _connection.commit()
+
+
+def _set_password_sync(user_id, password_hash):
+    """Меняет пароль и разом гасит все сессии.
+
+    Если пароль уводили, у того, кто им пользовался, останется токен —
+    поэтому вместе с паролем сбрасываем и все входы.
+    """
+    with _lock:
+        _connection.execute("UPDATE users SET password_hash = ? WHERE id = ?",
+                            (password_hash, user_id))
+        _connection.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+        _connection.commit()
 
 
 def _user_with_hash_sync(login):
@@ -961,9 +998,25 @@ async def list_invites():
     return await asyncio.to_thread(_list_invites_sync)
 
 
-async def create_user(login, password_hash, name):
+async def recovery_row(login):
+    """Номер человека и хеш его кода восстановления."""
+    return await asyncio.to_thread(_recovery_row_sync, login)
+
+
+async def set_recovery(user_id, recovery_hash):
+    """Кладёт новый код восстановления."""
+    await asyncio.to_thread(_set_recovery_sync, user_id, recovery_hash)
+
+
+async def set_password(user_id, password_hash):
+    """Меняет пароль и сбрасывает все сессии."""
+    await asyncio.to_thread(_set_password_sync, user_id, password_hash)
+
+
+async def create_user(login, password_hash, name, recovery_hash=None):
     """Заводит пользователя. Возвращает профиль или None, если логин занят."""
-    return await asyncio.to_thread(_create_user_sync, login, password_hash, name)
+    return await asyncio.to_thread(_create_user_sync, login, password_hash, name,
+                                   recovery_hash)
 
 
 async def user_with_hash(login):
