@@ -95,6 +95,13 @@ const EN = {
   "загружаю…": "loading…",
   "файл": "file",
   "Скачать {name}": "Download {name}",
+  "Поиск: @username или слово": "Search: @username or a word",
+  "ЛЮДИ": "PEOPLE",
+  "Позвать людей": "Invite people",
+  "Позвать": "Invite",
+  "Все уже в группе.": "Everyone is in the group already.",
+  "Создайте группу или найдите человека по @username.":
+    "Create a group, or find someone by @username.",
   "Б": "B",
   "КБ": "KB",
   "МБ": "MB",

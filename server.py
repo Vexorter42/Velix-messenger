@@ -570,9 +570,11 @@ async def handle_members(websocket, user, message):
     await storage.add_members(conversation, fresh)
     print(f"[Лог]: {user['name']} позвал в «{item['title']}» ещё {len(fresh)}")
 
-    # Новым — сама переписка, старым — обновлённый список участников
-    await send_conversation_to(fresh, conversation)
-    await send_people_to(await storage.members(conversation))
+    # Переписку заново получают все: новичкам она в новинку, а у остальных
+    # в ней прибавилось участников — это видно в меню «позвать»
+    участники = await storage.members(conversation)
+    await send_conversation_to(участники, conversation)
+    await send_people_to(участники)
 
 
 async def send_conversation_to(user_ids, conversation_id):

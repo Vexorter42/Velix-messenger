@@ -426,6 +426,7 @@ function groupMenu(item) {
     groupPhotoTarget = item.id;
     $("avatar-file").click();
   });
+  action(t("Позвать людей"), () => inviteToGroup(item));
   if (item.owner === user.id) {
     action(t("Удалить группу"), () => {
       if (confirm(t("Переписка и вложения пропадут у всех. Отменить это нельзя."))) {
@@ -443,6 +444,56 @@ function groupMenu(item) {
 }
 
 let groupPhotoTarget = null;
+
+function inviteToGroup(item) {
+  /* Кого позвать в уже заведённую группу: тех, кого там ещё нет. */
+  const уже = new Set(item.members || []);
+  const свободные = people.filter((person) => person.id !== user.id
+      && !уже.has(person.id));
+  if (!свободные.length) {
+    service(t("Все уже в группе."));
+    return;
+  }
+
+  const sheet = document.createElement("div");
+  sheet.className = "sheet";
+  const card = document.createElement("div");
+  card.className = "sheet-card";
+  sheet.append(card);
+
+  const выбраны = new Set();
+  for (const person of свободные) {
+    const кнопка = document.createElement("button");
+    кнопка.className = "sheet-button";
+    кнопка.textContent = `${person.name} · @${person.login || ""}`;
+    кнопка.addEventListener("click", () => {
+      if (выбраны.has(person.id)) {
+        выбраны.delete(person.id);
+        кнопка.classList.remove("chosen");
+      } else {
+        выбраны.add(person.id);
+        кнопка.classList.add("chosen");
+      }
+    });
+    card.append(кнопка);
+  }
+
+  const позвать = document.createElement("button");
+  позвать.className = "sheet-button";
+  позвать.textContent = t("Позвать");
+  позвать.addEventListener("click", () => {
+    if (выбраны.size) {
+      send({type: "members", conversation: item.id, members: [...выбраны]});
+    }
+    sheet.remove();
+  });
+  card.append(позвать);
+
+  sheet.addEventListener("click", (event) => {
+    if (event.target === sheet) sheet.remove();
+  });
+  document.body.append(sheet);
+}
 
 function newGroup() {
   // Заводим группу: название и галочки против имён — в той же карточке,
@@ -519,12 +570,17 @@ function drawList() {
   if (!conversations.length) {
     const hint = document.createElement("p");
     hint.className = "muted small section";
-    hint.textContent =
-        t("Создайте группу или напишите кому-нибудь из списка участников.");
+    hint.textContent = t("Создайте группу или найдите человека по @username.");
     box.append(hint);
   }
 
+  const запрос = ($("search").value || "").trim()
+      .replace("@", "").toLowerCase();
+
   for (const item of conversations) {
+    if (запрос && !titleOf(item).toLowerCase().includes(запрос)) {
+      continue;
+    }
     const row = document.createElement("div");
     row.className = "list-row";
 
@@ -537,7 +593,9 @@ function drawList() {
     lines.className = "list-lines";
 
     const title = document.createElement("strong");
-    title.textContent = titleOf(item);
+    // У группы значок: иначе её не отличить от человека
+    title.textContent = (item.kind === "group" ? "\u{1F465} " : "")
+        + titleOf(item);
     lines.append(title);
 
     const preview = document.createElement("span");
@@ -571,10 +629,16 @@ function drawList() {
     box.append(row);
   }
 
-  const others = people.filter((person) => person.id !== user.id);
+  // Всех подряд не показываем: людей находят поиском по @username
+  const others = запрос
+      ? people.filter((person) => person.id !== user.id
+          && (String(person.login || "").toLowerCase().includes(запрос)
+              || String(person.name || "").toLowerCase().includes(запрос)))
+      : [];
   const peopleBox = $("people");
   peopleBox.innerHTML = "";
   $("people-title").hidden = others.length === 0;
+  $("people-title").textContent = t("ЛЮДИ");
 
   for (const person of others) {
     const row = document.createElement("div");
@@ -587,7 +651,12 @@ function drawList() {
 
     const name = document.createElement("div");
     name.className = "list-lines";
-    name.textContent = person.name;
+    const кто = document.createElement("strong");
+    кто.textContent = person.name;
+    const ник = document.createElement("span");
+    ник.className = "muted small";
+    ник.textContent = "@" + (person.login || "");
+    name.append(кто, ник);
     row.append(name);
 
     const dot = document.createElement("span");
@@ -1270,6 +1339,8 @@ $("file").addEventListener("change", (event) => {
 
 $("cancel-reply").addEventListener("click", cancelReply);
 $("back-to-list").addEventListener("click", () => { drawList(); show("list"); });
+
+$("search").addEventListener("input", () => drawList());
 
 $("search").addEventListener("keydown", (event) => {
   if (event.key !== "Enter") return;

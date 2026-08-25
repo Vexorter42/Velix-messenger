@@ -302,6 +302,12 @@ main#messages button.link { align-self: center; width: auto; padding: 8px 16px; 
 
 .sheet-button:active { background: var(--input-bg); }
 
+/* Отмеченный в списке приглашения — видно, кого уже выбрали */
+.sheet-button.chosen {
+  background: var(--accent);
+  color: #ffffff;
+}
+
 /* Картинка во весь экран */
 .viewer {
   position: fixed;
