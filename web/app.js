@@ -209,6 +209,10 @@ document.addEventListener("visibilitychange", () => {
   } else if (conversation !== null) {
     markRead(loadedItems.filter((item) => item.id && item.user !== user.id)
                         .map((item) => item.id));
+    // Пока вкладка была спрятана, сюда писали и это считалось
+    // непрочитанным. Человек вернулся и смотрит — счёт обнуляем.
+    unread.delete(conversation);
+    drawList();
   }
 });
 
