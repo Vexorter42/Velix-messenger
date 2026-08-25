@@ -140,6 +140,7 @@ public class VelixService extends Service implements Net.Listener {
     // ------------------------------------------------------------- связь
 
     private void connect() {
+        Net.downloads = getCacheDir();
         String server = getSharedPreferences("velix", MODE_PRIVATE)
                 .getString("server", "");
         if (server.isEmpty()) {

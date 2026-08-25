@@ -33,7 +33,12 @@ class Net implements Ws.Listener {
     private Ws socket;
     private JSONObject pendingHeader;   // описание вложения ждёт свои байты
     private java.io.ByteArrayOutputStream pendingParts;   // куски, что уже пришли
+    private java.io.OutputStream pendingFile;   // ...или файл, если их много
+    private java.io.File pendingPath;
     private int pendingLeft;            // сколько кусков ещё ждём
+
+    /** Куда складывать большие вложения: их в память класть нельзя. */
+    static java.io.File downloads;
     private volatile boolean secure;
 
     Net(Listener listener) {
@@ -191,7 +196,25 @@ class Net implements Ws.Listener {
                 // Содержимое придёт следом; большое вложение — не одним куском
                 pendingHeader = frame;
                 pendingLeft = Math.max(1, frame.optInt("parts", 1));
-                pendingParts = new java.io.ByteArrayOutputStream();
+                pendingParts = null;
+                pendingFile = null;
+                pendingPath = null;
+
+                // Всё, что не влезает в пару кусков, пишем на диск: телефон
+                // не переживёт гигабайтное видео в памяти
+                if (pendingLeft > 2 && downloads != null) {
+                    try {
+                        pendingPath = new java.io.File(downloads,
+                                "velix-" + frame.optString("id") + ".part");
+                        pendingFile = new java.io.FileOutputStream(pendingPath);
+                    } catch (Exception error) {
+                        pendingFile = null;
+                        pendingPath = null;
+                    }
+                }
+                if (pendingFile == null) {
+                    pendingParts = new java.io.ByteArrayOutputStream();
+                }
                 return;
             }
             main.post(new Runnable() {
@@ -213,7 +236,11 @@ class Net implements Ws.Listener {
         }
 
         try {
-            pendingParts.write(data);
+            if (pendingFile != null) {
+                pendingFile.write(data);
+            } else {
+                pendingParts.write(data);
+            }
         } catch (java.io.IOException error) {
             pendingHeader = null;
             return;
@@ -222,13 +249,27 @@ class Net implements Ws.Listener {
             return;             // ждём остальные куски
         }
 
-        final byte[] whole = pendingParts.toByteArray();
+        byte[] whole = new byte[0];
+        if (pendingFile != null) {
+            try {
+                pendingFile.close();
+                header.put("file", pendingPath.getAbsolutePath());
+            } catch (Exception ignored) {
+                // Не сложилось — вложение просто не откроется
+            }
+        } else {
+            whole = pendingParts.toByteArray();
+        }
+
+        final byte[] готовое = whole;
         pendingHeader = null;
         pendingParts = null;
+        pendingFile = null;
+        pendingPath = null;
         main.post(new Runnable() {
             @Override
             public void run() {
-                listener.onBlob(header, whole);
+                listener.onBlob(header, готовое);
             }
         });
     }

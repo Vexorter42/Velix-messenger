@@ -109,6 +109,11 @@ class Lang {
         add("Фото группы", "Group photo");
         add("Фото", "Photo");
         add("Видео или файл", "Video or file");
+        add("Скачиваю «{name}»…", "Downloading “{name}”…");
+        add("«{name}» сохранён в Загрузки", "“{name}” saved to Downloads");
+        add("Не удалось сохранить файл.", "Could not save the file.");
+        add("Видео", "Video");
+        add("Файл", "File");
         add("Отправляю «{name}» — {percent}%", "Sending “{name}” — {percent}%");
         add("«{name}» весит {size}, а больше {limit} сервер не принимает.",
             "“{name}” is {size}; the server takes at most {limit}.");

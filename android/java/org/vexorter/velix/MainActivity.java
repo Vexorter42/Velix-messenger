@@ -992,9 +992,23 @@ public class MainActivity extends Activity implements VelixService.Screen {
     private View attachment(final JSONObject item) {
         String kind = item.optString("kind");
         if (!"image".equals(kind) && !"gif".equals(kind)) {
-            TextView card = Ui.text(this, Lang.t("Файл: {name}", "name",
-                    item.optString("name")), 15, Ui.TEXT);
+            String подпись = "video".equals(kind) ? Lang.t("Видео") : Lang.t("Файл");
+            long вес = item.optLong("size");
+            TextView card = Ui.text(this, подпись + " · "
+                    + item.optString("name")
+                    + (вес > 0 ? "\n" + humanSize(вес) : ""), 15, Ui.TEXT);
             card.setPadding(0, Ui.dp(this, 4), 0, Ui.dp(this, 4));
+
+            final String id = item.optString("media", "");
+            final String имя = item.optString("name", "файл");
+            if (!id.isEmpty()) {
+                card.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View view) {
+                        saveAttachment(id, имя);
+                    }
+                });
+            }
             return card;
         }
 
@@ -1347,6 +1361,52 @@ public class MainActivity extends Activity implements VelixService.Screen {
         });
         dialog.setContentView(picture);
         dialog.show();
+    }
+
+    /** Кто ждёт больших вложений: номер -> имя, под которым сохранить. */
+    private final Map<String, String> waitingFiles = new HashMap<>();
+
+    /** Просит вложение и обещает положить его в «Загрузки». */
+    private void saveAttachment(String id, String name) {
+        waitingFiles.put(id, name);
+        toast(Lang.t("Скачиваю «{name}»…", "name", name));
+        send(Net.frame("fetch", "id", id));
+    }
+
+    /**
+     * Кладёт скачанное в общие «Загрузки».
+     *
+     * Своим каталогом делиться с другими приложениями нельзя без отдельного
+     * поставщика, а в «Загрузках» файл виден любому проигрывателю.
+     */
+    private void storeInDownloads(java.io.File готовое, String name) {
+        try {
+            android.content.ContentValues поля = new android.content.ContentValues();
+            поля.put(android.provider.MediaStore.Downloads.DISPLAY_NAME, name);
+            поля.put(android.provider.MediaStore.Downloads.MIME_TYPE,
+                    "application/octet-stream");
+
+            Uri куда = getContentResolver().insert(
+                    android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, поля);
+            if (куда == null) {
+                toast(Lang.t("Не удалось сохранить файл."));
+                return;
+            }
+
+            java.io.InputStream откуда = new java.io.FileInputStream(готовое);
+            java.io.OutputStream поток = getContentResolver().openOutputStream(куда);
+            byte[] буфер = new byte[64 * 1024];
+            int прочитано;
+            while ((прочитано = откуда.read(буфер)) > 0) {
+                поток.write(буфер, 0, прочитано);
+            }
+            откуда.close();
+            поток.close();
+            готовое.delete();
+            toast(Lang.t("«{name}» сохранён в Загрузки", "name", name));
+        } catch (Exception error) {
+            toast(Lang.t("Не удалось сохранить файл."));
+        }
     }
 
     private void toast(String text) {
@@ -2081,6 +2141,20 @@ public class MainActivity extends Activity implements VelixService.Screen {
     @Override
     public void onBlob(JSONObject header, byte[] data) {
         String id = header.optString("id");
+
+        // Большое вложение приехало файлом: в памяти его не держим
+        String путь = header.optString("file", "");
+        if (!путь.isEmpty()) {
+            java.io.File готовое = new java.io.File(путь);
+            String имя = waitingFiles.remove(id);
+            if (имя != null) {
+                storeInDownloads(готовое, имя);
+            } else {
+                готовое.delete();
+            }
+            return;
+        }
+
         media.put(id, data);
 
         List<TextView> faces = photoSlots.remove(id);
