@@ -595,6 +595,9 @@ def _conversation_of_sync(message_id):
 
 def _set_conversation_avatar_sync(conversation_id, media_id, name, data):
     """Ставит фото группы, стирая прежнее."""
+    suffix = Path(name).suffix.lower()[:16] or ".png"
+    (_media_dir / f"{media_id}{suffix}").write_bytes(data)
+
     with _lock:
         row = _connection.execute(
             "SELECT avatar_id FROM conversations WHERE id = ?",
@@ -602,13 +605,23 @@ def _set_conversation_avatar_sync(conversation_id, media_id, name, data):
         previous = row[0] if row else None
         _connection.execute("UPDATE conversations SET avatar_id = ? WHERE id = ?",
                             (media_id, conversation_id))
+        # Скрытая строчка в сообщениях: по ней вложение потом и находят.
+        # Переписку не указываем, иначе фото всплыло бы в ленте.
+        _connection.execute(
+            "INSERT INTO messages (nickname, text, created_at, kind, media_id,"
+            " media_name, media_size) VALUES ('', '', ?, 'avatar', ?, ?, ?)",
+            (now(), media_id, name, len(data)),
+        )
         _connection.commit()
 
-    suffix = Path(name).suffix.lower()[:16]
-    (_media_dir / f"{media_id}{suffix}").write_bytes(data)
     if previous:
         for stale in _media_dir.glob(f"{previous}*"):
             stale.unlink(missing_ok=True)
+        with _lock:
+            _connection.execute(
+                "DELETE FROM messages WHERE kind = 'avatar' AND media_id = ?",
+                (previous,))
+            _connection.commit()
     return media_id
 
 
@@ -627,6 +640,15 @@ def _delete_conversation_sync(conversation_id):
         rows = _connection.execute(
             "SELECT media_id FROM messages WHERE conversation_id = ?",
             (conversation_id,)).fetchall()
+        # Фото группы лежит отдельной скрытой строчкой — убираем и его
+        face = _connection.execute(
+            "SELECT avatar_id FROM conversations WHERE id = ?",
+            (conversation_id,)).fetchone()
+        if face and face[0]:
+            rows.append((face[0],))
+            _connection.execute(
+                "DELETE FROM messages WHERE kind = 'avatar' AND media_id = ?",
+                (face[0],))
         _connection.execute(
             "DELETE FROM receipts WHERE message_id IN"
             " (SELECT id FROM messages WHERE conversation_id = ?)",

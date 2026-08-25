@@ -2011,8 +2011,10 @@ class VelixApp(ctk.CTk):
 
         for widget in (row, lines, avatar):
             widget.bind("<Button-1>", lambda event, i=item["id"]: self._open(i))
+            widget.bind("<Button-3>", lambda event, i=item: self._group_menu(event, i))
         for child in lines.winfo_children():
             child.bind("<Button-1>", lambda event, i=item["id"]: self._open(i))
+            child.bind("<Button-3>", lambda event, i=item: self._group_menu(event, i))
 
     def _person_row(self, person):
         row = ctk.CTkFrame(self.side_list, fg_color="transparent", height=46)
@@ -2071,6 +2073,9 @@ class VelixApp(ctk.CTk):
         self.conversations = [known for known in self.conversations
                               if known["id"] != item["id"]] + [item]
         self._refresh_side_list()
+        if item["id"] == self.conversation:
+            # Переписка могла обновиться на ходу — скажем, ей сменили фото
+            self._update_header()
         if self.pending_group or self.conversation is None:
             self.pending_group = False
             self._open(item["id"])
@@ -2274,6 +2279,60 @@ class VelixApp(ctk.CTk):
 
     def _delete_message(self, message_id):
         self.network.send(protocol.delete_request(message_id))
+
+    def _group_menu(self, event, item):
+        """Правая кнопка на группе: сменить фото, удалить."""
+        if item.get("kind") != "group" or item.get("id") == protocol.GENERAL_ID:
+            return
+
+        self._close_menu()
+        holder = ctk.CTkFrame(self, fg_color="transparent")
+        self.menu = holder
+        self.bind("<Escape>", lambda _: self._close_menu())
+        self.bind_all("<Button-1>", self._click_outside_menu, add="+")
+        self.bind_all("<Button-3>", self._click_outside_menu, add="+")
+
+        card = ctk.CTkFrame(holder, fg_color=MENU_BG, corner_radius=12)
+        card.pack(anchor="w")
+
+        self._menu_row(card, "copy", t("Фото группы"),
+                       lambda: self._choose_group_photo(item))
+        # Удалить группу может тот, кто её завёл, и хозяин чата
+        if item.get("owner") == self.user.get("id") or self.is_admin:
+            self._menu_row(card, "trash", t("Удалить группу"),
+                           lambda: self._delete_group(item))
+
+        self.update_idletasks()
+        width = max(holder.winfo_reqwidth(), 180)
+        height = holder.winfo_reqheight()
+        x = min(max(event.x_root - self.winfo_rootx(), 8),
+                max(self.winfo_width() - width - 8, 8))
+        y = min(max(event.y_root - self.winfo_rooty(), 8),
+                max(self.winfo_height() - height - 8, 8))
+        holder.place(x=x, y=y)
+
+    def _choose_group_photo(self, item):
+        path = filedialog.askopenfilename(
+            title=t("Выберите фото"),
+            filetypes=[(t("Картинки"), "*.png *.jpg *.jpeg *.webp *.bmp"),
+                       (t("Все файлы"), "*.*")])
+        if not path:
+            return
+        try:
+            data = Path(path).read_bytes()
+        except OSError as error:
+            self._service_label(t("Не удалось прочитать файл: {error}",
+                                  error=error))
+            return
+        self.network.send(protocol.group_avatar_header(
+            item["id"], Path(path).name, len(data)), data)
+
+    def _delete_group(self, item):
+        title = self._title_of(item)
+        if self._confirm(t("Удалить «{title}»?", title=title),
+                         t("Переписка и вложения пропадут у всех. "
+                           "Отменить это нельзя.")):
+            self.network.send(protocol.delete_group_request(item["id"]))
 
     def _message_menu(self, event, item, own):
         """Правая кнопка на сообщении: панель с действиями и реакциями.
