@@ -114,6 +114,13 @@ class Lang {
         add("Не удалось сохранить файл.", "Could not save the file.");
         add("Видео", "Video");
         add("Настройки", "Settings");
+        add("Поиск: @username или слово", "Search: @username or a word");
+        add("ЛЮДИ", "PEOPLE");
+        add("Создайте группу или найдите человека по @username.",
+            "Create a group, or find someone by @username.");
+        add("Позвать людей", "Invite people");
+        add("Позвать", "Invite");
+        add("Все уже в группе.", "Everyone is in the group already.");
         add("Сменить фото", "Change photo");
         add("АККАУНТ", "ACCOUNT");
         add("ПРИЛОЖЕНИЕ", "APP");

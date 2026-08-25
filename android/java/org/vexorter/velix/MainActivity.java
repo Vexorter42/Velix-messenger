@@ -71,6 +71,8 @@ public class MainActivity extends Activity implements VelixService.Screen {
     private TextView uploadLine;
     private Uri pendingUpload;      // файл, выбранный до готовности связи
     private View settingsScreen;
+    private EditText searchField;
+    private TextView peopleTitle;
     private final Handler main = new Handler(Looper.getMainLooper());
     private static final String[] EMOJI = {"👍", "❤", "😂", "🔥", "😢", "👎"};
 
@@ -437,6 +439,27 @@ public class MainActivity extends Activity implements VelixService.Screen {
         bar.addView(profile);
         screen.addView(bar, Ui.wide());
 
+        searchField = Ui.field(this, Lang.t("Поиск: @username или слово"));
+        searchField.setSingleLine(true);
+        searchField.addTextChangedListener(new android.text.TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int a, int b, int c) {
+            }
+
+            @Override
+            public void onTextChanged(CharSequence s, int a, int b, int c) {
+                drawList();
+            }
+
+            @Override
+            public void afterTextChanged(android.text.Editable s) {
+            }
+        });
+        LinearLayout поисковая = Ui.row(this);
+        поисковая.setPadding(Ui.dp(this, 12), 0, Ui.dp(this, 12), 0);
+        поисковая.addView(searchField, Ui.grow());
+        screen.addView(поисковая, Ui.wide());
+
         TextView newGroup = Ui.button(this, Lang.t("Новая группа"), Color.TRANSPARENT,
                 Ui.ACCENT);
         newGroup.setOnClickListener(new View.OnClickListener() {
@@ -452,7 +475,7 @@ public class MainActivity extends Activity implements VelixService.Screen {
         scroll.addView(column);
 
         listHint = Ui.text(this,
-                Lang.t("Создайте группу или напишите кому-нибудь из списка участников."),
+                Lang.t("Создайте группу или найдите человека по @username."),
                 14, Ui.MUTED);
         listHint.setPadding(Ui.dp(this, 16), Ui.dp(this, 8), Ui.dp(this, 16),
                 Ui.dp(this, 8));
@@ -461,10 +484,11 @@ public class MainActivity extends Activity implements VelixService.Screen {
         chatsBox = Ui.column(this);
         column.addView(chatsBox, Ui.wide());
 
-        TextView members = Ui.text(this, Lang.t("УЧАСТНИКИ"), 12, Ui.MUTED);
-        members.setPadding(Ui.dp(this, 16), Ui.dp(this, 16), Ui.dp(this, 16),
+        peopleTitle = Ui.text(this, Lang.t("ЛЮДИ"), 12, Ui.MUTED);
+        peopleTitle.setPadding(Ui.dp(this, 16), Ui.dp(this, 16), Ui.dp(this, 16),
                 Ui.dp(this, 6));
-        column.addView(members, Ui.wide());
+        peopleTitle.setVisibility(View.GONE);
+        column.addView(peopleTitle, Ui.wide());
 
         peopleBox = Ui.column(this);
         column.addView(peopleBox, Ui.wide());
@@ -480,16 +504,38 @@ public class MainActivity extends Activity implements VelixService.Screen {
         chatsBox.removeAllViews();
         listHint.setVisibility(conversations.isEmpty() ? View.VISIBLE : View.GONE);
 
+        String запрос = searchField == null ? ""
+                : searchField.getText().toString().trim()
+                        .replace("@", "").toLowerCase();
+
         for (final JSONObject item : conversations) {
+            if (!запрос.isEmpty()
+                    && !titleOf(item).toLowerCase().contains(запрос)) {
+                continue;
+            }
             chatsBox.addView(conversationRow(item), Ui.wide());
         }
 
+        // Всех подряд не показываем: люди находятся поиском по @username
         peopleBox.removeAllViews();
+        peopleTitle.setVisibility(запрос.isEmpty() ? View.GONE : View.VISIBLE);
+        if (запрос.isEmpty()) {
+            return;
+        }
+        int нашлось = 0;
         for (final JSONObject person : people) {
             if (person.optInt("id") == me.optInt("id")) {
                 continue;
             }
+            if (!person.optString("login").toLowerCase().contains(запрос)
+                    && !person.optString("name").toLowerCase().contains(запрос)) {
+                continue;
+            }
             peopleBox.addView(personRow(person), Ui.wide());
+            нашлось += 1;
+        }
+        if (нашлось == 0) {
+            peopleTitle.setVisibility(View.GONE);
         }
     }
 
@@ -504,7 +550,10 @@ public class MainActivity extends Activity implements VelixService.Screen {
 
         LinearLayout lines = Ui.column(this);
         lines.setPadding(Ui.dp(this, 12), 0, 0, 0);
-        lines.addView(Ui.text(this, title, 16, Ui.TEXT), Ui.wide());
+        // У группы значок: иначе её не отличить от человека
+        lines.addView(Ui.text(this,
+                ("group".equals(item.optString("kind")) ? "\uD83D\uDC65 " : "")
+                        + title, 16, Ui.TEXT), Ui.wide());
 
         JSONObject last = item.optJSONObject("last");
         String preview = Lang.t("нет сообщений");
@@ -556,6 +605,7 @@ public class MainActivity extends Activity implements VelixService.Screen {
         final boolean mine = item.optInt("owner", -1) == me.optInt("id");
         List<String> actions = new ArrayList<>();
         actions.add(Lang.t("Фото группы"));
+        actions.add(Lang.t("Позвать людей"));
         if (mine) {
             actions.add(Lang.t("Удалить группу"));
         }
@@ -569,11 +619,75 @@ public class MainActivity extends Activity implements VelixService.Screen {
                                 if (which == 0) {
                                     photoTarget = item.optInt("id");
                                     pickPhoto();
+                                } else if (which == 1) {
+                                    inviteToGroup(item);
                                 } else {
                                     confirmDeleteGroup(item);
                                 }
                             }
                         })
+                .show();
+    }
+
+    /** Кого позвать в уже заведённую группу. */
+    private void inviteToGroup(final JSONObject item) {
+        org.json.JSONArray уже = item.optJSONArray("members");
+        final List<JSONObject> свободные = new ArrayList<>();
+        for (JSONObject person : people) {
+            if (person.optInt("id") == me.optInt("id")) {
+                continue;
+            }
+            boolean внутри = false;
+            for (int index = 0; уже != null && index < уже.length(); index++) {
+                if (уже.optInt(index) == person.optInt("id")) {
+                    внутри = true;
+                    break;
+                }
+            }
+            if (!внутри) {
+                свободные.add(person);
+            }
+        }
+
+        if (свободные.isEmpty()) {
+            toast(Lang.t("Все уже в группе."));
+            return;
+        }
+
+        String[] подписи = new String[свободные.size()];
+        final boolean[] отмечены = new boolean[свободные.size()];
+        for (int index = 0; index < свободные.size(); index++) {
+            подписи[index] = свободные.get(index).optString("name")
+                    + " · @" + свободные.get(index).optString("login");
+        }
+
+        new AlertDialog.Builder(this)
+                .setTitle(Lang.t("Позвать людей"))
+                .setMultiChoiceItems(подписи, отмечены,
+                        new DialogInterface.OnMultiChoiceClickListener() {
+                            @Override
+                            public void onClick(DialogInterface dialog, int which,
+                                                boolean checked) {
+                                отмечены[which] = checked;
+                            }
+                        })
+                .setPositiveButton(Lang.t("Позвать"),
+                        new DialogInterface.OnClickListener() {
+                            @Override
+                            public void onClick(DialogInterface dialog, int which) {
+                                org.json.JSONArray кого = new org.json.JSONArray();
+                                for (int index = 0; index < отмечены.length; index++) {
+                                    if (отмечены[index]) {
+                                        кого.put(свободные.get(index).optInt("id"));
+                                    }
+                                }
+                                if (кого.length() > 0) {
+                                    send(Net.frame("members", "conversation",
+                                            item.optInt("id"), "members", кого));
+                                }
+                            }
+                        })
+                .setNegativeButton(Lang.t("Отмена"), null)
                 .show();
     }
 
@@ -599,14 +713,19 @@ public class MainActivity extends Activity implements VelixService.Screen {
     private int photoTarget;
 
     private View personRow(final JSONObject person) {
+        // Ниже к имени добавляется @username: по нему человека и ищут
         LinearLayout row = Ui.row(this);
         row.setPadding(Ui.dp(this, 14), Ui.dp(this, 8), Ui.dp(this, 14),
                 Ui.dp(this, 8));
         row.addView(Ui.avatar(this, person.optString("name"), Ui.dp(this, 38)));
 
-        TextView name = Ui.text(this, person.optString("name"), 16, Ui.TEXT);
-        name.setPadding(Ui.dp(this, 12), 0, 0, 0);
-        row.addView(name, Ui.grow());
+        LinearLayout подписи = Ui.column(this);
+        подписи.setPadding(Ui.dp(this, 12), 0, 0, 0);
+        подписи.addView(Ui.text(this, person.optString("name"), 16, Ui.TEXT),
+                Ui.wide());
+        подписи.addView(Ui.text(this, "@" + person.optString("login"), 13,
+                Ui.MUTED), Ui.wide());
+        row.addView(подписи, Ui.grow());
 
         TextView dot = Ui.text(this, "●", 12,
                 online.contains(person.optInt("id")) ? Ui.ONLINE : Ui.MUTED);
@@ -1902,6 +2021,7 @@ public class MainActivity extends Activity implements VelixService.Screen {
 
         TextView сменить = Ui.text(this, Lang.t("Сменить фото"), 14, Ui.ACCENT);
         сменить.setPadding(0, Ui.dp(this, 10), 0, 0);
+        сменить.setGravity(Gravity.CENTER);
         сменить.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View view) {
@@ -1913,9 +2033,13 @@ public class MainActivity extends Activity implements VelixService.Screen {
 
         TextView подпись = Ui.text(this, имя, 20, Ui.TEXT);
         подпись.setPadding(0, Ui.dp(this, 12), 0, 0);
+        подпись.setGravity(Gravity.CENTER);
         top.addView(подпись);
-        top.addView(Ui.text(this, "@" + (me == null ? "" : me.optString("login")),
-                14, Ui.MUTED));
+
+        TextView ник = Ui.text(this,
+                "@" + (me == null ? "" : me.optString("login")), 14, Ui.MUTED);
+        ник.setGravity(Gravity.CENTER);
+        top.addView(ник);
         column.addView(top, Ui.wide());
 
         // -------------------------------------------------- сами настройки
@@ -1963,7 +2087,12 @@ public class MainActivity extends Activity implements VelixService.Screen {
         выйти.setTextColor(Ui.DANGER);
         column.addView(выйти, Ui.wide());
 
-        screen.addView(scroll, Ui.grow());
+        // Растягиваем по высоте, а не по ширине: Ui.grow() задаёт нулевую
+        // ширину, и в вертикальной колонке содержимое просто пропало бы
+        LinearLayout.LayoutParams растянуть = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0);
+        растянуть.weight = 1;
+        screen.addView(scroll, растянуть);
         return screen;
     }
 
