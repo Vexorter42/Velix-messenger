@@ -8,12 +8,16 @@ import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
+import android.content.ComponentName;
+import android.content.ServiceConnection;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
+import android.os.IBinder;
 import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
@@ -50,13 +54,14 @@ import java.util.Set;
  * живёт всё это время одно, и при переходе из списка в переписку ничего не
  * переподключается.
  */
-public class MainActivity extends Activity implements Net.Listener {
+public class MainActivity extends Activity implements VelixService.Screen {
 
     private static final String PREFS = "velix";
     private static final int PICK_PHOTO = 1;
     private static final String[] EMOJI = {"👍", "❤", "😂", "🔥", "😢", "👎"};
 
-    private Net net;
+    private VelixService service;
+    private boolean bound;
     private FrameLayout root;
     private View authScreen, listScreen, chatScreen;
 
@@ -94,6 +99,7 @@ public class MainActivity extends Activity implements Net.Listener {
     private final Map<Integer, JSONObject> reactions = new HashMap<>();
     private final Map<Integer, LinearLayout> reactionRows = new HashMap<>();
     private final Map<Integer, JSONObject> quotes = new HashMap<>();
+    private final Map<String, byte[]> localMedia = new HashMap<>();
     private int conversation = -1;
     private int replyTo = -1;
     private int localNumber;
@@ -120,11 +126,88 @@ public class MainActivity extends Activity implements Net.Listener {
         root.addView(chatScreen);
         show(authScreen);
 
-        net = new Net(this);
+        askNotifications();
+
         String token = prefs().getString("token", null);
         if (token != null) {
             authSubtitle.setText(Lang.t("Подключаемся…"));
-            net.connect(prefs().getString("server", "velix.vexorter.duckdns.org:8765"));
+            startService();
+        }
+    }
+
+    /** С Android 13 разрешение на уведомления спрашивают отдельно. */
+    private void askNotifications() {
+        if (Build.VERSION.SDK_INT < 33) {
+            return;
+        }
+        if (checkSelfPermission("android.permission.POST_NOTIFICATIONS")
+                != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 2);
+        }
+    }
+
+    /** Поднимает службу со связью и цепляется к ней. */
+    private void startService() {
+        Intent intent = new Intent(this, VelixService.class);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent);
+        } else {
+            startService(intent);
+        }
+        bindService(intent, connection, BIND_AUTO_CREATE);
+    }
+
+    private final ServiceConnection connection = new ServiceConnection() {
+        @Override
+        public void onServiceConnected(ComponentName name, IBinder binder) {
+            service = ((VelixService.Local) binder).service();
+            bound = true;
+            service.attach(MainActivity.this);
+
+            // Экран мог пересоздаться, пока выбирали фото: возвращаемся туда,
+            // где человек был
+            int open = service.openConversation();
+            if (open >= 0 && conversation < 0) {
+                openConversation(open);
+            }
+        }
+
+        @Override
+        public void onServiceDisconnected(ComponentName name) {
+            service = null;
+            bound = false;
+        }
+    };
+
+    private void send(JSONObject frame) {
+        if (service != null) {
+            service.send(frame);
+        }
+    }
+
+    private void send(JSONObject frame, byte[] payload) {
+        if (service != null) {
+            service.send(frame, payload);
+        }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (service != null) {
+            service.attach(this);
+            if (conversation >= 0) {
+                service.clearUnread(conversation);
+            }
+            drawList();
+        }
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        if (service != null) {
+            service.detach();
         }
     }
 
@@ -302,10 +385,16 @@ public class MainActivity extends Activity implements Net.Listener {
                 .putString("login", login).apply();
         authError.setText("");
         authSubtitle.setText(Lang.t("Подключаемся…"));
-        net.close();
-        net = new Net(this);
-        net.connect(serverField.getText().toString().trim());
+        pendingSignIn = true;
+        if (service != null) {
+            service.shutdown();
+            service = null;
+        }
+        startService();
     }
+
+    // Вход руками: как только служба откроет сокет, отправим логин или код
+    private boolean pendingSignIn;
 
     // ----------------------------------------------------- экран со списком
 
@@ -392,7 +481,9 @@ public class MainActivity extends Activity implements Net.Listener {
         row.setPadding(Ui.dp(this, 14), Ui.dp(this, 10), Ui.dp(this, 14),
                 Ui.dp(this, 10));
         String title = titleOf(item);
-        row.addView(Ui.avatar(this, title, Ui.dp(this, 46)));
+        TextView face = Ui.avatar(this, title, Ui.dp(this, 46));
+        row.addView(face);
+        paintPhoto(face, item.optString("avatar", ""));
 
         LinearLayout lines = Ui.column(this);
         lines.setPadding(Ui.dp(this, 12), 0, 0, 0);
@@ -408,14 +499,87 @@ public class MainActivity extends Activity implements Net.Listener {
         lines.addView(Ui.text(this, cut(preview, 40), 13, Ui.MUTED), Ui.wide());
         row.addView(lines, Ui.grow());
 
+        // Сколько пришло, пока сюда не заглядывали
+        int waiting = service == null ? 0 : service.unreadFor(item.optInt("id"));
+        if (waiting > 0) {
+            TextView badge = Ui.text(this, String.valueOf(waiting), 13, Ui.TEXT);
+            badge.setGravity(Gravity.CENTER);
+            badge.setBackground(Ui.circle(Ui.DANGER));
+            badge.setPadding(Ui.dp(this, 8), Ui.dp(this, 2), Ui.dp(this, 8),
+                    Ui.dp(this, 2));
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT);
+            params.setMargins(Ui.dp(this, 8), 0, 0, 0);
+            row.addView(badge, params);
+        }
+
         row.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View view) {
                 openConversation(item.optInt("id"));
             }
         });
+        row.setOnLongClickListener(new View.OnLongClickListener() {
+            @Override
+            public boolean onLongClick(View view) {
+                groupMenu(item);
+                return true;
+            }
+        });
         return row;
     }
+
+    /** Что можно сделать с группой: сменить фото, удалить. */
+    private void groupMenu(final JSONObject item) {
+        if (!"group".equals(item.optString("kind"))) {
+            return;
+        }
+
+        final boolean mine = item.optInt("owner", -1) == me.optInt("id");
+        List<String> actions = new ArrayList<>();
+        actions.add(Lang.t("Фото группы"));
+        if (mine) {
+            actions.add(Lang.t("Удалить группу"));
+        }
+
+        new AlertDialog.Builder(this)
+                .setTitle(titleOf(item))
+                .setItems(actions.toArray(new String[0]),
+                        new DialogInterface.OnClickListener() {
+                            @Override
+                            public void onClick(DialogInterface dialog, int which) {
+                                if (which == 0) {
+                                    photoTarget = item.optInt("id");
+                                    pickPhoto();
+                                } else {
+                                    confirmDeleteGroup(item);
+                                }
+                            }
+                        })
+                .show();
+    }
+
+    private void confirmDeleteGroup(final JSONObject item) {
+        new AlertDialog.Builder(this)
+                .setTitle(Lang.t("Удалить группу"))
+                .setMessage(Lang.t("Переписка и вложения пропадут у всех. "
+                        + "Отменить это нельзя."))
+                .setPositiveButton(Lang.t("Удалить"),
+                        new DialogInterface.OnClickListener() {
+                            @Override
+                            public void onClick(DialogInterface dialog, int which) {
+                                send(Net.frame("delete_group",
+                                        "conversation", item.optInt("id")));
+                                show(listScreen);
+                            }
+                        })
+                .setNegativeButton(Lang.t("Отмена"), null)
+                .show();
+    }
+
+    // Куда идёт выбранная фотография: 0 — своя аватарка, иначе фото группы
+    private int photoTarget;
 
     private View personRow(final JSONObject person) {
         LinearLayout row = Ui.row(this);
@@ -437,11 +601,52 @@ public class MainActivity extends Activity implements Net.Listener {
                 // Номер личной переписки знает только сервер: помечаем, кого
                 // ждём, и откроем её, когда список обновится
                 pendingDirect = person.optInt("id");
-                net.send(Net.frame("direct", "user", person.optInt("id")));
+                send(Net.frame("direct", "user", person.optInt("id")));
             }
         });
         return row;
     }
+
+    /** Подставляет фотографию вместо кружка с буквой, когда она есть. */
+    private void paintPhoto(final TextView view, final String id) {
+        if (id.isEmpty()) {
+            return;
+        }
+        byte[] data = media.get(id);
+        if (data != null) {
+            view.setText("");
+            view.setBackground(new android.graphics.drawable.BitmapDrawable(
+                    getResources(), circleBitmap(data)));
+            return;
+        }
+        List<TextView> slots = photoSlots.get(id);
+        if (slots == null) {
+            slots = new ArrayList<>();
+            photoSlots.put(id, slots);
+            send(Net.frame("fetch", "id", id));
+        }
+        slots.add(view);
+    }
+
+    private Bitmap circleBitmap(byte[] data) {
+        Bitmap source = BitmapFactory.decodeByteArray(data, 0, data.length);
+        int side = Math.min(source.getWidth(), source.getHeight());
+        Bitmap square = Bitmap.createBitmap(source,
+                (source.getWidth() - side) / 2, (source.getHeight() - side) / 2,
+                side, side);
+
+        Bitmap round = Bitmap.createBitmap(side, side, Bitmap.Config.ARGB_8888);
+        android.graphics.Canvas canvas = new android.graphics.Canvas(round);
+        android.graphics.Paint paint = new android.graphics.Paint(
+                android.graphics.Paint.ANTI_ALIAS_FLAG);
+        paint.setShader(new android.graphics.BitmapShader(square,
+                android.graphics.Shader.TileMode.CLAMP,
+                android.graphics.Shader.TileMode.CLAMP));
+        canvas.drawCircle(side / 2f, side / 2f, side / 2f, paint);
+        return round;
+    }
+
+    private final Map<String, List<TextView>> photoSlots = new HashMap<>();
 
     private String titleOf(JSONObject item) {
         String title = item.optString("title", "");
@@ -469,7 +674,7 @@ public class MainActivity extends Activity implements Net.Listener {
         back.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View view) {
-                show(listScreen);
+                leaveConversation();
             }
         });
         bar.addView(back);
@@ -497,7 +702,7 @@ public class MainActivity extends Activity implements Net.Listener {
         unpin.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View view) {
-                net.send(Net.frame("pin", "conversation", conversation, "id",
+                send(Net.frame("pin", "conversation", conversation, "id",
                         JSONObject.NULL));
             }
         });
@@ -567,6 +772,10 @@ public class MainActivity extends Activity implements Net.Listener {
 
     private void openConversation(int id) {
         conversation = id;
+        if (service != null) {
+            service.clearUnread(id);
+            service.rememberOpen(id);
+        }
         cancelReply();
         feed.removeAllViews();
         items.clear();
@@ -578,9 +787,12 @@ public class MainActivity extends Activity implements Net.Listener {
         chatTitle.setText(title);
         chatAvatar.setText(Ui.initial(title));
         chatAvatar.setBackground(Ui.circle(Ui.avatarColor(title)));
+        if (item != null) {
+            paintPhoto(chatAvatar, item.optString("avatar", ""));
+        }
         refreshPinBar();
 
-        net.send(Net.frame("open", "conversation", id));
+        send(Net.frame("open", "conversation", id));
         show(chatScreen);
     }
 
@@ -610,7 +822,7 @@ public class MainActivity extends Activity implements Net.Listener {
                 // Ответ не приложился — сообщение всё равно уйдёт
             }
         }
-        net.send(frame);
+        send(frame);
 
         JSONObject item = Net.frame("text", "nick", me.optString("name"),
                 "text", text, "user", me.optInt("id"), "local", local,
@@ -758,6 +970,9 @@ public class MainActivity extends Activity implements Net.Listener {
 
         String id = item.optString("media", "");
         byte[] data = media.get(id);
+        if (data == null) {
+            data = localMedia.get(item.optString("local", ""));
+        }
         if (data != null) {
             picture.setImageBitmap(BitmapFactory.decodeByteArray(data, 0, data.length));
         } else if (!id.isEmpty()) {
@@ -765,7 +980,7 @@ public class MainActivity extends Activity implements Net.Listener {
             if (slots == null) {
                 slots = new ArrayList<>();
                 waiting.put(id, slots);
-                net.send(Net.frame("fetch", "id", id));
+                send(Net.frame("fetch", "id", id));
             }
             slots.add(picture);
         }
@@ -774,6 +989,9 @@ public class MainActivity extends Activity implements Net.Listener {
             @Override
             public void onClick(View view) {
                 byte[] bytes = media.get(item.optString("media", ""));
+                if (bytes == null) {
+                    bytes = localMedia.get(item.optString("local", ""));
+                }
                 if (bytes != null) {
                     showFull(bytes);
                 }
@@ -883,7 +1101,7 @@ public class MainActivity extends Activity implements Net.Listener {
             }
         }
         if (!unread.isEmpty()) {
-            net.send(Net.frame("read", "conversation", conversation,
+            send(Net.frame("read", "conversation", conversation,
                     "ids", Net.numbers(unread)));
         }
     }
@@ -910,7 +1128,7 @@ public class MainActivity extends Activity implements Net.Listener {
                 button.setOnClickListener(new View.OnClickListener() {
                     @Override
                     public void onClick(View view) {
-                        net.send(Net.frame("react", "id", id, "emoji", emoji));
+                        send(Net.frame("react", "id", id, "emoji", emoji));
                         dialog.dismiss();
                     }
                 });
@@ -941,7 +1159,7 @@ public class MainActivity extends Activity implements Net.Listener {
                     } catch (Exception ignored) {
                         // Кадр всё равно уйдёт с закреплением
                     }
-                    net.send(frame);
+                    send(frame);
                 }
             }), Ui.wide());
 
@@ -964,7 +1182,7 @@ public class MainActivity extends Activity implements Net.Listener {
             card.addView(menuRow("🗑", Lang.t("Удалить"), dialog, new Runnable() {
                 @Override
                 public void run() {
-                    net.send(Net.frame("delete", "id", id));
+                    send(Net.frame("delete", "id", id));
                 }
             }), Ui.wide());
         }
@@ -1073,7 +1291,7 @@ public class MainActivity extends Activity implements Net.Listener {
                         new DialogInterface.OnClickListener() {
                             @Override
                             public void onClick(DialogInterface dialog, int which) {
-                                net.send(Net.frame("forward", "id", item.optInt("id"),
+                                send(Net.frame("forward", "id", item.optInt("id"),
                                         "conversation", targets.get(which).optInt("id")));
                             }
                         })
@@ -1128,7 +1346,7 @@ public class MainActivity extends Activity implements Net.Listener {
             mark.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View view) {
-                    net.send(Net.frame("react", "id", messageId, "emoji", emoji));
+                    send(Net.frame("react", "id", messageId, "emoji", emoji));
                 }
             });
             LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
@@ -1186,7 +1404,7 @@ public class MainActivity extends Activity implements Net.Listener {
                                     return;
                                 }
                                 pendingGroup = true;
-                                net.send(Net.frame("group", "title",
+                                send(Net.frame("group", "title",
                                         title.getText().toString().trim(),
                                         "members", members));
                             }
@@ -1231,14 +1449,25 @@ public class MainActivity extends Activity implements Net.Listener {
                 return;
             }
 
+            if (photoTarget > 0) {
+                send(Net.frame("avatar", "conversation", photoTarget,
+                        "name", name, "size", bytes.length), bytes);
+                photoTarget = 0;
+                return;
+            }
+
             String local = "l" + (++localNumber);
-            net.send(Net.frame("media", "nick", me.optString("name"), "kind", "image",
+            send(Net.frame("media", "nick", me.optString("name"), "kind", "image",
                     "name", name, "size", bytes.length, "conversation", conversation,
                     "local", local), bytes);
 
+            // Картинку показываем сразу из того, что выбрали: ждать, пока
+            // сервер её примет и вернёт номер, незачем
+            localMedia.put(local, bytes);
             JSONObject item = Net.frame("media", "nick", me.optString("name"),
                     "kind", "image", "name", name, "size", bytes.length,
-                    "user", me.optInt("id"), "local", local, "at", stamp());
+                    "user", me.optInt("id"), "local", local, "at", stamp(),
+                    "conversation", conversation);
             items.add(item);
             showItem(item);
         } catch (Exception error) {
@@ -1281,7 +1510,7 @@ public class MainActivity extends Activity implements Net.Listener {
                         new DialogInterface.OnClickListener() {
                             @Override
                             public void onClick(DialogInterface dialog, int which) {
-                                net.send(Net.frame("profile", "name",
+                                send(Net.frame("profile", "name",
                                         name.getText().toString().trim(),
                                         "bio", bio.getText().toString().trim()));
                             }
@@ -1290,9 +1519,12 @@ public class MainActivity extends Activity implements Net.Listener {
                         new DialogInterface.OnClickListener() {
                             @Override
                             public void onClick(DialogInterface dialog, int which) {
-                                net.send(Net.frame("logout"));
+                                send(Net.frame("logout"));
                                 prefs().edit().remove("token").apply();
-                                net.close();
+                                if (service != null) {
+                                    service.shutdown();
+                                    service = null;
+                                }
                                 show(authScreen);
                             }
                         })
@@ -1304,26 +1536,31 @@ public class MainActivity extends Activity implements Net.Listener {
 
     @Override
     public void onOpen(boolean secure) {
+        if (!pendingSignIn) {
+            return;    // служба сама войдёт по сохранённому токену
+        }
+        pendingSignIn = false;
+
         String token = prefs().getString("token", null);
         if (recoverMode) {
-            net.send(Net.frame("recover",
+            send(Net.frame("recover",
                     "login", loginField.getText().toString().trim(),
                     "code", codeField.getText().toString().trim(),
                     "password", passwordField.getText().toString()));
             return;
         }
         if (token != null && !registerMode) {
-            net.send(Net.frame("auth", "token", token));
+            send(Net.frame("auth", "token", token));
             return;
         }
         if (registerMode) {
-            net.send(Net.frame("register",
+            send(Net.frame("register",
                     "login", loginField.getText().toString().trim(),
                     "password", passwordField.getText().toString(),
                     "name", nameField.getText().toString().trim(),
                     "invite", inviteField.getText().toString().trim()));
         } else {
-            net.send(Net.frame("login",
+            send(Net.frame("login",
                     "login", loginField.getText().toString().trim(),
                     "password", passwordField.getText().toString()));
         }
@@ -1336,6 +1573,13 @@ public class MainActivity extends Activity implements Net.Listener {
         if ("welcome".equals(kind)) {
             me = frame.optJSONObject("user");
             prefs().edit().putString("token", frame.optString("token")).apply();
+
+            // Приветствие из запаса службы только напоминает, кто мы: ни
+            // списки чистить, ни уводить человека из переписки не нужно
+            if (frame.optBoolean("cached")) {
+                return;
+            }
+
             if (recoverMode) {
                 recoverMode = false;
                 drawAuthMode();
@@ -1380,6 +1624,12 @@ public class MainActivity extends Activity implements Net.Listener {
         } else if ("conversation".equals(kind)) {
             JSONObject item = frame.optJSONObject("item");
             if (item != null) {
+                // Та же переписка могла прийти обновлённой — например, с фото
+                for (int index = conversations.size() - 1; index >= 0; index--) {
+                    if (conversations.get(index).optInt("id") == item.optInt("id")) {
+                        conversations.remove(index);
+                    }
+                }
                 conversations.add(item);
                 drawList();
                 if (pendingGroup) {
@@ -1486,6 +1736,25 @@ public class MainActivity extends Activity implements Net.Listener {
         if (marks != null) {
             reactionRows.put(id, marks);
         }
+
+        // Вложение получило номер: запоминаем содержимое под ним, чтобы
+        // картинка осталась на месте и после перерисовки
+        String mediaId = frame.optString("media", "");
+        if (!mediaId.isEmpty()) {
+            byte[] bytes = localMedia.remove(local);
+            if (bytes != null) {
+                media.put(mediaId, bytes);
+            }
+            for (JSONObject item : items) {
+                if (local.equals(item.optString("local"))) {
+                    try {
+                        item.put("media", mediaId);
+                    } catch (Exception ignored) {
+                        // Номер не приложился — картинка просто перезапросится
+                    }
+                }
+            }
+        }
         paintTick(id, states.containsKey(id) ? states.get(id) : "sent");
     }
 
@@ -1554,6 +1823,16 @@ public class MainActivity extends Activity implements Net.Listener {
         String id = header.optString("id");
         media.put(id, data);
 
+        List<TextView> faces = photoSlots.remove(id);
+        if (faces != null) {
+            Bitmap round = circleBitmap(data);
+            for (TextView face : faces) {
+                face.setText("");
+                face.setBackground(new android.graphics.drawable.BitmapDrawable(
+                        getResources(), round));
+            }
+        }
+
         List<ImageView> slots = waiting.remove(id);
         if (slots == null) {
             return;
@@ -1567,26 +1846,35 @@ public class MainActivity extends Activity implements Net.Listener {
 
     @Override
     public void onClosed(String reason) {
+        // Переподключением занимается служба, экран просто говорит об этом
         chatStatus.setText(Lang.t("нет связи"));
-        if (!prefs().getString("token", "").isEmpty()) {
-            toast(Lang.t("Связь потеряна, переподключаемся…"));
-            net = new Net(this);
-            net.connect(prefs().getString("server", ""));
-        }
     }
 
     @Override
     public void onBackPressed() {
         if (chatScreen.getVisibility() == View.VISIBLE) {
-            show(listScreen);
+            leaveConversation();
             return;
         }
         super.onBackPressed();
     }
 
+    /** Человек ушёл из переписки сам — возвращать его туда не надо. */
+    private void leaveConversation() {
+        conversation = -1;
+        if (service != null) {
+            service.rememberOpen(-1);
+        }
+        show(listScreen);
+    }
+
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        net.close();
+        // Соединение остаётся жить в службе: она и уведомления показывает
+        if (bound) {
+            unbindService(connection);
+            bound = false;
+        }
     }
 }

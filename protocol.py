@@ -119,6 +119,11 @@ def admin_message(stats):
     return encode({"type": "admin", "stats": stats})
 
 
+def sync_request():
+    """Прислать заново список переписок и участников."""
+    return encode({"type": "sync"})
+
+
 def members_request(conversation, members):
     """Позвать людей в уже заведённую группу."""
     return encode({"type": "members", "conversation": conversation,

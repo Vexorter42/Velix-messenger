@@ -1143,6 +1143,11 @@ async def chat_handler(websocket):
                 await handle_group(websocket, user, message)
             elif kind == "members":
                 await handle_members(websocket, user, message)
+            elif kind == "sync":
+                # Клиент вернулся к жизни и просит свежие списки
+                await websocket.send(protocol.conversations_message(
+                    await storage.conversations(user["id"])))
+                await send_people(websocket)
             elif kind == "delete_group":
                 await handle_delete_group(websocket, user, message)
             elif kind == "admin":

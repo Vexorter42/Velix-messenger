@@ -106,6 +106,12 @@ class Lang {
         add("Переписки", "Chats");
         add("УЧАСТНИКИ", "MEMBERS");
         add("Новая группа", "New group");
+        add("Фото группы", "Group photo");
+        add("Удалить группу", "Delete group");
+        add("Переписка и вложения пропадут у всех. Отменить это нельзя.",
+            "The conversation and its attachments disappear for everyone. This cannot be undone.");
+        add("Velix на связи", "Velix is connected");
+        add("Сообщения", "Messages");
         add("Название группы", "Group name");
         add("Кого позвать", "Who to invite");
         add("Создать", "Create");
@@ -181,6 +187,13 @@ class Lang {
         add("Написать самому себе не выйдет.", "You cannot write to yourself.");
         add("Такого человека нет.", "There is no such person.");
         add("Удалить можно только своё сообщение.", "You can only delete your own message.");
+        add("Удалить можно только группу.", "Only a group can be deleted.");
+        add("Фото ставится только группе.", "Only a group can have a photo.");
+        add("Удалить группу может тот, кто её завёл.",
+            "A group can be deleted by whoever created it.");
+        add("Панель доступна только хозяину чата.",
+            "The panel is only for whoever runs the chat.");
+        add("Себя удалить нельзя.", "You cannot delete yourself.");
         add("Сообщение не найдено.", "Message not found.");
         add("Эта переписка вам недоступна.", "This conversation is not available to you.");
         add("Вложение не найдено.", "Attachment not found.");
@@ -211,6 +224,11 @@ class Lang {
         SERVER.put("group_needs_title", "У группы должно быть название.");
         SERVER.put("group_needs_members", "Выберите, кого позвать в группу.");
         SERVER.put("group_only", "Позвать можно только в группу.");
+        SERVER.put("group_only_delete", "Удалить можно только группу.");
+        SERVER.put("group_only_photo", "Фото ставится только группе.");
+        SERVER.put("not_group_owner", "Удалить группу может тот, кто её завёл.");
+        SERVER.put("not_admin", "Панель доступна только хозяину чата.");
+        SERVER.put("admin_self", "Себя удалить нельзя.");
         SERVER.put("self_dm", "Написать самому себе не выйдет.");
         SERVER.put("no_such_person", "Такого человека нет.");
         SERVER.put("not_your_message", "Удалить можно только своё сообщение.");
