@@ -21,7 +21,10 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.text.InputType;
+import android.view.GestureDetector;
 import android.view.Gravity;
+import android.view.MotionEvent;
+import android.view.ScaleGestureDetector;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
@@ -66,6 +69,8 @@ public class MainActivity extends Activity implements VelixService.Screen {
     private JSONObject limits = new JSONObject();
     private final Map<String, Object[]> pendingUploads = new HashMap<>();
     private TextView uploadLine;
+    private Uri pendingUpload;      // файл, выбранный до готовности связи
+    private View settingsScreen;
     private final Handler main = new Handler(Looper.getMainLooper());
     private static final String[] EMOJI = {"👍", "❤", "😂", "🔥", "😢", "👎"};
 
@@ -426,7 +431,7 @@ public class MainActivity extends Activity implements VelixService.Screen {
         profile.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View view) {
-                showProfile();
+                openSettings();
             }
         });
         bar.addView(profile);
@@ -808,6 +813,10 @@ public class MainActivity extends Activity implements VelixService.Screen {
 
     private void openConversation(int id) {
         conversation = id;
+        // Android волен убить приложение, пока человек выбирает файл в
+        // галерее. Тогда экран создаётся заново, и без этой пометки он
+        // вернулся бы в список, а не в ту переписку, где всё началось.
+        prefs().edit().putInt("open", id).apply();
         if (service != null) {
             service.clearUnread(id);
             service.rememberOpen(id);
@@ -1348,17 +1357,112 @@ public class MainActivity extends Activity implements VelixService.Screen {
                 .show();
     }
 
+    /**
+     * Снимок во весь экран: щипком приближается, пальцем двигается.
+     *
+     * Картинку двигаем матрицей самого вида — так не приходится собирать
+     * новый растр на каждое движение пальца.
+     */
     private void showFull(byte[] data) {
-        Dialog dialog = new Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen);
-        ImageView picture = new ImageView(this);
+        final Dialog dialog = new Dialog(this,
+                android.R.style.Theme_Black_NoTitleBar_Fullscreen);
+        final ImageView picture = new ImageView(this);
         picture.setBackgroundColor(Color.BLACK);
+        picture.setScaleType(ImageView.ScaleType.MATRIX);
         picture.setImageBitmap(BitmapFactory.decodeByteArray(data, 0, data.length));
-        picture.setOnClickListener(new View.OnClickListener() {
+
+        final android.graphics.Matrix холст = new android.graphics.Matrix();
+        final float[] числа = new float[9];
+        final boolean[] уложили = {false};
+
+        // Вписываем снимок в экран, как только тот измерился
+        picture.addOnLayoutChangeListener(new View.OnLayoutChangeListener() {
             @Override
-            public void onClick(View view) {
-                dialog.dismiss();
+            public void onLayoutChange(View view, int left, int top, int right,
+                                       int bottom, int a, int b, int c, int d) {
+                if (уложили[0] || picture.getDrawable() == null) {
+                    return;
+                }
+                уложили[0] = true;
+                float ширина = picture.getDrawable().getIntrinsicWidth();
+                float высота = picture.getDrawable().getIntrinsicHeight();
+                float во_сколько = Math.min((right - left) / ширина,
+                        (bottom - top) / высота);
+                холст.setScale(во_сколько, во_сколько);
+                холст.postTranslate(((right - left) - ширина * во_сколько) / 2f,
+                        ((bottom - top) - высота * во_сколько) / 2f);
+                picture.setImageMatrix(холст);
             }
         });
+
+        final float[] вписано = {1f};
+        final ScaleGestureDetector щипок = new ScaleGestureDetector(this,
+                new ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            @Override
+            public boolean onScale(ScaleGestureDetector detector) {
+                холст.getValues(числа);
+                float сейчас = числа[android.graphics.Matrix.MSCALE_X];
+                float во_сколько = detector.getScaleFactor();
+
+                // Дальше вписанного не отпускаем и восьмикратного не пускаем
+                float нижний = вписано[0] * 0.9f;
+                float верхний = вписано[0] * 8f;
+                if (сейчас * во_сколько < нижний) {
+                    во_сколько = нижний / сейчас;
+                } else if (сейчас * во_сколько > верхний) {
+                    во_сколько = верхний / сейчас;
+                }
+                холст.postScale(во_сколько, во_сколько, detector.getFocusX(),
+                        detector.getFocusY());
+                picture.setImageMatrix(холст);
+                return true;
+            }
+        });
+
+        final GestureDetector жесты = new GestureDetector(this,
+                new GestureDetector.SimpleOnGestureListener() {
+            @Override
+            public boolean onDoubleTap(MotionEvent event) {
+                холст.getValues(числа);
+                float сейчас = числа[android.graphics.Matrix.MSCALE_X];
+                float во_сколько = сейчас > вписано[0] * 1.1f
+                        ? вписано[0] / сейчас : 2.5f;
+                холст.postScale(во_сколько, во_сколько, event.getX(), event.getY());
+                picture.setImageMatrix(холст);
+                return true;
+            }
+
+            @Override
+            public boolean onScroll(MotionEvent от, MotionEvent до,
+                                    float сдвигX, float сдвигY) {
+                холст.postTranslate(-сдвигX, -сдвигY);
+                picture.setImageMatrix(холст);
+                return true;
+            }
+
+            @Override
+            public boolean onSingleTapConfirmed(MotionEvent event) {
+                холст.getValues(числа);
+                if (числа[android.graphics.Matrix.MSCALE_X] <= вписано[0] * 1.1f) {
+                    dialog.dismiss();     // неприближённый снимок закрываем
+                }
+                return true;
+            }
+        });
+
+        picture.setOnTouchListener(new View.OnTouchListener() {
+            @Override
+            public boolean onTouch(View view, MotionEvent event) {
+                if (вписано[0] == 1f && уложили[0]) {
+                    холст.getValues(числа);
+                    вписано[0] = числа[android.graphics.Matrix.MSCALE_X];
+                }
+                щипок.onTouchEvent(event);
+                жесты.onTouchEvent(event);
+                return true;
+            }
+        });
+
         dialog.setContentView(picture);
         dialog.show();
     }
@@ -1575,6 +1679,13 @@ public class MainActivity extends Activity implements VelixService.Screen {
      * кадром, поэтому читаем его порциями прямо во время отправки.
      */
     private void sendBigFile(Uri uri) {
+        if (service == null || conversation < 0) {
+            // Служба ещё не привязалась после пересоздания экрана —
+            // отправим, как только всё встанет на место
+            pendingUpload = uri;
+            return;
+        }
+
         String[] описание = describe(uri);
         String name = описание[0];
         long size = Long.parseLong(описание[1]);
@@ -1745,6 +1856,165 @@ public class MainActivity extends Activity implements VelixService.Screen {
 
     // ------------------------------------------------------------- профиль
 
+    /** Экран настроек: своя страница, а не тесное окошко поверх списка. */
+    private void openSettings() {
+        settingsScreen = buildSettings();
+        root.addView(settingsScreen);
+        show(settingsScreen);
+    }
+
+    private View buildSettings() {
+        LinearLayout screen = Ui.column(this);
+        screen.setBackgroundColor(Ui.CHAT_BG);
+
+        LinearLayout bar = Ui.row(this);
+        bar.setBackgroundColor(Ui.SIDEBAR);
+        bar.setPadding(Ui.dp(this, 16), Ui.dp(this, 14), Ui.dp(this, 16),
+                Ui.dp(this, 14));
+        TextView back = Ui.text(this, "‹", 26, Ui.ACCENT);
+        back.setPadding(0, 0, Ui.dp(this, 14), 0);
+        back.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                show(listScreen);
+            }
+        });
+        bar.addView(back);
+        bar.addView(Ui.text(this, Lang.t("Настройки"), 20, Ui.TEXT), Ui.grow());
+        screen.addView(bar, Ui.wide());
+
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout column = Ui.column(this);
+        scroll.addView(column);
+
+        // -------------------------------------------------- шапка с фото
+        LinearLayout top = Ui.column(this);
+        top.setGravity(Gravity.CENTER);
+        top.setPadding(0, Ui.dp(this, 24), 0, Ui.dp(this, 20));
+
+        String имя = me == null ? "" : me.optString("name");
+        TextView лицо = Ui.avatar(this, имя, Ui.dp(this, 96));
+        лицо.setTextSize(34);
+        top.addView(лицо);
+        if (me != null) {
+            paintPhoto(лицо, me.optString("avatar", ""));
+        }
+
+        TextView сменить = Ui.text(this, Lang.t("Сменить фото"), 14, Ui.ACCENT);
+        сменить.setPadding(0, Ui.dp(this, 10), 0, 0);
+        сменить.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                photoTarget = 0;      // ноль — своя аватарка, не группа
+                pickPhoto();
+            }
+        });
+        top.addView(сменить);
+
+        TextView подпись = Ui.text(this, имя, 20, Ui.TEXT);
+        подпись.setPadding(0, Ui.dp(this, 12), 0, 0);
+        top.addView(подпись);
+        top.addView(Ui.text(this, "@" + (me == null ? "" : me.optString("login")),
+                14, Ui.MUTED));
+        column.addView(top, Ui.wide());
+
+        // -------------------------------------------------- сами настройки
+        column.addView(section(Lang.t("АККАУНТ")), Ui.wide());
+        column.addView(settingsRow(Lang.t("Мой профиль"),
+                Lang.t("Имя и пара слов о себе"), new Runnable() {
+            @Override
+            public void run() {
+                showProfile();
+            }
+        }), Ui.wide());
+        column.addView(settingsRow(Lang.t("Фото профиля"),
+                Lang.t("Кружок, который видят остальные"), new Runnable() {
+            @Override
+            public void run() {
+                photoTarget = 0;
+                pickPhoto();
+            }
+        }), Ui.wide());
+
+        column.addView(section(Lang.t("ПРИЛОЖЕНИЕ")), Ui.wide());
+        column.addView(settingsRow(Lang.t("Язык"),
+                "ru".equals(Lang.current()) ? "Русский" : "English",
+                new Runnable() {
+            @Override
+            public void run() {
+                String next = "ru".equals(Lang.current()) ? "en" : "ru";
+                prefs().edit().putString("language", next).apply();
+                Lang.set(next);
+                recreate();
+            }
+        }), Ui.wide());
+        column.addView(settingsRow(Lang.t("Сервер"),
+                prefs().getString("server", ""), null), Ui.wide());
+        column.addView(settingsRow(Lang.t("Версия"), appVersion(), null),
+                Ui.wide());
+
+        column.addView(section(""), Ui.wide());
+        TextView выйти = settingsRow(Lang.t("Выйти из аккаунта"), "", new Runnable() {
+            @Override
+            public void run() {
+                signOut();
+            }
+        });
+        выйти.setTextColor(Ui.DANGER);
+        column.addView(выйти, Ui.wide());
+
+        screen.addView(scroll, Ui.grow());
+        return screen;
+    }
+
+    /** Заголовок раздела настроек. */
+    private TextView section(String caption) {
+        TextView заголовок = Ui.text(this, caption, 13, Ui.MUTED);
+        заголовок.setPadding(Ui.dp(this, 16), Ui.dp(this, 18), Ui.dp(this, 16),
+                Ui.dp(this, 6));
+        return заголовок;
+    }
+
+    /** Строчка настроек: название сверху, пояснение снизу. */
+    private TextView settingsRow(String title, String note, final Runnable дело) {
+        TextView строка = Ui.text(this,
+                note.isEmpty() ? title : title + "\n" + note, 16, Ui.TEXT);
+        строка.setPadding(Ui.dp(this, 16), Ui.dp(this, 14), Ui.dp(this, 16),
+                Ui.dp(this, 14));
+        строка.setBackgroundColor(Ui.SIDEBAR);
+        if (дело != null) {
+            строка.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View view) {
+                    дело.run();
+                }
+            });
+        }
+        return строка;
+    }
+
+    /** Номер сборки — его знает сама система, дублировать незачем. */
+    private String appVersion() {
+        try {
+            return getPackageManager().getPackageInfo(getPackageName(), 0)
+                    .versionName;
+        } catch (Exception error) {
+            return "";
+        }
+    }
+
+    private void signOut() {
+        send(Net.frame("logout"));
+        prefs().edit().remove("token").apply();
+        if (service != null) {
+            service.shutdown();
+            unbindService(connection);
+            service = null;
+            bound = false;
+        }
+        show(authScreen);
+    }
+
     private void showProfile() {
         LinearLayout card = Ui.column(this);
         card.setPadding(Ui.dp(this, 20), Ui.dp(this, 12), Ui.dp(this, 20), 0);
@@ -1757,20 +2027,6 @@ public class MainActivity extends Activity implements VelixService.Screen {
         bio.setText(me.optString("bio"));
         card.addView(bio, Ui.wide());
 
-        TextView language = Ui.button(this, Lang.t("Язык") + ": "
-                + ("ru".equals(Lang.current()) ? "Русский" : "English"),
-                Ui.INPUT_BG, Ui.TEXT);
-        language.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View view) {
-                String next = "ru".equals(Lang.current()) ? "en" : "ru";
-                prefs().edit().putString("language", next).apply();
-                Lang.set(next);
-                recreate();
-            }
-        });
-        card.addView(language, Ui.wide());
-
         new AlertDialog.Builder(this)
                 .setTitle(Lang.t("Профиль"))
                 .setView(card)
@@ -1781,21 +2037,6 @@ public class MainActivity extends Activity implements VelixService.Screen {
                                 send(Net.frame("profile", "name",
                                         name.getText().toString().trim(),
                                         "bio", bio.getText().toString().trim()));
-                            }
-                        })
-                .setNeutralButton(Lang.t("Выйти из аккаунта"),
-                        new DialogInterface.OnClickListener() {
-                            @Override
-                            public void onClick(DialogInterface dialog, int which) {
-                                send(Net.frame("logout"));
-                                prefs().edit().remove("token").apply();
-                                if (service != null) {
-                                    service.shutdown();
-                                    unbindService(connection);
-                                    service = null;
-                                    bound = false;
-                                }
-                                show(authScreen);
                             }
                         })
                 .setNegativeButton(Lang.t("Отмена"), null)
@@ -1892,6 +2133,22 @@ public class MainActivity extends Activity implements VelixService.Screen {
                         break;
                     }
                 }
+            } else if (conversation < 0) {
+                // Экран мог пересоздаться: возвращаем человека туда, где он был
+                int был = prefs().getInt("open", -1);
+                for (JSONObject item : conversations) {
+                    if (был > 0 && item.optInt("id") == был) {
+                        openConversation(был);
+                        break;
+                    }
+                }
+            }
+
+            if (pendingUpload != null && service != null) {
+                // Файл выбрали, пока приложение перезапускалось
+                Uri что = pendingUpload;
+                pendingUpload = null;
+                sendBigFile(что);
             }
 
         } else if ("conversation".equals(kind)) {

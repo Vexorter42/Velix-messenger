@@ -113,6 +113,16 @@ class Lang {
         add("«{name}» сохранён в Загрузки", "“{name}” saved to Downloads");
         add("Не удалось сохранить файл.", "Could not save the file.");
         add("Видео", "Video");
+        add("Настройки", "Settings");
+        add("Сменить фото", "Change photo");
+        add("АККАУНТ", "ACCOUNT");
+        add("ПРИЛОЖЕНИЕ", "APP");
+        add("Мой профиль", "My profile");
+        add("Имя и пара слов о себе", "Name and a few words about you");
+        add("Фото профиля", "Profile photo");
+        add("Кружок, который видят остальные", "The circle everyone else sees");
+        add("Сервер", "Server");
+        add("Версия", "Version");
         add("Файл", "File");
         add("Отправляю «{name}» — {percent}%", "Sending “{name}” — {percent}%");
         add("«{name}» весит {size}, а больше {limit} сервер не принимает.",

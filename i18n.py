@@ -276,6 +276,14 @@ ENGLISH = {
         "people: {members}, messages: {count}",
     "ПЕРЕПИСКИ": "CONVERSATIONS",
     "ПРЕДЕЛЫ ВЛОЖЕНИЙ": "ATTACHMENT LIMITS",
+    "Поиск: @username или слово": "Search: @username or a word",
+    "ЛЮДИ": "PEOPLE",
+    "Создайте группу или найдите человека по @username.":
+        "Create a group, or find someone by @username.",
+    "Позвать людей": "Invite people",
+    "Позвать": "Invite",
+    "Кого позвать в «{title}»": "Who to invite to “{title}”",
+    "Все уже в группе.": "Everyone is in the group already.",
     "Нет связи. Переписка откроется, как только она вернётся.":
         "No connection. The conversation will open as soon as it is back.",
     "нет связи · возвращаемся…": "no connection · coming back…",

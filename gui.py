@@ -794,7 +794,7 @@ class VelixApp(ctk.CTk):
         self.leave_button.pack(side="left", expand=True, fill="x", padx=(4, 0))
 
         self.search_entry = ctk.CTkEntry(
-            sidebar, placeholder_text=t("Поиск по переписке"), height=34,
+            sidebar, placeholder_text=t("Поиск: @username или слово"), height=34,
             corner_radius=10, border_width=0, fg_color=INPUT_BG, text_color=TEXT,
             placeholder_text_color=MUTED, font=self.font_small)
         self.search_entry.pack(fill="x", padx=14, pady=(0, 8))
@@ -804,6 +804,8 @@ class VelixApp(ctk.CTk):
                       hover_color=SEPARATOR, text_color=MUTED,
                       command=self._new_group).pack(fill="x", padx=14, pady=(0, 8))
         self.search_entry.bind("<Return>", lambda event: self._on_search())
+        # Людей показываем по мере набора: искать по списку глазами незачем
+        self.search_entry.bind("<KeyRelease>", self._on_search_typing)
         self.search_entry.bind("<Control-KeyPress>", self._on_entry_shortcut)
 
         # Список переписок и участников: и то и другое живёт в одной колонке
@@ -2173,23 +2175,37 @@ class VelixApp(ctk.CTk):
     # ------------------------------------------------------------ переписки
 
     def _refresh_side_list(self):
-        """Перерисовывает список переписок и участников."""
+        """Перерисовывает список: переписки, а по запросу — и люди."""
         for widget in self.side_list.winfo_children():
             widget.destroy()
 
+        запрос = self.search_entry.get().strip().lstrip("@").lower()
+
         for item in self.conversations:
+            if запрос and запрос not in self._title_of(item).lower():
+                continue
             self._conversation_row(item)
 
-        others = [person for person in self.people
-                  if person["id"] != self.user.get("id")]
-        if not others:
+        # Всех подряд не показываем: в списке переписки, люди — по поиску
+        if not запрос:
             return
 
-        ctk.CTkLabel(self.side_list, text=t("УЧАСТНИКИ"), font=self.font_small,
+        нашлись = [person for person in self.people
+                   if person["id"] != self.user.get("id")
+                   and (запрос in str(person.get("login", "")).lower()
+                        or запрос in str(person.get("name", "")).lower())]
+        if not нашлись:
+            return
+
+        ctk.CTkLabel(self.side_list, text=t("ЛЮДИ"), font=self.font_small,
                      text_color=MUTED, anchor="w").pack(fill="x", padx=10,
                                                         pady=(14, 4))
-        for person in others:
+        for person in нашлись:
             self._person_row(person)
+
+    def _on_search_typing(self, event=None):
+        """Набирают в поиске — сразу подсказываем, кто нашёлся."""
+        self._refresh_side_list()
 
     def _title_of(self, item):
         """Название переписки.
@@ -2223,6 +2239,10 @@ class VelixApp(ctk.CTk):
 
         top = ctk.CTkFrame(lines, fg_color="transparent")
         top.pack(fill="x")
+        if item.get("kind") == "group":
+            # Значок вместо слова: место в строчке дорого
+            ctk.CTkLabel(top, text="👥", font=self.font_small,
+                         text_color=quiet).pack(side="left", padx=(0, 4))
         ctk.CTkLabel(top, text=title, font=self.font_name, text_color=colour,
                      anchor="w").pack(side="left")
 
@@ -2261,8 +2281,14 @@ class VelixApp(ctk.CTk):
         avatar.pack(side="left", padx=(8, 8), pady=7)
         self._paint_avatar(avatar, person["name"], person.get("avatar"), 32)
 
-        ctk.CTkLabel(row, text=person["name"], font=self.font_body, text_color=TEXT,
-                     anchor="w").pack(side="left", fill="x", expand=True)
+        подписи = ctk.CTkFrame(row, fg_color="transparent")
+        подписи.pack(side="left", fill="x", expand=True)
+        ctk.CTkLabel(подписи, text=person["name"], font=self.font_body,
+                     text_color=TEXT, anchor="w").pack(fill="x")
+        логин = person.get("login")
+        if логин:
+            ctk.CTkLabel(подписи, text=f"@{логин}", font=self.font_small,
+                         text_color=MUTED, anchor="w").pack(fill="x")
 
         ctk.CTkLabel(row, text="●", font=self.font_small,
                      text_color=ONLINE if person["id"] in self.online else MUTED,
@@ -2302,7 +2328,7 @@ class VelixApp(ctk.CTk):
         self.conversation = None
         self._clear_messages()
         self.empty_hint = self._service_label(
-            t("Создайте группу или напишите кому-нибудь из списка участников."))
+            t("Создайте группу или найдите человека по @username."))
         self.header_title.configure(text="Velix")
         self.header_subtitle.configure(text="")
 
@@ -2539,6 +2565,8 @@ class VelixApp(ctk.CTk):
 
         self._menu_row(card, "copy", t("Фото группы"),
                        lambda: self._choose_group_photo(item))
+        self._menu_row(card, "forward", t("Позвать людей"),
+                       lambda: self._invite_to_group(item))
         # Удалить группу может тот, кто её завёл, и хозяин чата
         if item.get("owner") == self.user.get("id") or self.is_admin:
             self._menu_row(card, "trash", t("Удалить группу"),
@@ -2568,6 +2596,63 @@ class VelixApp(ctk.CTk):
             return
         self.network.send(protocol.group_avatar_header(
             item["id"], Path(path).name, len(data)), data)
+
+    def _invite_to_group(self, item):
+        """Окошко «кого позвать» для уже заведённой группы."""
+        уже = set(item.get("members") or [])
+        свободные = [person for person in self.people
+                     if person["id"] != self.user.get("id")
+                     and person["id"] not in уже]
+        if not свободные:
+            self._service_label(t("Все уже в группе."))
+            return
+
+        window = ctk.CTkToplevel(self)
+        window.title(t("Позвать людей"))
+        window.geometry("340x420")
+        window.transient(self)
+        window.configure(fg_color=SIDEBAR)
+        window.after(200, window.grab_set)
+
+        ctk.CTkLabel(window, text=t("Кого позвать в «{title}»",
+                                    title=self._title_of(item)),
+                     font=self.font_name, text_color=TEXT,
+                     wraplength=300).pack(padx=18, pady=(18, 8))
+
+        box = ctk.CTkScrollableFrame(window, fg_color="transparent")
+        box.pack(fill="both", expand=True, padx=12, pady=6)
+
+        отмеченные = {}
+        for person in свободные:
+            переменная = tkinter.IntVar()
+            подпись = f"{person['name']} · @{person.get('login', '')}"
+            ctk.CTkCheckBox(box, text=подпись, variable=переменная,
+                            font=self.font_body, text_color=TEXT, fg_color=ACCENT,
+                            hover_color=ACCENT_HOVER).pack(anchor="w", pady=4)
+            отмеченные[person["id"]] = переменная
+
+        строка = ctk.CTkFrame(window, fg_color="transparent")
+        строка.pack(fill="x", padx=18, pady=(0, 16))
+
+        def позвать():
+            кого = [номер for номер, флаг in отмеченные.items() if flag_of(флаг)]
+            if кого:
+                self.network.send(protocol.members_request(item["id"], кого))
+            window.destroy()
+
+        def flag_of(переменная):
+            return bool(переменная.get())
+
+        ctk.CTkButton(строка, text=t("Отмена"), height=38, corner_radius=10,
+                      font=self.font_small, fg_color=INPUT_BG,
+                      hover_color=SEPARATOR, text_color=MUTED,
+                      command=window.destroy).pack(side="left", expand=True,
+                                                   fill="x", padx=(0, 6))
+        ctk.CTkButton(строка, text=t("Позвать"), height=38, corner_radius=10,
+                      font=self.font_small, fg_color=ACCENT,
+                      hover_color=ACCENT_HOVER, text_color=ON_ACCENT,
+                      command=позвать).pack(side="left", expand=True, fill="x",
+                                            padx=(6, 0))
 
     def _delete_group(self, item):
         title = self._title_of(item)

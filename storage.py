@@ -436,6 +436,12 @@ def _conversations_sync(user_id, only=None):
                 if other[2]:
                     item["avatar"] = other[2]
 
+            if kind == "group":
+                # Кто уже в группе — чтобы клиент не звал их повторно
+                item["members"] = [row[0] for row in _connection.execute(
+                    "SELECT user_id FROM members WHERE conversation_id = ?",
+                    (conversation_id,))]
+
             last = _connection.execute(
                 "SELECT m.text, m.kind, m.created_at, u.name FROM messages m"
                 " LEFT JOIN users u ON u.id = m.user_id"
