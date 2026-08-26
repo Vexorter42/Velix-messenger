@@ -106,8 +106,8 @@ with it, which is why the build weighs close to a hundred megabytes. Built
 without it, the window behaves as before and offers to open the clip in the
 system player.
 
-The installer is compiled from `installer.iss` with Inno Setup 6, with the built
-`Velix.exe` sitting next to it:
+The installer is compiled from `installer.iss` with Inno Setup 6; it picks the
+build up from `dist/Velix.exe`, exactly where PyInstaller leaves it:
 
 ```bash
 "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" installer.iss

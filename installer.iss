@@ -34,7 +34,9 @@ Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 Name: "desktopicon"; Description: "Создать значок на рабочем столе"; GroupDescription: "Дополнительно:"
 
 [Files]
-Source: "Velix.exe"; DestDir: "{app}"; Flags: ignoreversion
+; Берём сборку прямо из dist: копия рядом с installer.iss однажды
+; отстала на два дня, и установщик тихо унёс старый клиент
+Source: "dist\Velix.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExe}"

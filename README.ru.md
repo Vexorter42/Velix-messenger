@@ -106,8 +106,8 @@ ffmpeg и SDL, отчего сборка и весит под сотню мег�
 окно работает как раньше и предлагает открыть ролик системным
 проигрывателем.
 
-Установщик собирается из `installer.iss` компилятором Inno Setup 6 — рядом
-должен лежать собранный `Velix.exe`:
+Установщик собирается из `installer.iss` компилятором Inno Setup 6; сборку он
+берёт из `dist/Velix.exe`, то есть прямо оттуда, куда её кладёт PyInstaller:
 
 ```bash
 "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" installer.iss
