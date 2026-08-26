@@ -411,13 +411,14 @@ async def send_people(websocket):
                                                  sorted(online)))
 
 
-async def announce_presence(user_id, is_online, sender=None):
+async def announce_presence(user_id, is_online, sender=None, seen=None):
     """Всем остальным — что человек появился или ушёл.
 
     Самому себе не шлём: он и так знает, что подключился, а лишний кадр
-    только путался бы под ногами у истории.
+    только путался бы под ногами у истории. Уходящий оставляет отметку
+    времени: собеседник увидит, когда тот был в сети последний раз.
     """
-    frame = protocol.presence_message(user_id, is_online)
+    frame = protocol.presence_message(user_id, is_online, seen)
     await deliver_to([client for client in connected_clients if client is not sender],
                      frame)
 
@@ -1434,7 +1435,10 @@ async def chat_handler(websocket):
         forget_blobs(websocket)
         await forget_uploads(websocket)
         if forget_online(user["id"], websocket):
-            await announce_presence(user["id"], False)
+            # Отметку ставим, только когда закрылось последнее окно: пока
+            # человек сидит с телефона, он всё ещё в сети
+            seen = await storage.touch_user(user["id"])
+            await announce_presence(user["id"], False, seen=seen)
         print(f"[Сервер]: Вышел {user['login']}. Активных: {len(connected_clients)}")
 
 

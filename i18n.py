@@ -214,6 +214,16 @@ ENGLISH = {
     "Найдено: {count}": "Found: {count}",
     "По запросу «{query}» ничего нет": "Nothing found for “{query}”",
     "{name} печатает…": "{name} is typing…",
+
+    # --- кто в сети и когда заходил
+    "в сети": "online",
+    "был(а) в сети {when}": "last seen {when}",
+    "участников: {count}": "members: {count}",
+    "только что": "just now",
+    "сегодня в {time}": "today at {time}",
+    "вчера в {time}": "yesterday at {time}",
+    "{date} в {time}": "{date} at {time}",
+    "давно": "a long time ago",
     "Сегодня": "Today",
     "Я": "Me",
     "Вы": "You",

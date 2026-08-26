@@ -278,8 +278,10 @@ def people_message(items, online):
     return encode({"type": "people", "items": items, "online": online})
 
 
-def presence_message(user_id, online):
-    return encode({"type": "presence", "user": user_id, "online": online})
+def presence_message(user_id, online, seen=None):
+    """Кто пришёл или ушёл. Уходя, человек оставляет отметку времени."""
+    return encode({"type": "presence", "user": user_id, "online": online,
+                   "seen": seen})
 
 
 def deleted_message(conversation, message_id):

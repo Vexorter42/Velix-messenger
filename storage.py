@@ -225,10 +225,10 @@ def _row_to_user(row):
     if row is None:
         return None
     return {"id": row[0], "login": row[1], "name": row[2],
-            "bio": row[3], "avatar": row[4]}
+            "bio": row[3], "avatar": row[4], "seen": row[5]}
 
 
-USER_FIELDS = "id, login, name, bio, avatar_id"
+USER_FIELDS = "id, login, name, bio, avatar_id, last_seen"
 
 
 def _create_user_sync(login, password_hash, name, recovery_hash=None):
@@ -284,7 +284,7 @@ def _user_with_hash_sync(login):
         ).fetchone()
     if row is None:
         return None, None
-    return _row_to_user(row[:5]), row[5]
+    return _row_to_user(row[:6]), row[6]
 
 
 def _user_by_id_sync(user_id):
@@ -308,7 +308,8 @@ def _remember_token_sync(token, user_id):
 def _user_by_token_sync(token):
     with _lock:
         row = _connection.execute(
-            f"SELECT u.id, u.login, u.name, u.bio, u.avatar_id FROM sessions s"
+            f"SELECT u.id, u.login, u.name, u.bio, u.avatar_id, u.last_seen"
+            f" FROM sessions s"
             f" JOIN users u ON u.id = s.user_id WHERE s.token = ?", (token,)
         ).fetchone()
         if row is not None:
@@ -1198,10 +1199,25 @@ async def people():
     return await asyncio.to_thread(_people_sync)
 
 
+def _touch_user_sync(user_id):
+    """Отмечает, что человек был здесь только что. Возвращает эту отметку."""
+    stamp = now()
+    with _lock:
+        _connection.execute("UPDATE users SET last_seen = ? WHERE id = ?",
+                            (stamp, user_id))
+        _connection.commit()
+    return stamp
+
+
 def _first_user_sync():
     with _lock:
         row = _connection.execute("SELECT MIN(id) FROM users").fetchone()
     return row[0] if row else None
+
+
+async def touch_user(user_id):
+    """Отметка «был здесь»: ставится, когда человек уходит из сети."""
+    return await asyncio.to_thread(_touch_user_sync, user_id)
 
 
 async def first_user():

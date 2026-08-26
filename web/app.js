@@ -34,6 +34,8 @@ let oldest = null;
 let hasOlder = false;
 let typingTimer = null;
 let typingSent = 0;
+let typingWho = null;          // кто печатает прямо сейчас
+const seen = new Map();        // кто когда был в сети последний раз
 const rows = new Map();        // номер сообщения -> его ряд в ленте
 const reactions = new Map();   // номер сообщения -> {смайлик: [кто поставил]}
 const reactionRows = new Map();// куда рисовать реакции
@@ -554,13 +556,62 @@ function newGroup() {
 function onPeople(message) {
   people = message.items || [];
   online = new Set(message.online || []);
+  for (const person of people) if (person.seen) seen.set(person.id, person.seen);
   drawList();
+  updateStatus();
 }
 
 function onPresence(message) {
-  if (message.online) online.add(message.user);
-  else online.delete(message.user);
+  if (message.online) {
+    online.add(message.user);
+  } else {
+    online.delete(message.user);
+    if (message.seen) seen.set(message.user, message.seen);
+  }
   drawList();
+  updateStatus();
+}
+
+// Строчка под названием переписки: кто печатает, кто в сети, когда заходил
+function updateStatus() {
+  const item = conversations.find((one) => one.id === conversation) || {};
+  const status = $("status");
+  if (!status) return;
+
+  if (typingWho) {
+    status.textContent = t("{name} печатает…", {name: typingWho});
+    return;
+  }
+  if (item.kind === "direct") {
+    status.textContent = online.has(item.user)
+        ? t("в сети")
+        : t("был(а) в сети {when}", {when: seenText(seen.get(item.user))});
+    return;
+  }
+  if (item.kind === "group" && (item.members || []).length) {
+    status.textContent = t("участников: {count}", {count: item.members.length});
+    return;
+  }
+  status.textContent = "";
+}
+
+function seenText(stamp) {
+  if (!stamp) return t("давно");
+  const when = new Date(stamp);
+  if (Number.isNaN(when.getTime())) return t("давно");
+
+  const now = new Date();
+  if (now - when < 90 * 1000) return t("только что");
+
+  const clock = when.toTimeString().slice(0, 5);
+  const днями = (day) => new Date(day.getFullYear(), day.getMonth(), day.getDate());
+  const разница = Math.round((днями(now) - днями(when)) / 86400000);
+  if (разница <= 0) return t("сегодня в {time}", {time: clock});
+  if (разница === 1) return t("вчера в {time}", {time: clock});
+  if (when.getFullYear() === now.getFullYear()) {
+    return t("{date} в {time}", {date: monthDay(when), time: clock});
+  }
+  return when.toLocaleDateString();
 }
 
 function drawList() {
@@ -680,6 +731,8 @@ function openConversation(id, title) {
   paintAvatar($("chat-avatar"), title || t("Общий чат"),
               (conversations.find((c) => c.id === id) || {}).avatar);
   show("chat");
+  typingWho = null;
+  updateStatus();
   send({type: "open", conversation: id});
 }
 
@@ -1094,9 +1147,10 @@ function onDeleted(message) {
 
 function onTyping(message) {
   if (message.conversation !== conversation) return;
-  $("status").textContent = t("{name} печатает…", {name: message.nick});
+  typingWho = message.nick;
+  updateStatus();
   clearTimeout(typingTimer);
-  typingTimer = setTimeout(() => { $("status").textContent = ""; }, 3000);
+  typingTimer = setTimeout(() => { typingWho = null; updateStatus(); }, 3000);
 }
 
 function onSearch(message) {

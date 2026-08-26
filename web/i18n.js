@@ -112,6 +112,16 @@ const EN = {
   ", 3 — удалить": ", 3 — delete",
   "Ответ {name}: ": "Reply to {name}: ",
   "{name} печатает…": "{name} is typing…",
+
+  // --- кто в сети и когда заходил
+  "в сети": "online",
+  "был(а) в сети {when}": "last seen {when}",
+  "участников: {count}": "members: {count}",
+  "только что": "just now",
+  "сегодня в {time}": "today at {time}",
+  "вчера в {time}": "yesterday at {time}",
+  "{date} в {time}": "{date} at {time}",
+  "давно": "a long time ago",
   "Найдено: {count}": "Found: {count}",
   "По запросу «{query}» ничего нет": "Nothing found for “{query}”",
   "«{name}» больше 25 МБ, сервер такое не принимает.":

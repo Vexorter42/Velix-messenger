@@ -470,12 +470,14 @@ class VelixApp(ctk.CTk):
         self.conversations = []        # что показывать в списке слева
         self.people = []               # все участники
         self.online = set()            # кто сейчас в сети
+        self.seen = {}                 # кто когда был в сети последний раз
         self.reply_to = None           # на какое сообщение отвечаем
         self.quotes = {}               # выжимки цитируемых сообщений
         self.rows = {}                 # номер сообщения -> его ряд в ленте
         self.oldest = None             # самое старое загруженное сообщение
         self.has_older = False         # есть ли что подгружать выше
         self.typing_until = 0          # до какого времени показывать «печатает»
+        self.typing_who = None         # кто именно печатает
         self.pending_direct = False    # ждём номер только что созданной личной
         self.reactions = {}            # номер сообщения -> {смайлик: [кто]}
         self.reaction_rows = {}        # где рисовать реакции у сообщения
@@ -544,6 +546,7 @@ class VelixApp(ctk.CTk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.bind("<Configure>", self._on_resize)
         self.after(60, self._pump_events)
+        self.after(60000, self._keep_subtitle_fresh)
 
     def _apply_icon(self):
         """Ставит иконку окна, если файл на месте."""
@@ -1890,6 +1893,7 @@ class VelixApp(ctk.CTk):
         self.conversations = []
         self.people = []
         self.online = set()
+        self.seen = {}
         self.quotes = {}
         self.loaded_items = []
         self._clear_messages()
@@ -1905,9 +1909,7 @@ class VelixApp(ctk.CTk):
 
         self._refresh_me()
         self.status_dot.configure(text_color=ONLINE)
-        lock = "🔒 " if self.secure else t("⚠ без шифрования · ")
-        self.header_subtitle.configure(
-            text=lock + t("вы вошли как {name}", name=self.user.get("name")))
+        self._refresh_subtitle()
         if not self.secure:
             self._service_label(
                 t("Соединение без шифрования: сервер не умеет wss://. "
@@ -1962,7 +1964,11 @@ class VelixApp(ctk.CTk):
         elif kind == "people":
             self.people = message.get("items") or []
             self.online = set(message.get("online") or [])
+            for person in self.people:
+                if person.get("seen"):
+                    self.seen[person["id"]] = person["seen"]
             self._refresh_side_list()
+            self._refresh_subtitle()
         elif kind == "presence":
             self._on_presence(message)
         elif kind == "typing":
@@ -2128,7 +2134,10 @@ class VelixApp(ctk.CTk):
             self.online.add(user_id)
         else:
             self.online.discard(user_id)
+            if message.get("seen"):
+                self.seen[user_id] = message["seen"]
         self._refresh_side_list()
+        self._refresh_subtitle()
 
     def _notify_if_hidden(self, nickname, text):
         """Пока окно в трее, о новых сообщениях сообщаем всплывашкой."""
@@ -2528,6 +2537,64 @@ class VelixApp(ctk.CTk):
         title = self._title_of(item)
         self.header_title.configure(text=title)
         self._paint_avatar(self.header_avatar, title, (item or {}).get("avatar"), 40)
+        self._refresh_subtitle()
+
+    def _refresh_subtitle(self):
+        """Строчка под названием переписки.
+
+        Человеку важнее всего, здесь ли собеседник: печатает ли он сейчас,
+        в сети ли, а если нет — когда заходил. Всё остальное (кто мы и по
+        какому адресу вошли) видно слева, в углу со своим именем.
+        """
+        if not hasattr(self, "header_subtitle"):
+            return
+        self.header_subtitle.configure(text=self._presence_line())
+
+    def _presence_line(self):
+        предупреждение = "" if self.secure else t("⚠ без шифрования · ")
+        item = next((c for c in self.conversations
+                     if c["id"] == self.conversation), None) or {}
+
+        if self.typing_who and time.monotonic() < self.typing_until:
+            return предупреждение + t("{name} печатает…", name=self.typing_who)
+
+        if item.get("kind") == "direct":
+            собеседник = item.get("user")
+            if собеседник in self.online:
+                return предупреждение + t("в сети")
+            return предупреждение + t("был(а) в сети {when}",
+                                      when=self._seen_text(self.seen.get(собеседник)))
+
+        if item.get("kind") == "group":
+            сколько = len(item.get("members") or [])
+            if сколько:
+                return предупреждение + t("участников: {count}", count=сколько)
+
+        return предупреждение + t("вы вошли как {name}", name=self.user.get("name"))
+
+    def _seen_text(self, stamp):
+        """«только что», «вчера в 21:15», «24 августа в 22:31»."""
+        if not stamp:
+            return t("давно")
+        когда = local_time(stamp)
+        сейчас = datetime.now().astimezone()
+        if (сейчас - когда).total_seconds() < 90:
+            return t("только что")
+        разница = (сейчас.date() - когда.date()).days
+        часы = когда.strftime("%H:%M")
+        if разница <= 0:
+            return t("сегодня в {time}", time=часы)
+        if разница == 1:
+            return t("вчера в {time}", time=часы)
+        if когда.year == сейчас.year:
+            return t("{date} в {time}",
+                     date=i18n.month_day(когда.day, когда.month), time=часы)
+        return когда.strftime("%d.%m.%Y")
+
+    def _keep_subtitle_fresh(self):
+        """«только что» со временем должно становиться «сегодня в 21:15»."""
+        self._refresh_subtitle()
+        self.after(60000, self._keep_subtitle_fresh)
 
     def _clear_messages(self):
         for widget in self.messages.winfo_children():
@@ -3040,15 +3107,14 @@ class VelixApp(ctk.CTk):
         if message.get("conversation") != self.conversation:
             return
         self.typing_until = time.monotonic() + 3
-        self.header_subtitle.configure(
-            text=t("{name} печатает…", name=message.get("nick")))
+        self.typing_who = message.get("nick")
+        self._refresh_subtitle()
         self.after(3200, self._clear_typing)
 
     def _clear_typing(self):
         if time.monotonic() >= self.typing_until:
-            lock = "🔒 " if self.secure else t("⚠ без шифрования · ")
-            self.header_subtitle.configure(
-                text=lock + t("вы вошли как {name}", name=self.user.get("name")))
+            self.typing_who = None
+            self._refresh_subtitle()
 
     def _notify_typing(self, event=None):
         """Сообщаем собеседникам, что набираем текст, но не чаще раза в 2 секунды."""
