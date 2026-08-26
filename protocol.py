@@ -26,8 +26,9 @@ DEFAULT_VIDEO_LIMIT = 1024 * 1024 * 1024
 # памяти немного, и кадров не миллион
 CHUNK_SIZE = 4 * 1024 * 1024
 
-# Обновление приложения приезжает одним куском и весит заметно больше
-# вложения, поэтому запас считаем по нему
+# Обновление приложения приезжает кусками, как и большое вложение: со
+# встроенным проигрывателем видео сборка перестала помещаться в один кадр.
+# Число осталось как верхний предел здравого смысла для самой сборки
 MAX_UPDATE_SIZE = 80 * 1024 * 1024
 
 # Запас поверх лимита: в кадр кроме файла попадают и служебные байты
@@ -354,8 +355,10 @@ def update_request():
     return encode({"type": "update"})
 
 
-def update_header(version, size):
-    return encode({"type": "update_blob", "version": version, "size": size})
+def update_header(version, size, parts=1):
+    """Описание сборки. Дальше идут parts кадров с содержимым."""
+    return encode({"type": "update_blob", "version": version, "size": size,
+                   "parts": max(1, int(parts))})
 
 
 def _trouble(kind, text, code, args):

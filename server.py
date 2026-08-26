@@ -264,10 +264,18 @@ async def handle_update(websocket):
         return
 
     data = await asyncio.to_thread((UPDATES_DIR / "Velix.exe").read_bytes)
+    куски = [data[место:место + protocol.CHUNK_SIZE]
+             for место in range(0, len(data), protocol.CHUNK_SIZE)] or [b""]
     print(f"[Сервер]: Отдаём обновление {update['version']} "
-          f"({protocol.human_size(len(data))})")
-    await websocket.send(protocol.update_header(update["version"], len(data)))
-    await websocket.send(data)
+          f"({protocol.human_size(len(data))}, кусков: {len(куски)})")
+
+    # Куски идут подряд, без чужих кадров между ними: клиент считает их
+    # по описанию и остановится ровно там, где надо
+    async with blob_pen(websocket):
+        await websocket.send(protocol.update_header(
+            update["version"], len(data), len(куски)))
+        for кусок in куски:
+            await websocket.send(кусок)
 
 
 async def handle_open(websocket, user, message):

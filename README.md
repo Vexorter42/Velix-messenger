@@ -36,6 +36,10 @@ The server is a single `python server.py` away.
 |---|---|
 | 💬 **Conversations** | Groups with their own name and photo, plus one-to-one direct chats. A group is marked with a badge, and people can be invited into it at any time. Unread messages show up as a red count next to the name. A group is deleted by whoever created it. Reply, react, pin, forward, copy, delete-your-own, full-text search, typing indicator, who-is-online — from a message menu that opens on right-click or long-press. |
 | ✓✓ **Delivery ticks** | One grey tick — the server took it. Two grey — it reached the other side. Two blue — it was read. In a group one reader is enough: people read at their own pace, and waiting for the quietest member means waiting forever. |
+| ▶ **Video inside** | A clip plays right in the window — with sound, pause, seeking and volume; on the phone and on the web the system player does the same job. No external programs, no “save it to watch it”. |
+| 🖼 **Gallery** | Full screen pages through the conversation: arrows and the wheel in the window, a swipe on the phone and on the web. The order is the order of the feed, video pages alongside photos, and the corner shows which attachment of how many is open. |
+| 👀 **Who is here** | Under the conversation title you can see whether the other person is online, typing right now, or was last seen yesterday at 21:15. For groups the same line says how many people are inside. |
+| ✨ **Motion** | Messages fade and slide in, scrolling eases to a stop, rows light up under the pointer, badges pop. Everything is short: the interface should feel alive, not slow. |
 | 📷 **Attachments** | Photos, GIFs (animated in place), video up to 1 GB and any other file up to 500 MB — big ones travel in chunks instead of landing in memory whole. Open a photo full-window and zoom it with the wheel, by dragging, or with the buttons. Paste a screenshot straight from the clipboard. Images are compressed server-side — a 7.5 MB phone photo lands at ~400 KB. |
 | 👤 **Accounts** | Invite-only registration, scrypt password hashing, session tokens, brute-force lockout. A recovery code instead of email resets. Profile with a name, a bio and a photo. Everyone has a `@username` — that is how you find them in search. |
 | 🔒 **Encryption** | TLS 1.3 (`wss://`) with a Let's Encrypt certificate. The client falls back to plain `ws://` only if the server has no certificate — and says so on screen. |
@@ -94,8 +98,13 @@ the normal way.
 Building it yourself needs `pip install pyinstaller`:
 
 ```bash
-python -m PyInstaller --noconfirm --onefile --windowed --name Velix --icon icon.ico --add-data "icon.ico;." --collect-all customtkinter --collect-all darkdetect gui.py
+python -m PyInstaller --noconfirm --onefile --windowed --name Velix --icon icon.ico --add-data "icon.ico;." --collect-all customtkinter --collect-all darkdetect --collect-all ffpyplayer gui.py
 ```
+
+`ffpyplayer` is what plays video inside the window: it carries ffmpeg and SDL
+with it, which is why the build weighs close to a hundred megabytes. Built
+without it, the window behaves as before and offers to open the clip in the
+system player.
 
 The installer is compiled from `installer.iss` with Inno Setup 6, with the built
 `Velix.exe` sitting next to it:
