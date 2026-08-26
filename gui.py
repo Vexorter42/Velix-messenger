@@ -30,6 +30,7 @@ from PIL import Image, ImageDraw, ImageSequence
 import autostart
 import i18n
 import mediacache
+import videoplayer
 import protocol
 import store
 import tray as tray_module
@@ -488,6 +489,12 @@ class VelixApp(ctk.CTk):
         self.pending_group = False     # ждём номер только что созданной группы
         self.kept_media = {}           # содержимое картинок для копирования
         self.viewer = None             # открытый просмотр картинки
+        self.gallery = []              # что можно листать в этой переписке
+        self.viewer_items = []         # что листаем в открытом просмотре
+        self.viewer_at = 0             # какое вложение сейчас на экране
+        self.viewer_stage = None       # где рисуется само вложение
+        self.viewer_counter = None     # «3 / 12» в углу просмотра
+        self.video = None              # проигрыватель, если открыт ролик
         self.menu = None               # открытое меню сообщения
         self.pinned = {}               # переписка -> закреплённое сообщение
         self.unread = {}               # переписка -> сколько пришло без нас
@@ -2601,6 +2608,7 @@ class VelixApp(ctk.CTk):
             widget.destroy()
         self.rows.clear()
         self.reaction_rows.clear()
+        self.gallery.clear()
         self.last_sender = None
         self.current_date = None
         self.oldest = None
@@ -3348,9 +3356,23 @@ class VelixApp(ctk.CTk):
 
     # ----------------------------------------------------------- вложения
 
+    def _remember_media(self, kind, media_id, name):
+        """Копит список того, что можно листать в полном экране.
+
+        Порядок — как в ленте: открыв снимок посреди переписки, человек
+        ждёт, что стрелка влево покажет предыдущий, а не что-нибудь ещё.
+        """
+        if not media_id or kind not in ("image", "gif", "video"):
+            return
+        if any(one["media"] == media_id for one in self.gallery):
+            return
+        self.gallery.append({"media": media_id, "kind": kind,
+                             "name": name or t("вложение")})
+
     def _add_media_bubble(self, nickname, own, kind, media_id, name, size,
                           time_text=None, data=None, avatar=None, item=None):
         self._clear_hint()
+        self._remember_media(kind, media_id, name)
         bubble, _ = self._new_bubble(nickname, own, avatar)
         item = item or {}
         self._add_forward_mark(bubble, item)
@@ -3401,12 +3423,19 @@ class VelixApp(ctk.CTk):
                                hover_color=ACCENT_HOVER, text_color=ON_ACCENT)
         button.pack(fill="x", pady=(6, 2))
 
+        кино = kind == "video" and videoplayer.available()
+        if кино:
+            button.configure(text=t("▶ Смотреть"))
+
         if data is not None:
-            button.configure(command=lambda: self._open_media(name, data))
+            button.configure(command=(
+                lambda: self._show_full(data, kind, media_id)) if кино
+                else (lambda: self._open_media(name, data)))
         elif media_id:
             def request():
                 button.configure(text=t("Загружаю…"), state="disabled")
-                self.pending_media[media_id] = ("file", button, name)
+                self.pending_media[media_id] = (
+                    "watch" if кино else "file", button, name)
                 self._ask_media(media_id)
             button.configure(command=request)
         else:
@@ -3465,7 +3494,10 @@ class VelixApp(ctk.CTk):
             return
 
         mode, widget, extra = waiting
-        if mode != "copy" and (widget is None or not widget.winfo_exists()):
+        if mode == "viewer":
+            if self.viewer is None:
+                return          # просмотр уже закрыли — рисовать некуда
+        elif mode != "copy" and (widget is None or not widget.winfo_exists()):
             # Пузырь исчез, пока картинка ехала — человек ушёл в другую
             # переписку. Рисовать в него нельзя: Tk бросит ошибку, и на
             # этом разбор пришедшего когда-то умирал навсегда
@@ -3475,6 +3507,12 @@ class VelixApp(ctk.CTk):
             self._copy_bytes(extra, data)
         elif mode == "picture":
             self._show_picture(widget, extra, data, media_id)
+        elif mode == "viewer":
+            self._viewer_arrived(media_id, data)
+        elif mode == "watch":
+            widget.configure(text=t("▶ Смотреть"), state="normal",
+                             command=lambda: self._show_full(data, "video", media_id))
+            self._show_full(data, "video", media_id)
         else:
             widget.configure(text=t("Открыть"), state="normal",
                              command=lambda: self._open_media(extra, data))
@@ -3502,36 +3540,49 @@ class VelixApp(ctk.CTk):
         self.images.extend(frames)
         holder.configure(text="", image=frames[0], cursor="hand2")
         holder.bind("<Button-1>",
-                    lambda event, bytes_=data, k=kind: self._show_full(bytes_, k))
+                    lambda event, bytes_=data, k=kind, m=media_id:
+                    self._show_full(bytes_, k, m))
 
         if len(frames) > 1 and image is not None:
             delay = max(30, int(image.info.get("duration", 80)))
             self.animations[holder] = frames
             self._animate(holder, frames, 0, delay)
 
-    def _show_full(self, data, kind):
-        """Открывает картинку во всё окно приложения."""
+    def _show_full(self, data, kind, media_id=None):
+        """Полный экран: снимок с приближением или ролик прямо в окне.
+
+        Листать можно всё, что есть в этой переписке: стрелками, колесом
+        по краям и кнопками. Открытое не из ленты (аватарка, например)
+        листать не с чем — тогда в списке одна запись.
+        """
         # Второй просмотр поверх первого не нужен: закрываем прежний
         if self.viewer is not None:
             self._close_full(self.viewer)
+
+        self.viewer_items = [dict(one) for one in self.gallery] if media_id else []
+        место = next((n for n, one in enumerate(self.viewer_items)
+                      if one.get("media") == media_id), None)
+        if место is None:
+            self.viewer_items = [{"media": media_id, "kind": kind,
+                                  "name": t("вложение"), "data": data}]
+            место = 0
+        else:
+            self.viewer_items[место]["data"] = data
+        self.viewer_at = место
 
         overlay = ctk.CTkFrame(self, fg_color=("#101820", "#05080c"))
         self.viewer = overlay
         overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
 
-        box = (max(self.winfo_width() - 80, 240), max(self.winfo_height() - 80, 240))
-        try:
-            image = Image.open(io.BytesIO(data))
-            frames = self._prepare_frames(image, kind, box)
-        except Exception as error:
-            self._close_full(overlay)
-            self._service_label(
-                t("не удалось показать картинку: {error}", error=error))
-            return
+        # Сцена — под всей остальной обвязкой: её содержимое меняется при
+        # каждом перелистывании, а кнопки остаются на месте
+        self.viewer_stage = ctk.CTkFrame(overlay, fg_color="transparent")
+        self.viewer_stage.place(relx=0, rely=0, relwidth=1, relheight=1)
 
-        self.images.extend(frames)
-        picture = ctk.CTkLabel(overlay, text="", image=frames[0])
-        picture.place(relx=0.5, rely=0.5, anchor="center")
+        self.viewer_counter = ctk.CTkLabel(overlay, text="", font=self.font_small,
+                                           text_color=MUTED, fg_color=INPUT_BG,
+                                           corner_radius=10, height=26)
+        self.viewer_counter.place(relx=0.0, rely=0.0, x=20, y=20, anchor="nw")
 
         ctk.CTkButton(overlay, text="✕", width=36, height=36, corner_radius=18,
                       font=self.font_button, fg_color=INPUT_BG,
@@ -3539,18 +3590,213 @@ class VelixApp(ctk.CTk):
                       command=lambda: self._close_full(overlay)).place(
             relx=1.0, rely=0.0, x=-20, y=20, anchor="ne")
 
+        if len(self.viewer_items) > 1:
+            for знак, куда, сдвиг, край in (("‹", 0.0, 20, "w"), ("›", 1.0, -20, "e")):
+                ctk.CTkButton(overlay, text=знак, width=44, height=64,
+                              corner_radius=14, font=self.font_button,
+                              fg_color=INPUT_BG, hover_color=SEPARATOR,
+                              text_color=TEXT,
+                              command=lambda шаг=1 if край == "e" else -1:
+                              self._viewer_step(шаг)).place(
+                    relx=куда, rely=0.5, x=сдвиг, anchor=край)
+
+        self.bind("<Escape>", lambda event: self._close_full(overlay))
+        self.bind("<Left>", lambda event: self._viewer_step(-1))
+        self.bind("<Right>", lambda event: self._viewer_step(1))
+        self._viewer_paint()
+
+    def _viewer_step(self, шаг):
+        """Следующее или предыдущее вложение переписки."""
+        if self.viewer is None or len(self.viewer_items) < 2:
+            return "break"
+        self.viewer_at = (self.viewer_at + шаг) % len(self.viewer_items)
+        self._viewer_paint()
+        return "break"
+
+    def _viewer_arrived(self, media_id, data):
+        """Вложение доехало, пока человек смотрел на него в полном экране."""
+        if self.viewer is None or not self.viewer_items:
+            return
+        for one in self.viewer_items:
+            if one.get("media") == media_id:
+                one["data"] = data
+        if self.viewer_items[self.viewer_at].get("media") == media_id:
+            self._viewer_paint()
+
+    def _viewer_paint(self):
+        """Рисует то вложение, на котором стоим."""
+        if self.viewer is None or not self.viewer.winfo_exists():
+            return
+        self._stop_video()
+        for widget in self.viewer_stage.winfo_children():
+            widget.destroy()
+
+        item = self.viewer_items[self.viewer_at]
+        self.viewer_counter.configure(
+            text=f"{self.viewer_at + 1} / {len(self.viewer_items)}"
+            if len(self.viewer_items) > 1 else "")
+
+        данные = (item.get("data") or self.kept_media.get(item.get("media"))
+                  or mediacache.get(item.get("media")))
+        if not данные:
+            ctk.CTkLabel(self.viewer_stage, text=t("Загружаю…"),
+                         font=self.font_body, text_color=MUTED).place(
+                relx=0.5, rely=0.5, anchor="center")
+            if item.get("media"):
+                self.pending_media[item["media"]] = ("viewer", None, item["kind"])
+                self._ask_media(item["media"])
+            return
+        item["data"] = данные
+
+        box = (max(self.winfo_width() - 140, 240),
+               max(self.winfo_height() - 160, 200))
+        if item.get("kind") == "video":
+            self._viewer_video(данные, item, box)
+        else:
+            self._viewer_picture(данные, item, box)
+
+    def _viewer_picture(self, данные, item, box):
+        """Снимок или гифка во весь экран."""
+        kind = item.get("kind")
+        try:
+            image = Image.open(io.BytesIO(данные))
+            frames = self._prepare_frames(image, kind, box)
+        except Exception as error:
+            ctk.CTkLabel(self.viewer_stage, font=self.font_body, text_color=MUTED,
+                         text=t("не удалось показать картинку: {error}",
+                                error=error)).place(relx=0.5, rely=0.5,
+                                                    anchor="center")
+            return
+
+        self.images.extend(frames)
+        picture = ctk.CTkLabel(self.viewer_stage, text="", image=frames[0])
+        picture.place(relx=0.5, rely=0.5, anchor="center")
+
         if len(frames) > 1:
             delay = max(30, int(image.info.get("duration", 80)))
             self.animations[picture] = frames
             self._animate(picture, frames, 0, delay)
             # Гифку не приближаем: она и так живёт своей жизнью
-            for widget in (overlay, picture):
-                widget.configure(cursor="hand2")
-                widget.bind("<Button-1>", lambda event: self._close_full(overlay))
-            self.bind("<Escape>", lambda event: self._close_full(overlay))
+            picture.configure(cursor="hand2")
+            picture.bind("<Button-1>", lambda event: self._close_full(self.viewer))
             return
 
-        self._make_zoom(overlay, picture, data, box)
+        self._make_zoom(self.viewer_stage, picture, данные, box)
+
+    def _viewer_video(self, данные, item, box):
+        """Ролик прямо в окне: кадры, звук, пауза и перемотка."""
+        путь = self._video_file(item.get("media"), item.get("name"), данные)
+        if путь is None or not videoplayer.available():
+            ctk.CTkButton(self.viewer_stage, text=t("Открыть"), height=36,
+                          corner_radius=10, font=self.font_button, fg_color=ACCENT,
+                          hover_color=ACCENT_HOVER, text_color=ON_ACCENT,
+                          command=lambda: self._open_media(
+                              item.get("name") or "video.mp4", данные)).place(
+                relx=0.5, rely=0.5, anchor="center")
+            return
+
+        экран = tkinter.Label(self.viewer_stage, background="#05080c", text="",
+                              borderwidth=0, highlightthickness=0)
+        экран.place(relx=0.5, rely=0.45, anchor="center")
+
+        пульт = ctk.CTkFrame(self.viewer_stage, fg_color=INPUT_BG, corner_radius=14)
+        пульт.place(relx=0.5, rely=1.0, y=-20, anchor="s")
+
+        играть = ctk.CTkButton(пульт, text="⏸", width=40, height=32,
+                               corner_radius=10, font=self.font_button,
+                               fg_color=SEPARATOR, hover_color=ACCENT,
+                               text_color=TEXT)
+        играть.pack(side="left", padx=(10, 6), pady=8)
+
+        полоса = ctk.CTkSlider(пульт, from_=0, to=1, width=320, height=16,
+                               button_color=ACCENT, button_hover_color=ACCENT_HOVER,
+                               progress_color=ACCENT)
+        полоса.set(0)
+        полоса.pack(side="left", padx=6, pady=8)
+
+        часы = ctk.CTkLabel(пульт, text="0:00 / 0:00", font=self.font_small,
+                            text_color=MUTED, width=92)
+        часы.pack(side="left", padx=6, pady=8)
+
+        ctk.CTkLabel(пульт, text="🔊", font=self.font_small,
+                     text_color=MUTED).pack(side="left", padx=(6, 0), pady=8)
+        громкость = ctk.CTkSlider(пульт, from_=0, to=1, width=80, height=16,
+                                  button_color=ACCENT,
+                                  button_hover_color=ACCENT_HOVER,
+                                  progress_color=ACCENT)
+        громкость.set(1.0)
+        громкость.pack(side="left", padx=(4, 12), pady=8)
+
+        тянут = [False]           # держит ли человек полосу перемотки
+
+        def часики(секунды):
+            секунды = max(int(секунды or 0), 0)
+            return f"{секунды // 60}:{секунды % 60:02d}"
+
+        def на_кадре(игрок):
+            if not часы.winfo_exists():
+                return
+            if игрок.duration > 0 and not тянут[0]:
+                полоса.set(min(игрок.position / игрок.duration, 1.0))
+            часы.configure(text=f"{часики(игрок.position)} / "
+                                f"{часики(игрок.duration)}")
+
+        def в_конце(игрок):
+            if играть.winfo_exists():
+                играть.configure(text="⟳")
+
+        def переключить(event=None):
+            if self.video is None:
+                return
+            self.video.toggle()
+            играть.configure(text="⏵" if self.video.paused else "⏸")
+
+        def взяли_полосу(event):
+            тянут[0] = True
+
+        def отпустили_полосу(event):
+            тянут[0] = False
+            if self.video is not None:
+                self.video.seek_to(полоса.get())
+                играть.configure(text="⏵" if self.video.paused else "⏸")
+
+        играть.configure(command=переключить)
+        полоса.bind("<Button-1>", взяли_полосу, add="+")
+        полоса.bind("<ButtonRelease-1>", отпустили_полосу, add="+")
+        громкость.configure(command=lambda значение: self.video
+                            and self.video.set_volume(значение))
+        экран.configure(cursor="hand2")
+        экран.bind("<Button-1>", переключить)
+        self.bind("<space>", переключить)
+
+        self.video = videoplayer.VideoBox(экран, путь, box, on_tick=на_кадре,
+                                          on_end=в_конце)
+        if self.video.error:
+            экран.destroy()
+            пульт.destroy()
+            ctk.CTkLabel(self.viewer_stage, font=self.font_body, text_color=MUTED,
+                         text=t("не удалось показать видео: {error}",
+                                error=self.video.error)).place(
+                relx=0.5, rely=0.5, anchor="center")
+
+    def _video_file(self, media_id, name, данные):
+        """Кладёт ролик во временный файл: проигрывателю нужен путь."""
+        folder = Path(tempfile.gettempdir()) / "velix"
+        try:
+            folder.mkdir(exist_ok=True)
+            основа = "".join(буква for буква in str(media_id or "")
+                             if буква.isalnum())[:40] or "video"
+            путь = folder / f"{основа}{Path(name or '').suffix[:8] or '.mp4'}"
+            if not путь.exists() or путь.stat().st_size != len(данные):
+                путь.write_bytes(данные)
+        except OSError:
+            return None
+        return путь
+
+    def _stop_video(self):
+        if self.video is not None:
+            self.video.close()
+            self.video = None
 
     def _make_zoom(self, overlay, picture, data, box):
         """Приближение картинки: колесо, перетаскивание, кнопки и клавиши.
@@ -3638,7 +3884,7 @@ class VelixApp(ctk.CTk):
             тащили = state["grab"] is not None and state["grab"][2]
             state["grab"] = None
             if not тащили and state["scale"] <= 1.0:
-                self._close_full(overlay)
+                self._close_full(self.viewer)
 
         кнопки = ctk.CTkFrame(overlay, fg_color="transparent")
         кнопки.place(relx=0.5, rely=1.0, y=-60, anchor="s")
@@ -3659,9 +3905,9 @@ class VelixApp(ctk.CTk):
                      lambda event: приблизить(2.0) if state["scale"] <= 1.0
                      else целиком())
         overlay.bind("<MouseWheel>", колесом)
-        overlay.bind("<Button-1>", lambda event: self._close_full(overlay))
+        overlay.bind("<Button-1>", lambda event: self._close_full(self.viewer))
 
-        self.bind("<Escape>", lambda event: self._close_full(overlay))
+        self.bind("<Escape>", lambda event: self._close_full(self.viewer))
         self.bind("<plus>", lambda event: приблизить(1.4))
         self.bind("<minus>", lambda event: приблизить(1 / 1.4))
         self.zoom = state          # проверкам нужно видеть, что происходит
@@ -3669,12 +3915,14 @@ class VelixApp(ctk.CTk):
 
 
     def _close_full(self, overlay):
-        """Закрывает просмотр картинки."""
+        """Закрывает просмотр вложения."""
+        self._stop_video()
         self.viewer = None
+        self.viewer_items = []
         self.zoom = None
-        self.unbind("<Escape>")
-        self.unbind("<plus>")
-        self.unbind("<minus>")
+        for клавиша in ("<Escape>", "<plus>", "<minus>", "<Left>", "<Right>",
+                        "<space>"):
+            self.unbind(клавиша)
         for widget in list(self.animations):
             if not widget.winfo_exists():
                 self.animations.pop(widget, None)

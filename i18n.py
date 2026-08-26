@@ -230,6 +230,8 @@ ENGLISH = {
 
     # --- вложения
     "загружаю картинку…": "loading image…",
+    "▶ Смотреть": "▶ Watch",
+    "не удалось показать видео: {error}": "could not play the video: {error}",
     "Открыть": "Open",
     "Загружаю…": "Loading…",
     "не удалось показать картинку: {error}": "could not show the image: {error}",

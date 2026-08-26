@@ -40,6 +40,7 @@ const rows = new Map();        // номер сообщения -> его ряд
 const reactions = new Map();   // номер сообщения -> {смайлик: [кто поставил]}
 const reactionRows = new Map();// куда рисовать реакции
 const mediaSlots = new Map();
+const gallery = [];            // что можно листать в полном экране
 const tickRows = new Map();    // номер (или свой временный) -> значок галочек
 const states = new Map();      // номер -> sent | delivered | read
 const keptMedia = new Map();   // содержимое картинок: их могут копировать
@@ -296,6 +297,15 @@ function handleBinary(buffer) {
   if (slot) {
     mediaSlots.delete(id);
     fillMedia(slot, header, url);
+  } else {
+    galleryUrl(id, url);
+  }
+
+  // Человек мог открыть полный экран раньше, чем вложение доехало
+  const viewer = document.querySelector(".viewer");
+  if (viewer && viewer.dataset.waiting === String(id)) {
+    viewer.remove();
+    showFull(url, header.kind, id);
   }
 }
 
@@ -743,6 +753,7 @@ function clearMessages() {
   emptyHint = null;
   rows.clear();
   reactionRows.clear();
+  gallery.length = 0;
   lastSender = null;
   currentDate = null;
   oldest = null;
@@ -919,6 +930,7 @@ function showItem(item, localUrl) {
   } else {
     const slot = document.createElement("div");
     bubble.append(slot);
+    rememberMedia(item.kind, item.media, item.name);
     if (localUrl) {
       fillMedia(slot, item, localUrl);
     } else {
@@ -1161,9 +1173,23 @@ function onSearch(message) {
   for (const item of items) showItem(item);
 }
 
+// Порядок листания — как в ленте: стрелка влево показывает то, что было выше
+function rememberMedia(kind, media, name) {
+  if (!media || !["image", "gif", "video"].includes(kind)) return;
+  if (gallery.some((one) => one.media === media)) return;
+  gallery.push({media, kind, name: name || t("вложение"), url: null});
+}
+
+function galleryUrl(media, url) {
+  const item = gallery.find((one) => one.media === media);
+  if (item) item.url = url;
+}
+
 function fillMedia(slot, header, url) {
   slot.className = "";
   slot.textContent = "";
+  rememberMedia(header.kind, header.media, header.name);
+  galleryUrl(header.media, url);
 
   if (header.kind === "image" || header.kind === "gif") {
     const picture = document.createElement("img");
@@ -1171,7 +1197,7 @@ function fillMedia(slot, header, url) {
     picture.alt = header.name || "";
     picture.loading = "lazy";
     picture.addEventListener("load", scrollDown);
-    picture.addEventListener("click", () => showFull(url));
+    picture.addEventListener("click", () => showFull(url, header.kind, header.media));
     slot.append(picture);
     if (header.media) keptMedia.set(header.media, url);
     return;
@@ -1182,6 +1208,8 @@ function fillMedia(slot, header, url) {
     video.src = url;
     video.controls = true;
     video.playsInline = true;
+    video.addEventListener("dblclick", () =>
+        showFull(url, "video", header.media));
     slot.append(video);
     return;
   }
@@ -1197,22 +1225,121 @@ function fillMedia(slot, header, url) {
   slot.append(link);
 }
 
-function showFull(url) {
-  // Картинка во весь экран: закрывается по нажатию в любом месте
+function showFull(url, kind, media) {
+  // Вложение во весь экран. Листается стрелками, колесом и пальцем;
+  // закрывается по нажатию мимо картинки, по крестику и по Escape
+  const прежний = document.querySelector(".viewer");
+  if (прежний) прежний.remove();
+
+  let список = media ? gallery.filter((one) => one.url || one.media === media) : [];
+  let место = список.findIndex((one) => one.media === media);
+  if (место < 0) {
+    список = [{media, kind, url, name: ""}];
+    место = 0;
+  }
+
   const viewer = document.createElement("div");
   viewer.className = "viewer";
 
-  const picture = document.createElement("img");
-  picture.src = url;
-  viewer.append(picture);
+  const stage = document.createElement("div");
+  stage.className = "viewer-stage";
+  viewer.append(stage);
+
+  const counter = document.createElement("div");
+  counter.className = "viewer-counter";
+  viewer.append(counter);
 
   const close = document.createElement("button");
   close.className = "viewer-close";
-  close.textContent = "✕";
+  close.textContent = "\u2715";
+  close.addEventListener("click", () => закрыть());
   viewer.append(close);
 
-  viewer.addEventListener("click", () => viewer.remove());
+  function шагнуть(куда) {
+    if (список.length < 2) return;
+    место = (место + куда + список.length) % список.length;
+    нарисовать();
+  }
+
+  function нарисовать() {
+    const item = список[место];
+    stage.textContent = "";
+    counter.textContent = список.length > 1
+        ? (место + 1) + " / " + список.length : "";
+
+    if (!item.url) {
+      const ждём = document.createElement("p");
+      ждём.className = "muted";
+      ждём.textContent = t("загружаю…");
+      stage.append(ждём);
+      if (item.media) {
+        viewer.dataset.waiting = String(item.media);
+        send({type: "fetch", id: item.media});
+      }
+      return;
+    }
+
+    viewer.dataset.waiting = "";
+    if (item.kind === "video") {
+      const video = document.createElement("video");
+      video.src = item.url;
+      video.controls = true;
+      video.autoplay = true;
+      video.playsInline = true;
+      stage.append(video);
+      return;
+    }
+
+    const picture = document.createElement("img");
+    picture.src = item.url;
+    picture.alt = item.name || "";
+    stage.append(picture);
+  }
+
+  if (список.length > 1) {
+    for (const пара of [["\u2039", -1], ["\u203a", 1]]) {
+      const arrow = document.createElement("button");
+      arrow.className = "viewer-arrow " + (пара[1] < 0 ? "left" : "right");
+      arrow.textContent = пара[0];
+      arrow.addEventListener("click", (event) => {
+        event.stopPropagation();
+        шагнуть(пара[1]);
+      });
+      viewer.append(arrow);
+    }
+  }
+
+  function поклавише(event) {
+    if (event.key === "Escape") закрыть();
+    else if (event.key === "ArrowLeft") шагнуть(-1);
+    else if (event.key === "ArrowRight") шагнуть(1);
+  }
+
+  function закрыть() {
+    document.removeEventListener("keydown", поклавише);
+    viewer.remove();
+  }
+
+  // Палец: смахивание вбок листает, как в галерее телефона
+  let палец = null;
+  viewer.addEventListener("touchstart", (event) => {
+    палец = event.touches[0] ? event.touches[0].clientX : null;
+  }, {passive: true});
+  viewer.addEventListener("touchend", (event) => {
+    const конец = event.changedTouches[0];
+    if (палец === null || !конец) return;
+    const сдвиг = конец.clientX - палец;
+    палец = null;
+    if (Math.abs(сдвиг) > 60) шагнуть(сдвиг < 0 ? 1 : -1);
+  }, {passive: true});
+
+  viewer.addEventListener("click", (event) => {
+    if (event.target === viewer) закрыть();
+  });
+  document.addEventListener("keydown", поклавише);
+  viewer.velixStep = шагнуть;
   document.body.append(viewer);
+  нарисовать();
 }
 
 function scrollDown() {
