@@ -2538,6 +2538,10 @@ class VelixApp(ctk.CTk):
         self.current_date = None
         self.oldest = None
         self.empty_hint = None
+        # Прошлая переписка могла быть длинной. Не пересчитав область,
+        # лента останется прокрученной туда, где уже ничего нет
+        self._refit_feed()
+        self.messages._parent_canvas.yview_moveto(0.0)
 
     def _show_history(self, message):
         """Показывает пришедший кусок истории."""
@@ -3671,8 +3675,24 @@ class VelixApp(ctk.CTk):
         except OSError as error:
             self._service_label(t("Не удалось открыть файл: {error}", error=error))
 
+    def _refit_feed(self):
+        """Пересчитывает область прокрутки ленты по её нынешнему росту.
+
+        CustomTkinter трогает область только тогда, когда сама лента
+        меняет размер. Уйдя из переписки с высокими картинками в
+        короткую личную, область оставалась прежней — в тысячи пикселей.
+        Лента, прокрученная вниз, вставала далеко под последним
+        сообщением, и человек видел пустоту, хотя всё уже пришло.
+        """
+        полотно = self.messages._parent_canvas
+        область = полотно.bbox("all")
+        if область:
+            полотно.configure(scrollregion=область)
+        return область
+
     def _scroll_to_bottom(self):
         self.messages.update_idletasks()
+        self._refit_feed()
         self.messages._parent_canvas.yview_moveto(1.0)
 
 
