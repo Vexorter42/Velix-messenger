@@ -403,6 +403,100 @@ main#messages button.link { align-self: center; width: auto; padding: 8px 16px; 
   margin: 10px 0;
 }
 
+
+/* --- движение ---
+   Всё быстрое и короткое: полтора десятка миллисекунд разницы человек не
+   заметит, а четверть секунды на каждое нажатие — уже медлительность.
+   Тем, кто просил систему поменьше двигаться, ничего не двигаем вовсе. */
+
+.row {
+  animation: row-in .22s cubic-bezier(.22, .61, .36, 1) both;
+}
+
+@keyframes row-in {
+  from { opacity: 0; transform: translateY(8px) scale(.985); }
+  to { opacity: 1; transform: none; }
+}
+
+.own.row { animation-name: row-in-own; }
+
+@keyframes row-in-own {
+  from { opacity: 0; transform: translateY(8px) scale(.985); }
+  to { opacity: 1; transform: none; }
+}
+
+.screen:not([hidden]) {
+  animation: screen-in .2s ease-out both;
+}
+
+@keyframes screen-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+.list-row {
+  transition: background .16s ease, transform .12s ease;
+}
+
+.list-row:hover { background: var(--input-bg); }
+.list-row:active { transform: scale(.99); }
+
+button, .primary, .icon-button, .send, .sheet-button, .reaction {
+  transition: background .16s ease, color .16s ease,
+              transform .1s ease, opacity .16s ease;
+}
+
+button:active, .primary:active, .send:active, .icon-button:active {
+  transform: scale(.94);
+}
+
+.badge {
+  animation: badge-pop .2s cubic-bezier(.34, 1.56, .64, 1) both;
+}
+
+@keyframes badge-pop {
+  from { transform: scale(.4); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+.sheet {
+  animation: sheet-in .18s ease-out both;
+}
+
+@keyframes sheet-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.sheet-card {
+  animation: card-in .2s cubic-bezier(.22, .61, .36, 1) both;
+}
+
+@keyframes card-in {
+  from { opacity: 0; transform: translateY(14px) scale(.98); }
+  to { opacity: 1; transform: none; }
+}
+
+/* «Печатает…» мигает — сразу видно, что это происходит прямо сейчас */
+#status.typing { animation: typing-pulse 1.2s ease-in-out infinite; }
+
+@keyframes typing-pulse {
+  0%, 100% { opacity: .55; }
+  50% { opacity: 1; }
+}
+
+.dot { transition: background .2s ease; }
+
+.viewer { animation: sheet-in .16s ease-out both; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+  }
+}
+
 /* Сколько пришло, пока в переписку не заглядывали */
 .badge {
   min-width: 22px;

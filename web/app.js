@@ -588,6 +588,7 @@ function updateStatus() {
   const status = $("status");
   if (!status) return;
 
+  status.classList.toggle("typing", Boolean(typingWho));
   if (typingWho) {
     status.textContent = t("{name} печатает…", {name: typingWho});
     return;

@@ -48,6 +48,44 @@ MAX_PICTURE = (360, 360)
 # двадцать пикселей — за такой прокруткой не поспеть
 WHEEL_STEP = 110
 
+# Плавность. Tkinter не знает ни прозрачности, ни переходов, поэтому
+# «плавно» здесь — это несколько шагов по таймеру: цвет перетекает из
+# одного в другой, прокрутка доезжает с замедлением. Шаг в 16 миллисекунд
+# — это шестьдесят кадров в секунду, к которым привык глаз
+STEP_MS = 16
+GLIDE_MS = 190          # сколько едет прокрутка до места
+FADE_MS = 200           # сколько проявляется пузырь
+HOVER_MS = 120          # сколько разгорается строчка под указателем
+SIDEBAR_HOVER = ("#eef2f6", "#1d2a37")
+
+
+def ease(доля):
+    """Замедление к концу: так останавливаются вещи в жизни."""
+    return 1 - (1 - доля) ** 3
+
+
+def _rgb(цвет):
+    цвет = str(цвет).lstrip("#")
+    if len(цвет) == 3:
+        цвет = "".join(буква * 2 for буква in цвет)
+    return tuple(int(цвет[место:место + 2], 16) for место in (0, 2, 4))
+
+
+def mix(первый, второй, доля):
+    """Цвет между двумя. Пара «светлый, тёмный» смешивается по частям."""
+    if isinstance(первый, (tuple, list)) or isinstance(второй, (tuple, list)):
+        левые = первый if isinstance(первый, (tuple, list)) else (первый, первый)
+        правые = второй if isinstance(второй, (tuple, list)) else (второй, второй)
+        return tuple(mix(один, другой, доля)
+                     for один, другой in zip(левые, правые))
+    try:
+        было, стало = _rgb(первый), _rgb(второй)
+    except (ValueError, IndexError):
+        return второй               # «transparent» и прочее не смешиваем
+    смесь = tuple(int(один + (другой - один) * доля)
+                  for один, другой in zip(было, стало))
+    return "#%02x%02x%02x" % смесь
+
 # Сколько вложений просим одновременно. Двадцать фотографий, запрошенных
 # разом, забивают канал: ответ на «покажи переписку» ждёт своей очереди за
 # мегабайтами, и лента стоит пустая — именно так пропадали личные
@@ -495,6 +533,9 @@ class VelixApp(ctk.CTk):
         self.viewer_stage = None       # где рисуется само вложение
         self.viewer_counter = None     # «3 / 12» в углу просмотра
         self.video = None              # проигрыватель, если открыт ролик
+        self.glides = {}               # какие списки сейчас доезжают
+        self.drawing_history = False   # рисуем ленту целиком, не по одному
+        self.typing_dots = None        # мигание точек в «печатает…»
         self.menu = None               # открытое меню сообщения
         self.pinned = {}               # переписка -> закреплённое сообщение
         self.unread = {}               # переписка -> сколько пришло без нас
@@ -2258,6 +2299,75 @@ class VelixApp(ctk.CTk):
 
     # ------------------------------------------------------------ переписки
 
+    def _tween(self, ms, шаг, конец=None):
+        """Проигрывает короткое движение: шаг(доля) от нуля до единицы."""
+        начало = time.monotonic()
+
+        def тик():
+            доля = min((time.monotonic() - начало) * 1000 / max(ms, 1), 1.0)
+            try:
+                шаг(ease(доля))
+            except (tkinter.TclError, RuntimeError):
+                return              # виджет исчез посреди движения
+            if доля < 1.0:
+                self.after(STEP_MS, тик)
+            elif конец is not None:
+                конец()
+
+        тик()
+
+    def _fade_widget(self, widget, откуда, куда, ms=FADE_MS, ключ="fg_color"):
+        """Перекрашивает виджет из одного цвета в другой."""
+        def шаг(доля):
+            if widget.winfo_exists():
+                widget.configure(**{ключ: mix(откуда, куда, доля)})
+
+        self._tween(ms, шаг)
+
+    def _glide(self, canvas, пикселей):
+        """Доводит список до места плавно, а не рывком.
+
+        Щелчки колеса складываются: три щелчка подряд — это один длинный
+        проезд, а не три отдельных прыжка друг через друга.
+        """
+        всё = canvas.bbox("all")
+        видно = canvas.winfo_height()
+        if not всё or всё[3] <= видно:
+            return
+        высота = всё[3]
+        предел = max(1 - видно / высота, 0.0)
+
+        было = self.glides.get(canvas)
+        откуда = canvas.yview()[0]
+        цель = (было[1] if было else откуда) + пикселей / высота
+        цель = min(max(цель, 0.0), предел)
+        if было:
+            self.glides[canvas] = (откуда, цель, было[2])
+            return              # едущее движение само подхватит новую цель
+
+        поездка = [True]        # пока правда, поездка ещё нужна
+        self.glides[canvas] = (откуда, цель, поездка)
+
+        def шаг(доля):
+            запись = self.glides.get(canvas)
+            if запись is None or not поездка[0]:
+                return
+            начало, конец, _ = запись
+            canvas.yview_moveto(начало + (конец - начало) * доля)
+
+        def всё_приехало():
+            запись = self.glides.get(canvas)
+            if запись is not None and запись[2] is поездка:
+                self.glides.pop(canvas, None)
+
+        self._tween(GLIDE_MS, шаг, всё_приехало)
+
+    def _stop_glide(self, canvas):
+        """Обрывает поездку: лента прыгает вниз сама, без спорщиков."""
+        запись = self.glides.pop(canvas, None)
+        if запись is not None:
+            запись[2][0] = False
+
     def _on_wheel(self, event):
         """Колесо листает крупнее.
 
@@ -2274,7 +2384,7 @@ class VelixApp(ctk.CTk):
             return None      # всё и так помещается
 
         щелчков = int(event.delta / 120) or (1 if event.delta > 0 else -1)
-        canvas.yview("scroll", -щелчков * WHEEL_STEP, "units")
+        self._glide(canvas, -щелчков * WHEEL_STEP)
         return "break"
 
     def _scrollable_under(self, event):
@@ -2382,9 +2492,13 @@ class VelixApp(ctk.CTk):
 
         waiting = self.unread.get(item["id"], 0)
         if waiting:
-            ctk.CTkLabel(row, text=f" {waiting} ", font=self.font_small,
-                         text_color=ON_ACCENT, fg_color=OFFLINE, corner_radius=10,
-                         width=24, height=20).pack(side="right", padx=(0, 10))
+            значок = ctk.CTkLabel(row, text=f" {waiting} ", font=self.font_small,
+                                  text_color=ON_ACCENT, fg_color=OFFLINE,
+                                  corner_radius=10, width=24, height=20)
+            значок.pack(side="right", padx=(0, 10))
+            # Кружок с числом выскакивает, а не появляется из ниоткуда
+            self._tween(160, lambda доля: значок.winfo_exists()
+                        and значок.configure(width=int(8 + 16 * доля)))
 
         for widget in (row, lines, avatar):
             widget.bind("<Button-1>", lambda event, i=item["id"]: self._open(i))
@@ -2392,6 +2506,39 @@ class VelixApp(ctk.CTk):
         for child in lines.winfo_children():
             child.bind("<Button-1>", lambda event, i=item["id"]: self._open(i))
             child.bind("<Button-3>", lambda event, i=item: self._group_menu(event, i))
+        if not active:
+            self._make_hoverable(row, [lines, avatar] + lines.winfo_children())
+
+    def _make_hoverable(self, row, дети=()):
+        """Строчка мягко светлеет, когда на неё наводят.
+
+        Наведение считаем по всей строчке: указатель, переходя с ряда на
+        подпись внутри него, не должен гасить подсветку.
+        """
+        внутри = [False]        # указатель сейчас над строчкой?
+
+        def войти(event=None):
+            if внутри[0] or not row.winfo_exists():
+                return
+            внутри[0] = True
+            self._fade_widget(row, SIDEBAR, SIDEBAR_HOVER, HOVER_MS)
+
+        def выйти(event=None):
+            if not row.winfo_exists():
+                return
+            указатель = row.winfo_containing(row.winfo_pointerx(),
+                                             row.winfo_pointery())
+            место = указатель
+            while место is not None:
+                if место is row:
+                    return          # ушли на свою же подпись — не гасим
+                место = getattr(место, "master", None)
+            внутри[0] = False
+            self._fade_widget(row, SIDEBAR_HOVER, "transparent", HOVER_MS)
+
+        for widget in [row, *дети]:
+            widget.bind("<Enter>", войти, add="+")
+            widget.bind("<Leave>", выйти, add="+")
 
     def _person_row(self, person):
         row = ctk.CTkFrame(self.side_list, fg_color="transparent", height=46)
@@ -2563,7 +2710,12 @@ class VelixApp(ctk.CTk):
                      if c["id"] == self.conversation), None) or {}
 
         if self.typing_who and time.monotonic() < self.typing_until:
-            return предупреждение + t("{name} печатает…", name=self.typing_who)
+            строчка = t("{name} печатает…", name=self.typing_who)
+            if строчка.endswith("…"):
+                # Точки бегут: сразу видно, что человек печатает прямо сейчас
+                сколько = int(time.monotonic() * 2.5) % 3 + 1
+                строчка = строчка[:-1] + "." * сколько
+            return предупреждение + строчка
 
         if item.get("kind") == "direct":
             собеседник = item.get("user")
@@ -2659,8 +2811,15 @@ class VelixApp(ctk.CTk):
 
         if not self.loaded_items:
             self.empty_hint = self._service_label(t("Пока тихо. Напишите первым."))
-        for item in self.loaded_items:
-            self._show_item(item)
+
+        # Историю рисуем разом: проявлять два десятка пузырей по очереди —
+        # это не плавность, а мельтешение
+        self.drawing_history = True
+        try:
+            for item in self.loaded_items:
+                self._show_item(item)
+        finally:
+            self.drawing_history = False
 
         self._mark_read([item["id"] for item in self.loaded_items
                          if item.get("id") and item.get("user") != self.user.get("id")])
@@ -3118,6 +3277,16 @@ class VelixApp(ctk.CTk):
         self.typing_who = message.get("nick")
         self._refresh_subtitle()
         self.after(3200, self._clear_typing)
+        if self.typing_dots is None:
+            self._dance_dots()
+
+    def _dance_dots(self):
+        """Пока человек печатает, точки в подписи бегут."""
+        if self.typing_who and time.monotonic() < self.typing_until:
+            self._refresh_subtitle()
+            self.typing_dots = self.after(400, self._dance_dots)
+        else:
+            self.typing_dots = None
 
     def _clear_typing(self):
         if time.monotonic() >= self.typing_until:
@@ -3183,9 +3352,14 @@ class VelixApp(ctk.CTk):
                 label.pack(side="left", padx=(0, 8), anchor="s")
                 self._paint_avatar(label, nickname, avatar, AVATAR_SMALL)
 
-        bubble = ctk.CTkFrame(row, corner_radius=14,
-                              fg_color=BUBBLE_OUT if own else BUBBLE_IN)
+        цвет = BUBBLE_OUT if own else BUBBLE_IN
+        bubble = ctk.CTkFrame(row, corner_radius=14, fg_color=цвет)
         bubble.pack(side="right" if own else "left")
+
+        # Пришедшее сообщение проявляется из фона. Всю ленту разом так не
+        # рисуем: два десятка таймеров одновременно — это не плавность
+        if not self.drawing_history:
+            self._fade_widget(bubble, CHAT_BG, цвет)
 
         if not own and not grouped:
             ctk.CTkLabel(bubble, text=nickname, font=self.font_sender,
@@ -3573,6 +3747,7 @@ class VelixApp(ctk.CTk):
         overlay = ctk.CTkFrame(self, fg_color=("#101820", "#05080c"))
         self.viewer = overlay
         overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self._fade_widget(overlay, CHAT_BG, ("#101820", "#05080c"), 160)
 
         # Сцена — под всей остальной обвязкой: её содержимое меняется при
         # каждом перелистывании, а кнопки остаются на месте
@@ -4007,6 +4182,7 @@ class VelixApp(ctk.CTk):
     def _scroll_to_bottom(self):
         self.messages.update_idletasks()
         self._refit_feed()
+        self._stop_glide(self.messages._parent_canvas)
         self.messages._parent_canvas.yview_moveto(1.0)
 
 
