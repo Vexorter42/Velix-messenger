@@ -106,6 +106,18 @@ public class MainActivity extends Activity implements VelixService.Screen {
     private final List<JSONObject> conversations = new ArrayList<>();
     private final List<JSONObject> people = new ArrayList<>();
     private final Set<Integer> online = new HashSet<>();
+    private final Map<Integer, String> seen = new HashMap<>();
+
+    /** Вложения этой переписки по порядку — их и листают в полном экране. */
+    private final List<JSONObject> gallery = new ArrayList<>();
+    private final Map<String, String> videoFiles = new HashMap<>();
+    private final Map<String, String> waitingVideos = new HashMap<>();
+    private String viewerWaiting = "";
+    private boolean drawingHistory = false;
+    private Runnable viewerRepaint = null;
+    private String typingWho = null;
+    private long typingUntil = 0;
+    private long typingSent = 0;
     private final List<JSONObject> items = new ArrayList<>();
     private final Map<Integer, TextView> ticks = new HashMap<>();
     private final Map<Integer, String> states = new HashMap<>();
@@ -235,9 +247,18 @@ public class MainActivity extends Activity implements VelixService.Screen {
     }
 
     private void show(View screen) {
+        boolean менялся = screen.getVisibility() != View.VISIBLE;
         authScreen.setVisibility(screen == authScreen ? View.VISIBLE : View.GONE);
         listScreen.setVisibility(screen == listScreen ? View.VISIBLE : View.GONE);
         chatScreen.setVisibility(screen == chatScreen ? View.VISIBLE : View.GONE);
+
+        if (!менялся) {
+            return;
+        }
+        // Экран не выпрыгивает, а проявляется с лёгким сдвигом снизу
+        screen.setAlpha(0f);
+        screen.setTranslationY(Ui.dp(this, 10));
+        screen.animate().alpha(1f).translationY(0f).setDuration(180).start();
     }
 
     // -------------------------------------------------------- экран входа
@@ -916,6 +937,29 @@ public class MainActivity extends Activity implements VelixService.Screen {
         composer.addView(attach);
 
         messageField = Ui.field(this, Lang.t("Написать сообщение…"));
+        messageField.addTextChangedListener(new android.text.TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence text, int start,
+                                          int count, int after) {
+            }
+
+            @Override
+            public void onTextChanged(CharSequence text, int start,
+                                      int before, int count) {
+                // Собеседнику довольно знать, что мы печатаем; чаще раза в
+                // две секунды об этом сообщать незачем
+                long сейчас = System.currentTimeMillis();
+                if (conversation < 0 || сейчас - typingSent < 2000) {
+                    return;
+                }
+                typingSent = сейчас;
+                send(Net.frame("typing", "conversation", conversation));
+            }
+
+            @Override
+            public void afterTextChanged(android.text.Editable text) {
+            }
+        });
         composer.addView(messageField, Ui.grow());
 
         TextView send = Ui.text(this, "➤", 20, Ui.ACCENT);
@@ -947,6 +991,7 @@ public class MainActivity extends Activity implements VelixService.Screen {
         items.clear();
         ticks.clear();
         reactionRows.clear();
+        gallery.clear();
 
         JSONObject item = conversationById(id);
         String title = item == null ? "Velix" : titleOf(item);
@@ -958,8 +1003,85 @@ public class MainActivity extends Activity implements VelixService.Screen {
         }
         refreshPinBar();
 
+        typingWho = null;
+        updateChatStatus();
         send(Net.frame("open", "conversation", id));
         show(chatScreen);
+    }
+
+    /**
+     * Строчка под названием переписки.
+     *
+     * Человеку важнее всего, здесь ли собеседник: печатает ли он прямо
+     * сейчас, в сети ли, а если нет — когда заходил.
+     */
+    private void updateChatStatus() {
+        if (chatStatus == null) {
+            return;
+        }
+        if (typingWho != null && System.currentTimeMillis() < typingUntil) {
+            chatStatus.setText(Lang.t("{name} печатает…", "name", typingWho));
+            return;
+        }
+
+        JSONObject item = conversationById(conversation);
+        if (item == null) {
+            chatStatus.setText("");
+            return;
+        }
+        if ("direct".equals(item.optString("kind"))) {
+            int собеседник = item.optInt("user");
+            chatStatus.setText(online.contains(собеседник)
+                    ? Lang.t("в сети")
+                    : Lang.t("был(а) в сети {when}", "when",
+                             seenText(seen.get(собеседник))));
+            return;
+        }
+        JSONArray внутри = item.optJSONArray("members");
+        if (внутри != null && внутри.length() > 0) {
+            chatStatus.setText(Lang.t("участников: {count}", "count",
+                    String.valueOf(внутри.length())));
+            return;
+        }
+        chatStatus.setText("");
+    }
+
+    /** «только что», «вчера в 21:15», «24 августа в 22:31». */
+    private String seenText(String stamp) {
+        long когда = parse(stamp);
+        if (когда <= 0) {
+            return Lang.t("давно");
+        }
+        long сейчас = System.currentTimeMillis();
+        if (сейчас - когда < 90 * 1000L) {
+            return Lang.t("только что");
+        }
+
+        Calendar был = Calendar.getInstance();
+        был.setTimeInMillis(когда);
+        Calendar сегодня = Calendar.getInstance();
+        String часы = String.format(java.util.Locale.US, "%02d:%02d",
+                был.get(Calendar.HOUR_OF_DAY), был.get(Calendar.MINUTE));
+
+        Calendar вчера = Calendar.getInstance();
+        вчера.add(Calendar.DAY_OF_YEAR, -1);
+        if (сегодня.get(Calendar.YEAR) == был.get(Calendar.YEAR)
+                && сегодня.get(Calendar.DAY_OF_YEAR) == был.get(Calendar.DAY_OF_YEAR)) {
+            return Lang.t("сегодня в {time}", "time", часы);
+        }
+        if (вчера.get(Calendar.YEAR) == был.get(Calendar.YEAR)
+                && вчера.get(Calendar.DAY_OF_YEAR) == был.get(Calendar.DAY_OF_YEAR)) {
+            return Lang.t("вчера в {time}", "time", часы);
+        }
+        if (сегодня.get(Calendar.YEAR) == был.get(Calendar.YEAR)) {
+            return Lang.t("{date} в {time}", "date",
+                    Lang.monthDay(был.get(Calendar.DAY_OF_MONTH),
+                                  был.get(Calendar.MONTH) + 1),
+                    "time", часы);
+        }
+        return String.format(java.util.Locale.US, "%02d.%02d.%d",
+                был.get(Calendar.DAY_OF_MONTH), был.get(Calendar.MONTH) + 1,
+                был.get(Calendar.YEAR));
     }
 
     private JSONObject conversationById(int id) {
@@ -1112,6 +1234,14 @@ public class MainActivity extends Activity implements VelixService.Screen {
 
         row.addView(bubble);
         feed.addView(row, Ui.wide());
+
+        // Пришедшее сообщение въезжает снизу. Всю историю так не показываем:
+        // два десятка пузырей, ползущих по очереди, — это мельтешение
+        if (!drawingHistory) {
+            row.setAlpha(0f);
+            row.setTranslationY(Ui.dp(this, 12));
+            row.animate().alpha(1f).translationY(0f).setDuration(200).start();
+        }
         scrollDown();
     }
 
@@ -1119,14 +1249,42 @@ public class MainActivity extends Activity implements VelixService.Screen {
     private final Map<String, LinearLayout> pendingMarks = new HashMap<>();
     private View emptyHint;
 
+    /** Копит вложения переписки по порядку: их листают в полном экране. */
+    private void rememberMedia(JSONObject item) {
+        String kind = item.optString("kind");
+        String id = item.optString("media", "");
+        if (id.isEmpty() || !("image".equals(kind) || "gif".equals(kind)
+                || "video".equals(kind))) {
+            return;
+        }
+        for (JSONObject уже : gallery) {
+            if (id.equals(уже.optString("media"))) {
+                return;
+            }
+        }
+        gallery.add(item);
+    }
+
+    private int galleryIndex(String mediaId) {
+        for (int место = 0; место < gallery.size(); место++) {
+            if (gallery.get(место).optString("media").equals(mediaId)) {
+                return место;
+            }
+        }
+        return -1;
+    }
+
     private View attachment(final JSONObject item) {
         String kind = item.optString("kind");
+        rememberMedia(item);
         if (!"image".equals(kind) && !"gif".equals(kind)) {
-            String подпись = "video".equals(kind) ? Lang.t("Видео") : Lang.t("Файл");
+            final boolean кино = "video".equals(kind);
+            String подпись = кино ? Lang.t("Видео") : Lang.t("Файл");
             long вес = item.optLong("size");
             TextView card = Ui.text(this, подпись + " · "
                     + item.optString("name")
-                    + (вес > 0 ? "\n" + humanSize(вес) : ""), 15, Ui.TEXT);
+                    + (вес > 0 ? "\n" + humanSize(вес) : "")
+                    + (кино ? "\n" + Lang.t("▶ Смотреть") : ""), 15, Ui.TEXT);
             card.setPadding(0, Ui.dp(this, 4), 0, Ui.dp(this, 4));
 
             final String id = item.optString("media", "");
@@ -1135,7 +1293,11 @@ public class MainActivity extends Activity implements VelixService.Screen {
                 card.setOnClickListener(new View.OnClickListener() {
                     @Override
                     public void onClick(View view) {
-                        saveAttachment(id, имя);
+                        if (кино) {
+                            showFull(null, id);
+                        } else {
+                            saveAttachment(id, имя);
+                        }
                     }
                 });
             }
@@ -1172,9 +1334,7 @@ public class MainActivity extends Activity implements VelixService.Screen {
                 if (bytes == null) {
                     bytes = localMedia.get(item.optString("local", ""));
                 }
-                if (bytes != null) {
-                    showFull(bytes);
-                }
+                showFull(bytes, item.optString("media", ""));
             }
         });
         return picture;
@@ -1484,9 +1644,125 @@ public class MainActivity extends Activity implements VelixService.Screen {
      * Картинку двигаем матрицей самого вида — так не приходится собирать
      * новый растр на каждое движение пальца.
      */
-    private void showFull(byte[] data) {
+    private void showFull(byte[] data, final String mediaId) {
         final Dialog dialog = new Dialog(this,
                 android.R.style.Theme_Black_NoTitleBar_Fullscreen);
+        final FrameLayout stage = new FrameLayout(this);
+        stage.setBackgroundColor(Color.BLACK);
+
+        final int[] место = {galleryIndex(mediaId)};
+        final byte[][] своё = {data};
+        final TextView counter = Ui.text(this, "", 13, Ui.MUTED);
+        counter.setPadding(Ui.dp(this, 14), Ui.dp(this, 14), Ui.dp(this, 14), 0);
+
+        final Runnable[] нарисовать = new Runnable[1];
+        нарисовать[0] = new Runnable() {
+            @Override
+            public void run() {
+                stage.removeAllViews();
+                counter.setText(gallery.size() > 1 && место[0] >= 0
+                        ? (место[0] + 1) + " / " + gallery.size() : "");
+
+                JSONObject item = место[0] >= 0 && место[0] < gallery.size()
+                        ? gallery.get(место[0]) : null;
+                String вид = item == null ? "image" : item.optString("kind");
+                String номер = item == null ? mediaId : item.optString("media", "");
+
+                byte[] байты = своё[0];
+                if (item != null) {
+                    байты = media.get(номер);
+                    if (байты == null) {
+                        байты = localMedia.get(item.optString("local", ""));
+                    }
+                }
+
+                if ("video".equals(вид)) {
+                    playVideo(stage, номер, item);
+                } else if (байты != null) {
+                    stage.addView(zoomable(dialog, байты, нарисовать[0], место),
+                            new FrameLayout.LayoutParams(
+                                    ViewGroup.LayoutParams.MATCH_PARENT,
+                                    ViewGroup.LayoutParams.MATCH_PARENT));
+                } else {
+                    TextView ждём = Ui.text(MainActivity.this,
+                            Lang.t("загружаю…"), 15, Ui.MUTED);
+                    stage.addView(ждём, серединка());
+                    if (!номер.isEmpty()) {
+                        viewerWaiting = номер;
+                        viewerRepaint = нарисовать[0];
+                        send(Net.frame("fetch", "id", номер));
+                    }
+                }
+
+                stage.addView(counter, новая(Gravity.TOP | Gravity.START));
+                if (gallery.size() > 1) {
+                    stage.addView(стрелка("\u2039", -1, место, нарисовать[0]),
+                            новая(Gravity.CENTER_VERTICAL | Gravity.START));
+                    stage.addView(стрелка("\u203a", 1, место, нарисовать[0]),
+                            новая(Gravity.CENTER_VERTICAL | Gravity.END));
+                }
+            }
+        };
+
+        dialog.setContentView(stage);
+        dialog.setOnDismissListener(new android.content.DialogInterface.OnDismissListener() {
+            @Override
+            public void onDismiss(android.content.DialogInterface which) {
+                viewerWaiting = "";
+                viewerRepaint = null;
+            }
+        });
+        нарисовать[0].run();
+        dialog.show();
+    }
+
+    private void showFull(byte[] data) {
+        showFull(data, "");
+    }
+
+    private FrameLayout.LayoutParams серединка() {
+        FrameLayout.LayoutParams где = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        где.gravity = Gravity.CENTER;
+        return где;
+    }
+
+    private FrameLayout.LayoutParams новая(int gravity) {
+        FrameLayout.LayoutParams где = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        где.gravity = gravity;
+        return где;
+    }
+
+    /** Кнопка «предыдущее» или «следующее» по краю экрана. */
+    private TextView стрелка(String знак, final int шаг, final int[] место,
+                             final Runnable нарисовать) {
+        TextView кнопка = Ui.text(this, знак, 30, Ui.TEXT);
+        кнопка.setPadding(Ui.dp(this, 18), Ui.dp(this, 22), Ui.dp(this, 18),
+                Ui.dp(this, 22));
+        кнопка.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                шагнуть(шаг, место, нарисовать);
+            }
+        });
+        return кнопка;
+    }
+
+    private void шагнуть(int шаг, int[] место, Runnable нарисовать) {
+        if (gallery.size() < 2) {
+            return;
+        }
+        int откуда = место[0] < 0 ? 0 : место[0];
+        место[0] = (откуда + шаг + gallery.size()) % gallery.size();
+        нарисовать.run();
+    }
+
+    /** Снимок с приближением щипком и листанием смахиванием. */
+    private ImageView zoomable(final Dialog dialog, byte[] data,
+                               final Runnable нарисовать, final int[] место) {
         final ImageView picture = new ImageView(this);
         picture.setBackgroundColor(Color.BLACK);
         picture.setScaleType(ImageView.ScaleType.MATRIX);
@@ -1556,8 +1832,28 @@ public class MainActivity extends Activity implements VelixService.Screen {
             @Override
             public boolean onScroll(MotionEvent от, MotionEvent до,
                                     float сдвигX, float сдвигY) {
+                холст.getValues(числа);
+                if (числа[android.graphics.Matrix.MSCALE_X] <= вписано[0] * 1.1f) {
+                    return false;   // неприближённый снимок таскать некуда
+                }
                 холст.postTranslate(-сдвигX, -сдвигY);
                 picture.setImageMatrix(холст);
+                return true;
+            }
+
+            @Override
+            public boolean onFling(MotionEvent от, MotionEvent до,
+                                   float скоростьX, float скоростьY) {
+                холст.getValues(числа);
+                if (числа[android.graphics.Matrix.MSCALE_X] > вписано[0] * 1.1f) {
+                    return false;   // приближённое смахивание — это перетаскивание
+                }
+                if (от == null || до == null
+                        || Math.abs(до.getX() - от.getX()) < Ui.dp(MainActivity.this, 60)
+                        || Math.abs(скоростьX) < Math.abs(скоростьY)) {
+                    return false;
+                }
+                шагнуть(до.getX() < от.getX() ? 1 : -1, место, нарисовать);
                 return true;
             }
 
@@ -1583,9 +1879,74 @@ public class MainActivity extends Activity implements VelixService.Screen {
                 return true;
             }
         });
+        return picture;
+    }
 
-        dialog.setContentView(picture);
-        dialog.show();
+    /** Ролик прямо в приложении: обычный проигрыватель с полосой. */
+    private void playVideo(FrameLayout stage, String номер, JSONObject item) {
+        String путь = videoFiles.get(номер);
+        if (путь == null || !new java.io.File(путь).exists()) {
+            byte[] байты = media.get(номер);
+            if (байты != null) {
+                путь = keepVideo(номер, байты);
+            }
+        }
+
+        if (путь == null) {
+            TextView ждём = Ui.text(this, Lang.t("загружаю…"), 15, Ui.MUTED);
+            stage.addView(ждём, серединка());
+            if (!номер.isEmpty() && !waitingVideos.containsKey(номер)) {
+                waitingVideos.put(номер, item == null ? "video.mp4"
+                        : item.optString("name", "video.mp4"));
+                send(Net.frame("fetch", "id", номер));
+            }
+            viewerWaiting = номер;
+            return;
+        }
+
+        android.widget.VideoView экран = new android.widget.VideoView(this);
+        экран.setVideoPath(путь);
+        android.widget.MediaController пульт = new android.widget.MediaController(this);
+        пульт.setAnchorView(экран);
+        экран.setMediaController(пульт);
+        экран.setOnPreparedListener(new android.media.MediaPlayer.OnPreparedListener() {
+            @Override
+            public void onPrepared(android.media.MediaPlayer player) {
+                player.setLooping(false);
+            }
+        });
+        экран.setOnErrorListener(new android.media.MediaPlayer.OnErrorListener() {
+            @Override
+            public boolean onError(android.media.MediaPlayer player, int what, int extra) {
+                toast(Lang.t("Видео не открылось"));
+                return true;
+            }
+        });
+
+        FrameLayout.LayoutParams где = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT);
+        где.gravity = Gravity.CENTER;
+        stage.addView(экран, где);
+        экран.start();
+    }
+
+    /** Кладёт ролик в кэш: проигрывателю нужен путь, а не байты. */
+    private String keepVideo(String номер, byte[] данные) {
+        try {
+            java.io.File папка = new java.io.File(getCacheDir(), "video");
+            папка.mkdirs();
+            java.io.File файл = new java.io.File(папка, "velix-" + номер + ".mp4");
+            if (!файл.exists() || файл.length() != данные.length) {
+                java.io.FileOutputStream поток = new java.io.FileOutputStream(файл);
+                поток.write(данные);
+                поток.close();
+            }
+            videoFiles.put(номер, файл.getAbsolutePath());
+            return файл.getAbsolutePath();
+        } catch (Exception беда) {
+            return null;
+        }
     }
 
     /** Кто ждёт больших вложений: номер -> имя, под которым сохранить. */
@@ -2323,15 +2684,27 @@ public class MainActivity extends Activity implements VelixService.Screen {
             for (int index = 0; active != null && index < active.length(); index++) {
                 online.add(active.optInt(index));
             }
+            for (JSONObject person : people) {
+                String когда = person.optString("seen", "");
+                if (!когда.isEmpty()) {
+                    seen.put(person.optInt("id"), когда);
+                }
+            }
             drawList();
+            updateChatStatus();
 
         } else if ("presence".equals(kind)) {
             if (frame.optBoolean("online")) {
                 online.add(frame.optInt("user"));
             } else {
                 online.remove(frame.optInt("user"));
+                String когда = frame.optString("seen", "");
+                if (!когда.isEmpty()) {
+                    seen.put(frame.optInt("user"), когда);
+                }
             }
             drawList();
+            updateChatStatus();
 
         } else if ("history".equals(kind)) {
             showHistory(frame);
@@ -2405,14 +2778,18 @@ public class MainActivity extends Activity implements VelixService.Screen {
 
         } else if ("typing".equals(kind)) {
             if (frame.optInt("conversation") == conversation) {
-                chatStatus.setText(Lang.t("{name} печатает…", "name",
-                        frame.optString("nick")));
+                typingWho = frame.optString("nick");
+                typingUntil = System.currentTimeMillis() + 3000;
+                updateChatStatus();
                 chatStatus.postDelayed(new Runnable() {
                     @Override
                     public void run() {
-                        chatStatus.setText("");
+                        if (System.currentTimeMillis() >= typingUntil) {
+                            typingWho = null;
+                            updateChatStatus();
+                        }
                     }
-                }, 3000);
+                }, 3200);
             }
         }
     }
@@ -2516,10 +2893,15 @@ public class MainActivity extends Activity implements VelixService.Screen {
         emptyHint = null;
 
         JSONArray list = frame.optJSONArray("items");
-        for (int index = 0; list != null && index < list.length(); index++) {
-            JSONObject item = list.optJSONObject(index);
-            items.add(item);
-            showItem(item);
+        drawingHistory = true;
+        try {
+            for (int index = 0; list != null && index < list.length(); index++) {
+                JSONObject item = list.optJSONObject(index);
+                items.add(item);
+                showItem(item);
+            }
+        } finally {
+            drawingHistory = false;
         }
 
         if (items.isEmpty()) {
@@ -2553,6 +2935,15 @@ public class MainActivity extends Activity implements VelixService.Screen {
         String путь = header.optString("file", "");
         if (!путь.isEmpty()) {
             java.io.File готовое = new java.io.File(путь);
+            if (waitingVideos.remove(id) != null) {
+                // Ролик оставляем на диске: с него его и проиграем
+                videoFiles.put(id, готовое.getAbsolutePath());
+                if (id.equals(viewerWaiting) && viewerRepaint != null) {
+                    viewerWaiting = "";
+                    viewerRepaint.run();
+                }
+                return;
+            }
             String имя = waitingFiles.remove(id);
             if (имя != null) {
                 storeInDownloads(готовое, имя);
@@ -2563,6 +2954,13 @@ public class MainActivity extends Activity implements VelixService.Screen {
         }
 
         media.put(id, data);
+        if (waitingVideos.remove(id) != null) {
+            keepVideo(id, data);
+        }
+        if (id.equals(viewerWaiting) && viewerRepaint != null) {
+            viewerWaiting = "";
+            viewerRepaint.run();
+        }
 
         List<TextView> faces = photoSlots.remove(id);
         if (faces != null) {

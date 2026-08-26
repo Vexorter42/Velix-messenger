@@ -181,6 +181,16 @@ class Lang {
         add("Переслано от {name}", "Forwarded from {name}");
         add("Ответ {name}", "Reply to {name}");
         add("{name} печатает…", "{name} is typing…");
+        add("в сети", "online");
+        add("был(а) в сети {when}", "last seen {when}");
+        add("участников: {count}", "members: {count}");
+        add("только что", "just now");
+        add("сегодня в {time}", "today at {time}");
+        add("вчера в {time}", "yesterday at {time}");
+        add("{date} в {time}", "{date} at {time}");
+        add("давно", "a long time ago");
+        add("▶ Смотреть", "▶ Watch");
+        add("Видео не открылось", "The video would not play");
         add("нет связи", "no connection");
         add("Связь потеряна, переподключаемся…", "Connection lost, reconnecting…");
         add("загружаю…", "loading…");
