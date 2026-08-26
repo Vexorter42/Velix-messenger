@@ -4,7 +4,7 @@
 ; Перед этим нужен собранный Velix.exe (см. README, раздел «Сборка .exe»).
 
 #define AppName "Velix"
-#define AppVersion "0.2.4.1"
+#define AppVersion "0.2.4.2"
 #define AppPublisher "Vexorter42"
 #define AppExe "Velix.exe"
 

@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import traceback
 import time
 import tkinter
 from datetime import datetime
@@ -45,6 +46,18 @@ MAX_PICTURE = (360, 360)
 # Насколько листать за один щелчок колеса. CustomTkinter двигает на
 # двадцать пикселей — за такой прокруткой не поспеть
 WHEEL_STEP = 110
+
+# Сколько вложений просим одновременно. Двадцать фотографий, запрошенных
+# разом, забивают канал: ответ на «покажи переписку» ждёт своей очереди за
+# мегабайтами, и лента стоит пустая — именно так пропадали личные
+# переписки, где фотографий нет вовсе
+FETCH_WINDOW = 2
+
+# Сколько картинок разбираем за один заход. Каждая — это распаковка,
+# уменьшение и запись на диск, десятки миллисекунд. Два десятка подряд
+# заняли бы окно на секунды, и пришедшая тем временем переписка
+# показалась бы только в конце
+BLOBS_PER_TURN = 2
 
 MAX_GIF_FRAMES = 120
 
@@ -377,8 +390,19 @@ class Network:
                         # вложение приезжает не одним куском
                         куски = []
                         сколько = max(1, int(message.get("parts") or 1))
-                        for _ in range(сколько):
-                            куски.append(await websocket.recv())
+                        while len(куски) < сколько:
+                            кадр = await websocket.recv()
+                            if isinstance(кадр, (bytes, bytearray)):
+                                куски.append(кадр)
+                                continue
+
+                            # Между кусками вложения может влезть обычный
+                            # кадр — например, история переписки. Считать
+                            # его куском нельзя: так пропадала вся лента,
+                            # и переписка оставалась пустой.
+                            другое = protocol.decode(кадр)
+                            if другое is not None:
+                                self.events.put(("message", другое))
                         message["data"] = b"".join(куски)
                     self.events.put(("message", message))
 
@@ -470,6 +494,8 @@ class VelixApp(ctk.CTk):
         self.was_open = None           # где человек был до обрыва связи
         self.waiting_for = None        # чью историю ждём прямо сейчас
         self.open_token = 0            # какой заход в переписку нынешний
+        self.fetch_queue = []          # вложения, которые ждут своей очереди
+        self.fetch_flight = set()      # вложения, о которых уже спросили
         self.retry_at = 0              # какая по счёту попытка вернуться
         self.retry_job = None          # отложенная попытка, чтобы отменить
         self.limits = {}               # пределы вложений, их называет сервер
@@ -1787,9 +1813,36 @@ class VelixApp(ctk.CTk):
     # ------------------------------------------------------------- события
 
     def _pump_events(self):
+        """Разбирает пришедшее, пропуская вперёд лёгкие кадры.
+
+        Вложения тяжёлые: пока разбираются два десятка фотографий, ответ
+        на «открой переписку» ждёт своей очереди — и лента стоит пустая.
+        Поэтому сперва всё быстрое, а картинки — понемногу за раз.
+
+        Что бы ни случилось внутри, разбор продолжается: сорвавшись один
+        раз, он раньше умолкал навсегда — окно оставалось на связи, но
+        переставало что-либо показывать.
+        """
+        try:
+            self._pump_once()
+        except Exception:
+            # Одна беда не должна затыкать окно навсегда: раньше сорвавшийся
+            # разбор больше не запускался, и клиент, оставаясь на связи,
+            # переставал показывать что-либо вообще
+            traceback.print_exc()
+        finally:
+            self.after(60, self._pump_events)
+
+    def _pump_once(self):
+        отложенные = []
         try:
             while True:
                 kind, payload = self.events.get_nowait()
+                if kind == "message" and isinstance(payload, dict) \
+                        and payload.get("type") == "blob":
+                    отложенные.append(payload)
+                    continue
+
                 if kind == "opened":
                     self._on_opened(payload)
                 elif kind == "tray_open":
@@ -1805,7 +1858,12 @@ class VelixApp(ctk.CTk):
                     self._on_error(payload)
         except queue.Empty:
             pass
-        self.after(60, self._pump_events)
+
+        for вложение in отложенные[:BLOBS_PER_TURN]:
+            self._on_message(вложение)
+        for вложение in отложенные[BLOBS_PER_TURN:]:
+            # Остальные подождут следующего захода — окно должно дышать
+            self.events.put(("message", вложение))
 
     def _on_opened(self, secure):
         """Соединение открылось — отправляем то, чем собирались входить."""
@@ -2162,7 +2220,7 @@ class VelixApp(ctk.CTk):
         if сохранённое is not None:
             self._fill_avatar(avatar_id, сохранённое)
         else:
-            self.network.send(protocol.fetch_request(avatar_id))
+            self._ask_media(avatar_id)
 
     def _fill_avatar(self, avatar_id, data):
         waiters = self.avatar_waiters.pop(avatar_id, [])
@@ -2915,7 +2973,7 @@ class VelixApp(ctk.CTk):
         if data is None:
             # Содержимое ещё не забирали с сервера — попросим и вернёмся сюда
             self.pending_media[media_id] = ("copy", None, item)
-            self.network.send(protocol.fetch_request(media_id))
+            self._ask_media(media_id)
             return
         self._copy_bytes(item, data)
 
@@ -3242,7 +3300,7 @@ class VelixApp(ctk.CTk):
                 self._show_picture(holder, kind, data, media_id)
             elif media_id:
                 self.pending_media[media_id] = ("picture", holder, kind)
-                self.network.send(protocol.fetch_request(media_id))
+                self._ask_media(media_id)
             else:
                 # Своё вложение, номер которого мы ещё не знаем: сервер
                 # отправителю его не подтверждает
@@ -3279,18 +3337,48 @@ class VelixApp(ctk.CTk):
             def request():
                 button.configure(text=t("Загружаю…"), state="disabled")
                 self.pending_media[media_id] = ("file", button, name)
-                self.network.send(protocol.fetch_request(media_id))
+                self._ask_media(media_id)
             button.configure(command=request)
         else:
             button.configure(state="disabled")
 
         return card
 
+    def _ask_media(self, media_id):
+        """Просит вложение, но не больше нескольких сразу.
+
+        Ответы идут по одному соединению, и мегабайты фотографий
+        задерживают всё остальное — историю переписки в том числе.
+        """
+        if not media_id or media_id in self.fetch_flight \
+                or media_id in self.fetch_queue:
+            return
+        self.fetch_queue.append(media_id)
+        self._pump_fetches()
+
+    def _pump_fetches(self):
+        while self.fetch_queue and len(self.fetch_flight) < FETCH_WINDOW:
+            media_id = self.fetch_queue.pop(0)
+            self.fetch_flight.add(media_id)
+            if not self.network.send(protocol.fetch_request(media_id)):
+                self.fetch_flight.discard(media_id)
+                return
+            # Ответа может и не быть — например, файл на сервере пропал.
+            # Через полминуты освобождаем место в очереди
+            self.after(30000, self._done_fetch, media_id)
+
+    def _done_fetch(self, media_id):
+        """Вложение получено (или уже неважно) — зовём следующее."""
+        if media_id in self.fetch_flight:
+            self.fetch_flight.discard(media_id)
+            self._pump_fetches()
+
     def _fill_media(self, message):
         """Пришло содержимое вложения — показываем его и кладём на диск."""
         media_id = message.get("id")
         data = message.get("data") or b""
 
+        self._done_fetch(media_id)
         if data:
             mediacache.put(media_id, data)
 
@@ -3307,6 +3395,12 @@ class VelixApp(ctk.CTk):
             return
 
         mode, widget, extra = waiting
+        if mode != "copy" and (widget is None or not widget.winfo_exists()):
+            # Пузырь исчез, пока картинка ехала — человек ушёл в другую
+            # переписку. Рисовать в него нельзя: Tk бросит ошибку, и на
+            # этом разбор пришедшего когда-то умирал навсегда
+            return
+
         if mode == "copy":
             self._copy_bytes(extra, data)
         elif mode == "picture":
@@ -3331,6 +3425,9 @@ class VelixApp(ctk.CTk):
             holder.configure(
                 text=t("не удалось показать картинку: {error}", error=error))
             return
+
+        if not holder.winfo_exists():
+            return          # пузырь исчез, пока готовилась картинка
 
         self.images.extend(frames)
         holder.configure(text="", image=frames[0], cursor="hand2")

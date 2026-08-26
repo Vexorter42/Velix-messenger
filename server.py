@@ -77,6 +77,42 @@ limits = {"file": protocol.DEFAULT_FILE_LIMIT,
 # Незаконченные загрузки: каждой свой временный файл
 uploads = {}
 
+# Вложение уходит несколькими кадрами подряд, и вклиниваться между ними
+# нельзя: клиент читает их как одно целое. Замок — на каждое соединение
+blob_locks = {}
+
+
+# Отдача вложений идёт своими задачами, чтобы не задерживать остальное
+blob_tasks = {}
+
+
+def blob_pen(websocket):
+    """Замок, под которым вложение уходит целиком."""
+    pen = blob_locks.get(websocket)
+    if pen is None:
+        pen = blob_locks[websocket] = asyncio.Lock()
+    return pen
+
+
+def send_blob_later(websocket, message):
+    """Отдаёт вложение отдельной задачей.
+
+    Раньше сервер отвечал строго по одному кадру за раз: пока уходили два
+    десятка фотографий, запрос истории ждал своей очереди — и переписка
+    выглядела пустой всё это время. Теперь вложения едут сами по себе.
+    """
+    задача = asyncio.create_task(handle_fetch(websocket, message))
+    задачи = blob_tasks.setdefault(websocket, set())
+    задачи.add(задача)
+    задача.add_done_callback(задачи.discard)
+
+
+def forget_blobs(websocket):
+    """Соединение закрылось — недоотданное бросаем."""
+    for задача in blob_tasks.pop(websocket, ()):
+        задача.cancel()
+    blob_locks.pop(websocket, None)
+
 
 async def load_limits():
     """Поднимает пределы из базы: их мог поменять хозяин чата."""
@@ -979,15 +1015,19 @@ async def handle_fetch(websocket, message):
     size = path.stat().st_size
     parts = max(1, -(-size // protocol.CHUNK_SIZE))
 
-    await websocket.send(protocol.blob_header(media_id, kind, name, size, parts))
+    async with blob_pen(websocket):
+        await websocket.send(protocol.blob_header(media_id, kind, name,
+                                                  size, parts))
 
-    # Читаем по куску: держать в памяти гигабайтное видео малина не сможет
-    with open(path, "rb") as файл:
-        while True:
-            кусок = await asyncio.to_thread(файл.read, protocol.CHUNK_SIZE)
-            if not кусок:
-                break
-            await websocket.send(кусок)
+        # Читаем по куску: держать в памяти гигабайтное видео малина не
+        # сможет. Между кусками ничего чужого не проскочит — замок держим
+        # до последнего
+        with open(path, "rb") as файл:
+            while True:
+                кусок = await asyncio.to_thread(файл.read, protocol.CHUNK_SIZE)
+                if not кусок:
+                    break
+                await websocket.send(кусок)
 
 
 async def handle_profile(websocket, user, message):
@@ -1330,7 +1370,8 @@ async def chat_handler(websocket):
             elif kind == "media":
                 await handle_media(websocket, user, message)
             elif kind == "fetch":
-                await handle_fetch(websocket, message)
+                # Не ждём: пусть вложение едет само, а мы слушаем дальше
+                send_blob_later(websocket, message)
             elif kind == "upload":
                 await handle_upload(websocket, user, message)
             elif kind == "chunk":
@@ -1390,6 +1431,7 @@ async def chat_handler(websocket):
         pass
     finally:
         connected_clients.discard(websocket)
+        forget_blobs(websocket)
         await forget_uploads(websocket)
         if forget_online(user["id"], websocket):
             await announce_presence(user["id"], False)

@@ -208,9 +208,15 @@ async def receive_messages(websocket, stop_event):
                 show(t("[Система]: профиль обновлён"))
             elif kind == "blob":
                 # Содержимое вложений консольному клиенту не нужно, но кадры
-                # с данными идут следом, и вычитать надо все до одного
-                for _ in range(max(1, int(message.get("parts") or 1))):
-                    await websocket.recv()
+                # с данными идут следом, и вычитать надо все до одного.
+                # Считаем только двоичные: между кусками может влезть
+                # обычный кадр, и принять его за кусок — значит потерять
+                # целое сообщение
+                осталось = max(1, int(message.get("parts") or 1))
+                while осталось:
+                    кадр = await websocket.recv()
+                    if isinstance(кадр, (bytes, bytearray)):
+                        осталось -= 1
 
     except websockets.exceptions.ConnectionClosed:
         print("\n" + t("[Система]: Соединение с сервером потеряно."))
