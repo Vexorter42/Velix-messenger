@@ -15,6 +15,7 @@ import os
 import shutil
 import sqlite3
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -796,6 +797,33 @@ def _media_path_sync(media_id):
     return matches[0] if matches else None
 
 
+def upload_dir():
+    """Где копится недоехавшее.
+
+    Непременно рядом с вложениями: на малине /tmp — это tmpfs, то есть
+    оперативная память. Гигабайтное видео сначала съедало её, а потом
+    переезд на карту падал с «invalid cross-device link», и вложение
+    пропадало на девяносто девятом проценте.
+    """
+    папка = _media_dir / ".uploads"
+    папка.mkdir(parents=True, exist_ok=True)
+    return папка
+
+
+def forget_stale_uploads(старше_часов=6):
+    """Убирает огрызки прошлых загрузок: связь рвётся, файлы остаются."""
+    порог = time.time() - старше_часов * 3600
+    убрано = 0
+    for файл in upload_dir().glob("velix-upload-*"):
+        try:
+            if файл.stat().st_mtime < порог:
+                файл.unlink()
+                убрано += 1
+        except OSError:
+            pass
+    return убрано
+
+
 def _save_media_file_sync(user_id, nickname, kind, name, path, size,
                           conversation_id, reply_to):
     """Записывает вложение, которое уже лежит готовым файлом.
@@ -805,7 +833,13 @@ def _save_media_file_sync(user_id, nickname, kind, name, path, size,
     """
     media_id = uuid.uuid4().hex
     suffix = Path(name).suffix.lower()[:16]
-    Path(path).replace(_media_dir / f"{media_id}{suffix}")
+    куда = _media_dir / f"{media_id}{suffix}"
+    try:
+        Path(path).replace(куда)
+    except OSError:
+        # Файл оказался на другой файловой системе: переименовать нельзя,
+        # придётся перенести содержимое
+        shutil.move(str(path), str(куда))
 
     created_at = now()
     with _lock:

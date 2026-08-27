@@ -4,6 +4,7 @@ import shutil
 import ssl
 import tempfile
 import time
+import traceback
 import uuid
 from http import HTTPStatus
 from pathlib import Path
@@ -1178,7 +1179,9 @@ async def handle_upload(websocket, user, message):
         return
 
     ticket = uuid.uuid4().hex
-    holder = Path(tempfile.gettempdir()) / f"velix-upload-{ticket}"
+    # Складываем рядом с вложениями: иначе готовый файл придётся тащить с
+    # одной файловой системы на другую, а на малине /tmp — это память
+    holder = storage.upload_dir() / f"velix-upload-{ticket}"
     uploads[ticket] = {"user": user["id"], "name": name, "kind": kind,
                        "size": size, "conversation": conversation,
                        "reply_to": reply_to, "local": message.get("local"),
@@ -1264,6 +1267,11 @@ async def drop_upload(ticket):
         Path(upload["path"]).unlink(missing_ok=True)
     except OSError:
         pass
+
+
+async def drop_uploads_of(websocket):
+    """Осечка посреди загрузки: недокачанное дальше не нужно."""
+    await forget_uploads(websocket)
 
 
 async def forget_uploads(websocket):
@@ -1374,66 +1382,81 @@ async def chat_handler(websocket):
                 continue
 
             kind = message.get("type")
-            if kind == "text":
-                await handle_text(websocket, user, message)
-            elif kind == "media":
-                await handle_media(websocket, user, message)
-            elif kind == "fetch":
-                # Не ждём: пусть вложение едет само, а мы слушаем дальше
-                send_blob_later(websocket, message)
-            elif kind == "upload":
-                await handle_upload(websocket, user, message)
-            elif kind == "chunk":
-                await handle_chunk(websocket, user, message)
-            elif kind == "upload_cancel":
-                await drop_upload(str(message.get("ticket") or ""))
-            elif kind == "open":
-                await handle_open(websocket, user, message)
-            elif kind == "direct":
-                await handle_direct(websocket, user, message)
-            elif kind == "group":
-                await handle_group(websocket, user, message)
-            elif kind == "members":
-                await handle_members(websocket, user, message)
-            elif kind == "sync":
-                # Клиент вернулся к жизни и просит свежие списки
-                await websocket.send(protocol.conversations_message(
-                    await storage.conversations(user["id"])))
-                await send_people(websocket)
-            elif kind == "delete_group":
-                await handle_delete_group(websocket, user, message)
-            elif kind == "admin":
-                await handle_admin(websocket, user, message)
-            elif kind == "read":
-                await handle_read(websocket, user, message)
-            elif kind == "pin":
-                await handle_pin(websocket, user, message)
-            elif kind == "forward":
-                await handle_forward(websocket, user, message)
-            elif kind == "delete":
-                await handle_delete(websocket, user, message)
-            elif kind == "react":
-                await handle_react(websocket, user, message)
-            elif kind == "push_key":
-                await websocket.send(protocol.push_key_message(push.public_key()))
-            elif kind == "push_subscribe":
-                await handle_push_subscribe(websocket, user, message)
-            elif kind == "search":
-                await handle_search(websocket, user, message)
-            elif kind == "typing":
-                await handle_typing(websocket, user, message)
-            elif kind == "people":
-                await send_people(websocket)
-            elif kind == "profile":
-                await handle_profile(websocket, user, message)
-            elif kind == "avatar":
-                await handle_avatar(websocket, user, message)
-            elif kind == "update":
-                await handle_update(websocket)
-            elif kind == "logout":
-                await storage.forget_token(token)
-                await websocket.close()
-                return
+            try:
+                if kind == "text":
+                    await handle_text(websocket, user, message)
+                elif kind == "media":
+                    await handle_media(websocket, user, message)
+                elif kind == "fetch":
+                    # Не ждём: пусть вложение едет само, а мы слушаем дальше
+                    send_blob_later(websocket, message)
+                elif kind == "upload":
+                    await handle_upload(websocket, user, message)
+                elif kind == "chunk":
+                    await handle_chunk(websocket, user, message)
+                elif kind == "upload_cancel":
+                    await drop_upload(str(message.get("ticket") or ""))
+                elif kind == "open":
+                    await handle_open(websocket, user, message)
+                elif kind == "direct":
+                    await handle_direct(websocket, user, message)
+                elif kind == "group":
+                    await handle_group(websocket, user, message)
+                elif kind == "members":
+                    await handle_members(websocket, user, message)
+                elif kind == "sync":
+                    # Клиент вернулся к жизни и просит свежие списки
+                    await websocket.send(protocol.conversations_message(
+                        await storage.conversations(user["id"])))
+                    await send_people(websocket)
+                elif kind == "delete_group":
+                    await handle_delete_group(websocket, user, message)
+                elif kind == "admin":
+                    await handle_admin(websocket, user, message)
+                elif kind == "read":
+                    await handle_read(websocket, user, message)
+                elif kind == "pin":
+                    await handle_pin(websocket, user, message)
+                elif kind == "forward":
+                    await handle_forward(websocket, user, message)
+                elif kind == "delete":
+                    await handle_delete(websocket, user, message)
+                elif kind == "react":
+                    await handle_react(websocket, user, message)
+                elif kind == "push_key":
+                    await websocket.send(protocol.push_key_message(push.public_key()))
+                elif kind == "push_subscribe":
+                    await handle_push_subscribe(websocket, user, message)
+                elif kind == "search":
+                    await handle_search(websocket, user, message)
+                elif kind == "typing":
+                    await handle_typing(websocket, user, message)
+                elif kind == "people":
+                    await send_people(websocket)
+                elif kind == "profile":
+                    await handle_profile(websocket, user, message)
+                elif kind == "avatar":
+                    await handle_avatar(websocket, user, message)
+                elif kind == "update":
+                    await handle_update(websocket)
+                elif kind == "logout":
+                    await storage.forget_token(token)
+                    await websocket.close()
+                    return
+            except websockets.exceptions.ConnectionClosed:
+                raise           # связь и правда оборвалась — наверх
+            except Exception:
+                # Один неудачный кадр — не повод выгонять человека. Раньше
+                # любая осечка (скажем, вложение не переехало на своё место)
+                # вылетала наверх и рвала соединение: клиент видел «нет
+                # связи», а сообщение пропадало без следа
+                traceback.print_exc()
+                await drop_uploads_of(websocket)
+                try:
+                    await websocket.send(protocol.error_message(
+                        "Не получилось. Попробуйте ещё раз.", "server_slip"))
+                except websockets.exceptions.ConnectionClosed:
+                    raise
 
     except websockets.exceptions.ConnectionClosed:
         # Срабатывает, если клиент закрыл окно или пропал интернет
@@ -1470,6 +1493,9 @@ def build_ssl_context():
 async def main():
     await storage.init()
     await load_limits()
+    огрызки = storage.forget_stale_uploads()
+    if огрызки:
+        print(f"[Сервер]: Убрано незаконченных загрузок: {огрызки}")
     print(f"[Сервер]: База лежит в {storage.DB_PATH}")
     print(f"[Сервер]: Вложения складываются в {storage.MEDIA_DIR}")
     print(f"[Сервер]: Файлы до {protocol.human_size(limits['file'])}, "

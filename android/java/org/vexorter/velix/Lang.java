@@ -256,6 +256,7 @@ class Lang {
         SERVER.put("client_too_old",
                 "Клиент устарел: обновите Velix, этот сервер говорит на новом языке.");
         SERVER.put("session_expired", "Сессия больше не действует, войдите заново.");
+        SERVER.put("server_slip", "Не получилось. Попробуйте ещё раз.");
         SERVER.put("login_required",
                 "Сначала нужно войти в аккаунт. Если у вас старая версия Velix — обновите её.");
         SERVER.put("bad_login",
