@@ -304,6 +304,7 @@ function handle(message) {
     case "reactions": onReactions(message); break;
     case "typing": onTyping(message); break;
     case "edited": onEdited(message); break;
+    case "gallery": showGallery(message); break;
     case "search": onSearch(message); break;
     case "profile": onProfile(message.user); break;
     case "push_key": subscribeToPush(message.key); break;
@@ -1250,6 +1251,80 @@ function onEdited(message) {
   }
 }
 
+// --- вкладка «медиа»: всё, что присылали в эту переписку
+
+function askGallery() {
+  if (conversation === null) return;
+  send({type: "gallery", conversation});
+}
+
+function showGallery(message) {
+  if (message.conversation !== conversation) return;
+  const items = (message.items || []).filter((one) => one.media);
+
+  const sheet = document.createElement("div");
+  sheet.className = "sheet";
+  const card = document.createElement("div");
+  card.className = "sheet-card gallery-card";
+  sheet.append(card);
+
+  const title = document.createElement("p");
+  title.className = "section muted small";
+  title.textContent = items.length
+      ? t("Вложения переписки") + " · " + t("всего: {count}", {count: items.length})
+      : t("Пока ничего не присылали");
+  card.append(title);
+
+  const grid = document.createElement("div");
+  grid.className = "grid";
+  card.append(grid);
+
+  // Листаем потом ровно то, что показали здесь, и в том же порядке
+  const порядок = items.slice().reverse();
+  gallery.length = 0;
+  for (const one of порядок) {
+    gallery.push({media: one.media, kind: one.kind || "image",
+                  name: one.name || t("вложение"),
+                  url: keptMedia.get(one.media) || null});
+  }
+
+  for (const one of порядок) {
+    const cell = document.createElement("div");
+    cell.className = "cell";
+    const url = keptMedia.get(one.media);
+    if (url && (one.kind === "image" || one.kind === "gif")) {
+      const picture = document.createElement("img");
+      picture.src = url;
+      cell.append(picture);
+    } else {
+      const mark = document.createElement("span");
+      mark.className = "muted";
+      mark.textContent = one.kind === "video" ? "▶" : "…";
+      cell.append(mark);
+      if (one.kind === "image" || one.kind === "gif") {
+        mediaSlots.set(one.media, cell);
+        send({type: "fetch", id: one.media});
+      }
+    }
+    cell.addEventListener("click", () => {
+      sheet.remove();
+      showFull(keptMedia.get(one.media), one.kind || "image", one.media);
+    });
+    grid.append(cell);
+  }
+
+  const close = document.createElement("button");
+  close.className = "sheet-button";
+  close.textContent = t("Отмена");
+  close.addEventListener("click", () => sheet.remove());
+  card.append(close);
+
+  sheet.addEventListener("click", (event) => {
+    if (event.target === sheet) sheet.remove();
+  });
+  document.body.append(sheet);
+}
+
 function onTyping(message) {
   if (message.conversation !== conversation) return;
   typingWho = message.nick;
@@ -1612,6 +1687,8 @@ $("composer").addEventListener("submit", (event) => {
   showItem(item);
   cancelReply();
 });
+
+$("gallery-button").addEventListener("click", askGallery);
 
 $("text").addEventListener("input", () => {
   const now = Date.now();

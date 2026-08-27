@@ -875,6 +875,19 @@ public class MainActivity extends Activity implements VelixService.Screen {
         titles.addView(chatTitle, Ui.wide());
         titles.addView(chatStatus, Ui.wide());
         bar.addView(titles, Ui.grow());
+
+        // Вложения ищут не листанием вверх, а вот этой кнопкой
+        TextView сетка = Ui.text(this, "🖼", 20, Ui.MUTED);
+        сетка.setPadding(Ui.dp(this, 10), 0, Ui.dp(this, 6), 0);
+        сетка.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                if (conversation >= 0) {
+                    send(Net.frame("gallery", "conversation", conversation));
+                }
+            }
+        });
+        bar.addView(сетка);
         screen.addView(bar, Ui.wide());
 
         pinBar = Ui.row(this);
@@ -1538,6 +1551,81 @@ public class MainActivity extends Activity implements VelixService.Screen {
     }
 
     // ---------------------------------------------------------------- меню
+
+    /** Все вложения переписки — сеткой, в отдельном окне. */
+    private void showGallery(JSONArray список) {
+        final Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
+
+        LinearLayout card = Ui.column(this);
+        card.setBackground(Ui.rounded(Ui.SIDEBAR, Ui.dp(this, 14)));
+        card.setPadding(Ui.dp(this, 10), Ui.dp(this, 10), Ui.dp(this, 10),
+                Ui.dp(this, 10));
+
+        int сколько = список == null ? 0 : список.length();
+        card.addView(Ui.text(this, сколько == 0
+                ? Lang.t("Пока ничего не присылали")
+                : Lang.t("Вложения переписки") + " · "
+                  + Lang.t("всего: {count}", "count", String.valueOf(сколько)),
+                13, Ui.MUTED), Ui.wide());
+
+        // Листаем потом ровно то, что показали здесь, и в том же порядке
+        gallery.clear();
+        for (int место = сколько - 1; место >= 0; место--) {
+            gallery.add(список.optJSONObject(место));
+        }
+
+        ScrollView свиток = new ScrollView(this);
+        LinearLayout столбец = Ui.column(this);
+        свиток.addView(столбец);
+
+        LinearLayout ряд = null;
+        final int В_РЯД = 3;
+        int сторона = getResources().getDisplayMetrics().widthPixels / 4;
+        for (int место = 0; место < gallery.size(); место++) {
+            final JSONObject one = gallery.get(место);
+            if (место % В_РЯД == 0) {
+                ряд = Ui.row(this);
+                столбец.addView(ряд, Ui.wide());
+            }
+
+            final String номер = one.optString("media", "");
+            ImageView клетка = new ImageView(this);
+            клетка.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            клетка.setBackground(Ui.rounded(Ui.INPUT_BG, Ui.dp(this, 10)));
+            LinearLayout.LayoutParams где =
+                    new LinearLayout.LayoutParams(сторона, сторона);
+            где.setMargins(Ui.dp(this, 3), Ui.dp(this, 3), Ui.dp(this, 3),
+                    Ui.dp(this, 3));
+
+            byte[] данные = media.get(номер);
+            if (данные != null) {
+                клетка.setImageBitmap(BitmapFactory.decodeByteArray(
+                        данные, 0, данные.length));
+            } else if (!номер.isEmpty()) {
+                List<ImageView> ждут = waiting.get(номер);
+                if (ждут == null) {
+                    ждут = new ArrayList<>();
+                    waiting.put(номер, ждут);
+                    send(Net.frame("fetch", "id", номер));
+                }
+                ждут.add(клетка);
+            }
+
+            клетка.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View view) {
+                    dialog.dismiss();
+                    showFull(media.get(номер), номер);
+                }
+            });
+            ряд.addView(клетка, где);
+        }
+
+        card.addView(свиток, Ui.grow());
+        dialog.setContentView(card);
+        dialog.show();
+    }
 
     private void messageMenu(final JSONObject item) {
         final Dialog dialog = new Dialog(this);
@@ -2893,6 +2981,11 @@ public class MainActivity extends Activity implements VelixService.Screen {
             if (settingsScreen != null && settingsScreen.getVisibility()
                     == View.VISIBLE) {
                 openSettings();
+            }
+
+        } else if ("gallery".equals(kind)) {
+            if (frame.optInt("conversation") == conversation) {
+                showGallery(frame.optJSONArray("items"));
             }
 
         } else if ("edited".equals(kind)) {

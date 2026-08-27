@@ -301,6 +301,16 @@ def deleted_message(conversation, message_id):
                    "id": message_id})
 
 
+def gallery_request(conversation):
+    """Показать всё, что присылали в эту переписку."""
+    return encode({"type": "gallery", "conversation": conversation})
+
+
+def gallery_message(conversation, items):
+    return encode({"type": "gallery", "conversation": conversation,
+                   "items": items})
+
+
 def search_result(query, items):
     return encode({"type": "search", "query": query, "items": items})
 

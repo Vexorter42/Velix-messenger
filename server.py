@@ -314,6 +314,15 @@ async def handle_direct(websocket, user, message):
             await storage.conversations(other)))
 
 
+async def handle_gallery(websocket, user, message):
+    """Отдаёт все вложения переписки — для вкладки «медиа»."""
+    conversation = conversation_of(message)
+    if not await allowed(websocket, user, conversation):
+        return
+    items = await storage.media_of(conversation)
+    await websocket.send(protocol.gallery_message(conversation, items))
+
+
 async def handle_edit(websocket, user, message):
     """Правит текст своего сообщения и показывает его всем заново."""
     try:
@@ -1481,6 +1490,8 @@ async def chat_handler(websocket):
                     await handle_pin(websocket, user, message)
                 elif kind == "forward":
                     await handle_forward(websocket, user, message)
+                elif kind == "gallery":
+                    await handle_gallery(websocket, user, message)
                 elif kind == "edit":
                     await handle_edit(websocket, user, message)
                 elif kind == "delete":

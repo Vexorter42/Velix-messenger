@@ -178,6 +178,9 @@ class Lang {
         add("Куда переслать", "Forward to");
         add("Удалить", "Delete");
         add("Изменить", "Edit");
+        add("Вложения переписки", "Attachments in this conversation");
+        add("всего: {count}", "in total: {count}");
+        add("Пока ничего не присылали", "Nothing has been sent yet");
         add("Правим: {text}", "Editing: {text}");
         add("изменено", "edited");
         add("Скопировано", "Copied");

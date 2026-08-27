@@ -29,6 +29,7 @@ from PIL import Image, ImageDraw, ImageSequence
 
 import autostart
 import i18n
+import chime
 import mediacache
 import videoplayer
 import protocol
@@ -144,6 +145,7 @@ DEFAULT_SETTINGS = {
     "theme": "dark",
     "tray": True,        # закрытие окна прячет его в трей, а не выходит
     "autostart": False,  # запуск вместе с Windows
+    "sound": True,       # короткий звук о новом сообщении
 }
 
 
@@ -935,9 +937,16 @@ class VelixApp(ctk.CTk):
                                             text_color=MUTED)
         self.header_subtitle.pack(anchor="w")
 
+        # Вложения переписки: их ищут не листанием вверх, а вот этой кнопкой
+        self.gallery_button = ctk.CTkButton(
+            header, text=t("Медиа"), width=72, height=30, corner_radius=10,
+            font=self.font_small, fg_color=INPUT_BG, hover_color=SEPARATOR,
+            text_color=TEXT, command=self._ask_gallery)
+        self.gallery_button.grid(row=0, column=2, padx=(0, 12))
+
         self.status_dot = ctk.CTkLabel(header, text="●", font=self.font_small,
                                        text_color=ONLINE, width=14)
-        self.status_dot.grid(row=0, column=2, padx=(0, 20))
+        self.status_dot.grid(row=0, column=3, padx=(0, 20))
 
         # Полоска с закреплённым сообщением: появляется, когда есть что показать
         self.pin_bar = ctk.CTkFrame(main, fg_color=COMPOSER, corner_radius=0,
@@ -1073,6 +1082,8 @@ class VelixApp(ctk.CTk):
                                         self._on_tray_switch)
         self.autostart_switch = self._switch(card, t("Запускать вместе с Windows"),
                                              self._on_autostart_switch)
+        self.sound_switch = self._switch(card, t("Звук о новом сообщении"),
+                                         self._on_sound_switch)
 
         self.settings_hint = ctk.CTkLabel(card, text="", font=self.font_small,
                                           text_color=MUTED, wraplength=300,
@@ -1119,6 +1130,7 @@ class VelixApp(ctk.CTk):
         self._set_switch(self.theme_switch,
                          self.settings.get("theme", "dark") == "dark")
         self._set_switch(self.tray_switch, self.settings.get("tray", True))
+        self._set_switch(self.sound_switch, self.settings.get("sound", True))
         # Спрашиваем реестр, а не свою память: пользователь мог убрать
         # автозапуск и мимо нас
         self._set_switch(self.autostart_switch, autostart.is_enabled())
@@ -1134,6 +1146,9 @@ class VelixApp(ctk.CTk):
             self.autostart_switch.configure(state="disabled")
         if not self.tray.available:
             self.tray_switch.configure(state="disabled")
+        if not chime.available():
+            # На этой системе играть нечем — переключать нечего
+            self.sound_switch.configure(state="disabled")
         self.settings_hint.configure(text=self._settings_hint(), text_color=MUTED)
         self._refresh_update_button()
 
@@ -1453,6 +1468,12 @@ class VelixApp(ctk.CTk):
         self.settings["theme"] = theme
         ctk.set_appearance_mode(theme)
         self._save_settings()
+
+    def _on_sound_switch(self):
+        self.settings["sound"] = bool(self.sound_switch.get())
+        self._save_settings()
+        if self.settings["sound"]:
+            chime.play()        # сразу слышно, о чём речь
 
     def _on_tray_switch(self):
         self.settings["tray"] = bool(self.tray_switch.get())
@@ -2059,6 +2080,8 @@ class VelixApp(ctk.CTk):
             self._on_presence(message)
         elif kind == "typing":
             self._on_typing(message)
+        elif kind == "gallery":
+            self._show_gallery(message)
         elif kind == "edited":
             self._on_edited(message)
         elif kind == "deleted":
@@ -2152,6 +2175,10 @@ class VelixApp(ctk.CTk):
     def _on_incoming(self, message):
         """Сообщение из сети: показываем, если оно в открытой переписке."""
         where = message.get("conversation")
+        if message.get("user") != self.user.get("id") \
+                and self.settings.get("sound", True):
+            # Своё эхо не озвучиваем: человек и так знает, что написал
+            chime.play()
         if where not in (None, self.conversation) \
                 or self.state() != "normal":
             # Пришло не сюда или окно спрятано — считаем непрочитанным
@@ -2760,6 +2787,109 @@ class VelixApp(ctk.CTk):
         self.pending_group = True
         self.network.send(protocol.group_request(title, members))
         window.destroy()
+
+    def _ask_gallery(self):
+        """Просит у сервера все вложения переписки."""
+        if self.conversation is None:
+            return
+        if not self.network.send(protocol.gallery_request(self.conversation)):
+            self._service_label(t("Нет связи."))
+
+    def _show_gallery(self, message):
+        """Показывает вложения переписки сеткой поверх ленты."""
+        if message.get("conversation") != self.conversation:
+            return
+
+        items = [one for one in (message.get("items") or [])
+                 if one.get("media")]
+        if self.viewer is not None:
+            self._close_full(self.viewer)
+
+        overlay = ctk.CTkFrame(self, fg_color=CHAT_BG)
+        self.viewer = overlay
+        overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self._fade_widget(overlay, BUBBLE_IN, CHAT_BG, 160)
+
+        шапка = ctk.CTkFrame(overlay, fg_color="transparent")
+        шапка.pack(fill="x", padx=16, pady=(14, 6))
+        ctk.CTkLabel(шапка, text=t("Вложения переписки"), font=self.font_name,
+                     text_color=TEXT).pack(side="left")
+        ctk.CTkLabel(шапка, text=t("всего: {count}", count=len(items)),
+                     font=self.font_small, text_color=MUTED).pack(side="left",
+                                                                  padx=10)
+        ctk.CTkButton(шапка, text="✕", width=36, height=36, corner_radius=18,
+                      font=self.font_button, fg_color=INPUT_BG,
+                      hover_color=SEPARATOR, text_color=TEXT,
+                      command=lambda: self._close_full(overlay)).pack(side="right")
+
+        сетка = ctk.CTkScrollableFrame(overlay, fg_color="transparent")
+        сетка.pack(fill="both", expand=True, padx=10, pady=(0, 12))
+
+        if not items:
+            ctk.CTkLabel(сетка, text=t("Пока ничего не присылали"),
+                         font=self.font_body, text_color=MUTED).pack(pady=30)
+            self.bind("<Escape>", lambda event: self._close_full(overlay))
+            return
+
+        # Листаем потом ровно то, что показали здесь, и в том же порядке
+        порядок = list(reversed(items))
+        self.gallery = [{"media": one["media"], "kind": one.get("kind", "image"),
+                         "name": one.get("name") or t("вложение")}
+                        for one in порядок]
+
+        В_РЯД = 4
+        ряд = None
+        for место, one in enumerate(порядок):
+            if место % В_РЯД == 0:
+                ряд = ctk.CTkFrame(сетка, fg_color="transparent")
+                ряд.pack(fill="x", pady=3)
+            self._gallery_cell(ряд, one)
+
+        self.bind("<Escape>", lambda event: self._close_full(overlay))
+
+    def _gallery_cell(self, ряд, item):
+        """Одна клетка сетки: картинка или подпись про видео и файл."""
+        клетка = ctk.CTkFrame(ряд, fg_color=INPUT_BG, corner_radius=10,
+                              width=132, height=132)
+        клетка.pack(side="left", padx=3)
+        клетка.pack_propagate(False)
+
+        media_id = item.get("media")
+        вид = item.get("kind", "image")
+        подпись = ctk.CTkLabel(клетка, text="▶" if вид == "video" else "…",
+                               font=self.font_body, text_color=MUTED)
+        подпись.pack(expand=True)
+
+        данные = self.kept_media.get(media_id) or mediacache.get(media_id)
+        if данные is not None and вид in ("image", "gif"):
+            self._paint_cell(подпись, данные, media_id)
+        elif вид in ("image", "gif"):
+            self.pending_media[media_id] = ("cell", подпись, вид)
+            self._ask_media(media_id)
+
+        for widget in (клетка, подпись):
+            widget.configure(cursor="hand2")
+            widget.bind("<Button-1>", lambda event, m=media_id, k=вид:
+                        self._open_from_gallery(m, k))
+
+    def _paint_cell(self, holder, данные, media_id):
+        """Рисует уменьшенную картинку в клетке сетки."""
+        try:
+            picture = self._thumbnail(данные, media_id).copy()
+        except Exception:
+            return
+        picture.thumbnail((128, 128), Image.LANCZOS)
+        image = ctk.CTkImage(light_image=picture, dark_image=picture,
+                             size=picture.size)
+        self.images.append(image)
+        if holder.winfo_exists():
+            holder.configure(text="", image=image)
+
+    def _open_from_gallery(self, media_id, kind):
+        """Из сетки — в полный экран, с листанием по всей переписке."""
+        данные = self.kept_media.get(media_id) or mediacache.get(media_id)
+        self._close_full(self.viewer)
+        self._show_full(данные, kind, media_id)
 
     def _update_header(self):
         if self.conversation is None:
@@ -3827,6 +3957,9 @@ class VelixApp(ctk.CTk):
             self._copy_bytes(extra, data)
         elif mode == "picture":
             self._show_picture(widget, extra, data, media_id)
+        elif mode == "cell":
+            if widget is not None and widget.winfo_exists():
+                self._paint_cell(widget, data, media_id)
         elif mode == "viewer":
             self._viewer_arrived(media_id, data)
         elif mode == "watch":

@@ -1266,6 +1266,23 @@ def _edit_message_sync(message_id, user_id, text):
     return row[0], stamp
 
 
+def _media_of_sync(conversation_id, limit=300):
+    """Все вложения переписки, от свежих к старым.
+
+    Лента показывает только последние сообщения, а фотографии ищут по всей
+    переписке: «где та карта с прошлого лета» — это не про листание вверх.
+    """
+    with _lock:
+        rows = _connection.execute(
+            f"SELECT {MESSAGE_FIELDS} FROM messages m"
+            " LEFT JOIN users u ON u.id = m.user_id"
+            " WHERE m.conversation_id = ? AND m.deleted = 0"
+            "   AND m.media_id IS NOT NULL AND m.media_id != ''"
+            " ORDER BY m.id DESC LIMIT ?",
+            (conversation_id, limit)).fetchall()
+    return [_row_to_item(row) for row in rows]
+
+
 def _first_user_sync():
     with _lock:
         row = _connection.execute("SELECT MIN(id) FROM users").fetchone()
@@ -1280,6 +1297,11 @@ async def touch_user(user_id):
 async def edit_message(message_id, user_id, text):
     """Правит своё текстовое сообщение."""
     return await asyncio.to_thread(_edit_message_sync, message_id, user_id, text)
+
+
+async def media_of(conversation_id, limit=300):
+    """Вложения переписки — для вкладки «медиа»."""
+    return await asyncio.to_thread(_media_of_sync, conversation_id, limit)
 
 
 async def first_user():
