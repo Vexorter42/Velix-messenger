@@ -280,6 +280,13 @@ def draw_icon(name, colour):
         pen.rounded_rectangle([8, 8, 26, 28], radius=4, outline=colour, width=line)
         pen.rounded_rectangle([14, 14, 32, 34], radius=4, outline=colour, width=line)
 
+    elif name == "pencil":
+        # Карандаш наискосок: черта грифеля, тело и остриё
+        pen.line([(10, 30), (28, 12)], fill=colour, width=line + 3)
+        pen.line([(26, 8), (32, 14)], fill=colour, width=line)
+        pen.line([(28, 10), (30, 12)], fill=colour, width=line)
+        pen.polygon([(8, 32), (9, 26), (14, 31)], fill=colour)
+
     elif name == "trash":
         pen.line([(8, 12), (32, 12)], fill=colour, width=line)
         pen.line([(16, 8), (24, 8)], fill=colour, width=line)
@@ -511,6 +518,7 @@ class VelixApp(ctk.CTk):
         self.online = set()            # кто сейчас в сети
         self.seen = {}                 # кто когда был в сети последний раз
         self.reply_to = None           # на какое сообщение отвечаем
+        self.editing = None            # какое своё сообщение правим
         self.quotes = {}               # выжимки цитируемых сообщений
         self.rows = {}                 # номер сообщения -> его ряд в ленте
         self.oldest = None             # самое старое загруженное сообщение
@@ -1538,6 +1546,14 @@ class VelixApp(ctk.CTk):
         if not text or self.network.websocket is None or self.conversation is None:
             return
 
+        if self.editing is not None:
+            # Правка уходит вместо нового сообщения: лента поменяется, когда
+            # сервер подтвердит — так все увидят одно и то же
+            self.network.send(protocol.edit_request(self.editing, text))
+            self.message_entry.delete(0, "end")
+            self._cancel_reply()
+            return
+
         self.message_entry.delete(0, "end")
         now = datetime.now()
         # Свой номер нужен, чтобы узнать сообщение в ответе сервера
@@ -2021,6 +2037,8 @@ class VelixApp(ctk.CTk):
             self._on_presence(message)
         elif kind == "typing":
             self._on_typing(message)
+        elif kind == "edited":
+            self._on_edited(message)
         elif kind == "deleted":
             self._on_deleted(message)
         elif kind == "reactions":
@@ -2919,7 +2937,23 @@ class VelixApp(ctk.CTk):
 
     def _cancel_reply(self):
         self.reply_to = None
+        self.editing = None
         self.reply_bar.grid_forget()
+
+    def _start_edit(self, item):
+        """Кладём текст обратно в строку ввода — там его и правят.
+
+        Отдельного окошка не нужно: человек и так пишет внизу, ему привычно
+        там же и поправить. Полоска сверху напоминает, что идёт правка.
+        """
+        self.reply_to = None
+        self.editing = item.get("id")
+        self.reply_label.configure(
+            text=t("Правим: {text}", text=(item.get("text") or "")[:40]))
+        self.reply_bar.grid(row=3, column=0, sticky="ew")
+        self.message_entry.delete(0, "end")
+        self.message_entry.insert(0, item.get("text") or "")
+        self.message_entry.focus_set()
 
     def _delete_message(self, message_id):
         self.network.send(protocol.delete_request(message_id))
@@ -3080,6 +3114,9 @@ class VelixApp(ctk.CTk):
                             lambda: self._copy_item(item)))
             actions.append(("forward", t("Переслать"),
                             lambda: self._forward_menu(item)))
+        if own and item.get("id") and item.get("kind", "text") == "text":
+            actions.append(("pencil", t("Изменить"),
+                            lambda: self._start_edit(item)))
         if own and item.get("id"):
             actions.append(("trash", t("Удалить"),
                             lambda: self._delete_message(item["id"])))
@@ -3242,6 +3279,42 @@ class VelixApp(ctk.CTk):
             return
         self._service_label(t("Скопировано"))
 
+    def _on_edited(self, message):
+        """Сообщение поправили — показываем новое, не перерисовывая ленту."""
+        if message.get("conversation") != self.conversation:
+            return
+        message_id = message.get("id")
+        for item in self.loaded_items:
+            if item.get("id") == message_id:
+                item["text"] = message.get("text", "")
+                item["edited"] = message.get("edited")
+                break
+
+        row = self.rows.get(message_id)
+        if row is None or not row.winfo_exists():
+            return
+        for label in self._labels_of(row):
+            if getattr(label, "velix_body", False):
+                label.configure(text=message.get("text", ""))
+        self._mark_edited(row)
+
+    def _labels_of(self, widget):
+        """Все подписи внутри ряда, на любой глубине."""
+        найдено = []
+        for child in widget.winfo_children():
+            if isinstance(child, ctk.CTkLabel):
+                найдено.append(child)
+            найдено.extend(self._labels_of(child))
+        return найдено
+
+    def _mark_edited(self, row):
+        """Ставит пометку «изменено» рядом со временем."""
+        for label in self._labels_of(row):
+            if getattr(label, "velix_time", False):
+                if not label.cget("text").startswith(t("изменено")):
+                    label.configure(text=t("изменено") + " · " + label.cget("text"))
+                return
+
     def _on_deleted(self, message):
         """Сообщение убрали — гасим его на месте."""
         row = self.rows.get(message.get("id"))
@@ -3380,9 +3453,13 @@ class VelixApp(ctk.CTk):
                                     text_color=TICK_SENT, width=24, anchor="e")
                 tick.pack(side="right")
                 self._remember_tick(item, tick)
-            ctk.CTkLabel(line, text=time_text, font=self.font_small,
-                         text_color=TIME_OUT if own else TIME_IN,
-                         anchor="e").pack(side="right")
+            подпись = t("изменено") + " · " + time_text \
+                if item.get("edited") else time_text
+            часы = ctk.CTkLabel(line, text=подпись, font=self.font_small,
+                                text_color=TIME_OUT if own else TIME_IN,
+                                anchor="e")
+            часы.velix_time = True
+            часы.pack(side="right")
 
         # Полоска реакций живёт под сообщением и появляется, когда есть что показать
         message_id = (item or {}).get("id")
@@ -3520,6 +3597,7 @@ class VelixApp(ctk.CTk):
         label = ctk.CTkLabel(bubble, text=text, font=self.font_body,
                              text_color=TEXT_OUT if own else TEXT, justify="left",
                              anchor="w", wraplength=self.wrap_length)
+        label.velix_body = True         # эту подпись меняет правка
         label.pack(fill="x", padx=13, pady=(3 if own or grouped else 1, 0))
 
         self._add_time(bubble, own, time_text, item)

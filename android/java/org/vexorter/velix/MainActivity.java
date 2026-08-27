@@ -130,6 +130,7 @@ public class MainActivity extends Activity implements VelixService.Screen {
     private final Map<String, byte[]> localMedia = new HashMap<>();
     private int conversation = -1;
     private int replyTo = -1;
+    private int editing = 0;        // какое своё сообщение правим
     private int localNumber;
     private boolean pendingGroup;
     private int pendingDirect = -1;   // ждём переписку с этим человеком
@@ -1100,6 +1101,14 @@ public class MainActivity extends Activity implements VelixService.Screen {
         }
         messageField.setText("");
 
+        if (editing > 0) {
+            // Правка уходит вместо нового сообщения; лента поменяется, когда
+            // сервер подтвердит — так все увидят одно и то же
+            send(Net.frame("edit", "id", editing, "text", text));
+            cancelReply();
+            return;
+        }
+
         String local = "l" + (++localNumber);
         JSONObject frame = Net.frame("text", "nick", me.optString("name"),
                 "text", text, "conversation", conversation, "local", local);
@@ -1518,6 +1527,16 @@ public class MainActivity extends Activity implements VelixService.Screen {
             }), Ui.wide());
         }
 
+        if (id > 0 && item.optInt("user", -1) == me.optInt("id")
+                && "text".equals(item.optString("kind", "text"))) {
+            card.addView(menuRow("✎", Lang.t("Изменить"), dialog, new Runnable() {
+                @Override
+                public void run() {
+                    startEdit(item);
+                }
+            }), Ui.wide());
+        }
+
         if (id > 0 && item.optInt("user", -1) == me.optInt("id")) {
             card.addView(menuRow("🗑", Lang.t("Удалить"), dialog, new Runnable() {
                 @Override
@@ -1609,7 +1628,23 @@ public class MainActivity extends Activity implements VelixService.Screen {
 
     private void cancelReply() {
         replyTo = -1;
+        editing = 0;
         replyBar.setVisibility(View.GONE);
+    }
+
+    /** Текст возвращается в ту же строку ввода — там его и правят. */
+    private void startEdit(JSONObject item) {
+        editing = item.optInt("id", 0);
+        if (editing <= 0) {
+            return;
+        }
+        replyTo = -1;
+        replyLabel.setText(Lang.t("Правим: {text}", "text",
+                cut(item.optString("text"), 40)));
+        replyBar.setVisibility(View.VISIBLE);
+        messageField.setText(item.optString("text"));
+        messageField.setSelection(messageField.getText().length());
+        messageField.requestFocus();
     }
 
     private void forwardMenu(final JSONObject item) {
@@ -2774,6 +2809,23 @@ public class MainActivity extends Activity implements VelixService.Screen {
             if (settingsScreen != null && settingsScreen.getVisibility()
                     == View.VISIBLE) {
                 openSettings();
+            }
+
+        } else if ("edited".equals(kind)) {
+            int номер = frame.optInt("id");
+            for (JSONObject one : items) {
+                if (one.optInt("id") == номер) {
+                    try {
+                        one.put("text", frame.optString("text"));
+                        one.put("edited", frame.optString("edited"));
+                    } catch (Exception ignored) {
+                        // Не сложилось — перерисовка всё равно покажет своё
+                    }
+                    break;
+                }
+            }
+            if (frame.optInt("conversation") == conversation) {
+                openConversation(conversation);   // проще перерисовать целиком
             }
 
         } else if ("typing".equals(kind)) {

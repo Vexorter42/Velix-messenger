@@ -177,6 +177,9 @@ class Lang {
         add("Переслать", "Forward");
         add("Куда переслать", "Forward to");
         add("Удалить", "Delete");
+        add("Изменить", "Edit");
+        add("Правим: {text}", "Editing: {text}");
+        add("изменено", "edited");
         add("Скопировано", "Copied");
         add("Переслано от {name}", "Forwarded from {name}");
         add("Ответ {name}", "Reply to {name}");

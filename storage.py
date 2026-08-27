@@ -46,6 +46,7 @@ MESSAGE_COLUMNS = {
     "reply_to": "INTEGER",
     "deleted": "INTEGER NOT NULL DEFAULT 0",
     "forwarded": "TEXT",
+    "edited_at": "TEXT",
 }
 
 # Код восстановления пароля хранится хешем, как и сам пароль
@@ -1027,10 +1028,12 @@ def _row_to_item(row):
     """Одна строка из базы — в то, что понимает клиент."""
     (message_id, nickname, text, created_at, kind, media_id, media_name,
      media_size, deleted, reply_to, user_id, profile_name, avatar_id,
-     forwarded) = row
+     forwarded, edited_at) = row
 
     item = {"id": message_id, "nick": profile_name or nickname, "at": created_at,
             "kind": kind or "text", "user": user_id}
+    if edited_at:
+        item["edited"] = edited_at
     if avatar_id:
         item["avatar"] = avatar_id
     if reply_to:
@@ -1053,7 +1056,7 @@ def _row_to_item(row):
 
 MESSAGE_FIELDS = ("m.id, m.nickname, m.text, m.created_at, m.kind, m.media_id,"
                   " m.media_name, m.media_size, m.deleted, m.reply_to, m.user_id,"
-                  " u.name, u.avatar_id, m.forwarded")
+                  " u.name, u.avatar_id, m.forwarded, m.edited_at")
 
 
 def _messages_sync(conversation_id, limit, before):
@@ -1243,6 +1246,26 @@ def _touch_user_sync(user_id):
     return stamp
 
 
+def _edit_message_sync(message_id, user_id, text):
+    """Меняет текст своего сообщения. Возвращает (переписка, когда) или None.
+
+    Чужое и удалённое не трогаем, вложение тоже: у него правится разве что
+    подпись, а её у нас нет.
+    """
+    stamp = now()
+    with _lock:
+        row = _connection.execute(
+            "SELECT conversation_id, user_id, kind, deleted FROM messages"
+            " WHERE id = ?", (message_id,)).fetchone()
+        if row is None or row[1] != user_id or row[2] != "text" or row[3]:
+            return None
+        _connection.execute(
+            "UPDATE messages SET text = ?, edited_at = ? WHERE id = ?",
+            (text, stamp, message_id))
+        _connection.commit()
+    return row[0], stamp
+
+
 def _first_user_sync():
     with _lock:
         row = _connection.execute("SELECT MIN(id) FROM users").fetchone()
@@ -1252,6 +1275,11 @@ def _first_user_sync():
 async def touch_user(user_id):
     """Отметка «был здесь»: ставится, когда человек уходит из сети."""
     return await asyncio.to_thread(_touch_user_sync, user_id)
+
+
+async def edit_message(message_id, user_id, text):
+    """Правит своё текстовое сообщение."""
+    return await asyncio.to_thread(_edit_message_sync, message_id, user_id, text)
 
 
 async def first_user():

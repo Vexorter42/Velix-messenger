@@ -313,6 +313,32 @@ async def handle_direct(websocket, user, message):
             await storage.conversations(other)))
 
 
+async def handle_edit(websocket, user, message):
+    """Правит текст своего сообщения и показывает его всем заново."""
+    try:
+        message_id = int(message.get("id"))
+    except (TypeError, ValueError):
+        return
+
+    text = str(message.get("text") or "").strip()[:MAX_TEXT]
+    if not text:
+        await websocket.send(protocol.error_message(
+            "Пустое сообщение не сохраняем — удалите его.", "empty_edit"))
+        return
+
+    правка = await storage.edit_message(message_id, user["id"], text)
+    if правка is None:
+        await websocket.send(protocol.error_message(
+            "Это сообщение поправить нельзя.", "cannot_edit"))
+        return
+
+    conversation, когда = правка
+    print(f"[Лог]: {user['name']} поправил сообщение {message_id}")
+    кадр = protocol.edited_message(conversation, message_id, text, когда)
+    await websocket.send(кадр)
+    await send_to_conversation(conversation, кадр, websocket)
+
+
 async def handle_delete(websocket, user, message):
     """Прячет своё сообщение у всех."""
     try:
@@ -1425,6 +1451,8 @@ async def chat_handler(websocket):
                     await handle_pin(websocket, user, message)
                 elif kind == "forward":
                     await handle_forward(websocket, user, message)
+                elif kind == "edit":
+                    await handle_edit(websocket, user, message)
                 elif kind == "delete":
                     await handle_delete(websocket, user, message)
                 elif kind == "react":

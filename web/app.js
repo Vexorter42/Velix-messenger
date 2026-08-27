@@ -29,6 +29,7 @@ let people = [];
 let online = new Set();
 let quotes = {};
 let replyTo = null;
+let editing = null;            // какое своё сообщение правим
 let pendingDirect = false;     // ждём номер только что созданной личной
 let oldest = null;
 let hasOlder = false;
@@ -256,6 +257,7 @@ function handle(message) {
     case "deleted": onDeleted(message); break;
     case "reactions": onReactions(message); break;
     case "typing": onTyping(message); break;
+    case "edited": onEdited(message); break;
     case "search": onSearch(message); break;
     case "profile": onProfile(message.user); break;
     case "push_key": subscribeToPush(message.key); break;
@@ -926,6 +928,7 @@ function showItem(item, localUrl) {
 
   if ((item.kind || "text") === "text") {
     const text = document.createElement("div");
+    text.className = "body";
     text.textContent = item.text || "";
     bubble.append(text);
   } else {
@@ -946,6 +949,7 @@ function showItem(item, localUrl) {
 
   const time = document.createElement("div");
   time.className = "time";
+  if (item.edited) time.append(t("изменено") + " · ");
   time.textContent = moment.toLocaleTimeString([],
       {hour: "2-digit", minute: "2-digit"});
   if (own) {
@@ -1099,6 +1103,9 @@ function messageMenu(item, own) {
   action(t("Ответить"), () => startReply(item));
   action(t("Реакция"), () => pickEmoji(item.id));
   action(t("Копировать"), () => copyItem(item));
+  if (own && (item.kind || "text") === "text") {
+    action(t("Изменить"), () => startEdit(item));
+  }
   if (own) action(t("Удалить"), () => send({type: "delete", id: item.id}));
   action(t("Отмена"), () => {});
 
@@ -1145,6 +1152,7 @@ function startReply(item) {
 
 function cancelReply() {
   replyTo = null;
+  editing = null;
   $("reply-bar").hidden = true;
 }
 
@@ -1156,6 +1164,38 @@ function onDeleted(message) {
   gone.className = "muted small";
   gone.textContent = t("сообщение удалено");
   row.append(gone);
+}
+
+function startEdit(item) {
+  // Текст возвращается в ту же строку ввода: человек и так пишет внизу
+  replyTo = null;
+  editing = item.id;
+  $("reply-text").textContent = t("Правим: {text}",
+                                  {text: (item.text || "").slice(0, 40)});
+  $("reply-bar").hidden = false;
+  const field = $("text");
+  field.value = item.text || "";
+  field.focus();
+}
+
+function onEdited(message) {
+  for (const item of loadedItems) {
+    if (item.id === message.id) {
+      item.text = message.text || "";
+      item.edited = message.edited;
+      break;
+    }
+  }
+  if (message.conversation !== conversation) return;
+
+  const row = rows.get(message.id);
+  if (!row) return;
+  const body = row.querySelector(".body");
+  if (body) body.textContent = message.text || "";
+  const time = row.querySelector(".time");
+  if (time && !time.textContent.startsWith(t("изменено"))) {
+    time.prepend(t("изменено") + " · ");
+  }
 }
 
 function onTyping(message) {
@@ -1495,6 +1535,15 @@ $("composer").addEventListener("submit", (event) => {
   if (!text) return;
 
   if (conversation === null) return;
+
+  if (editing !== null) {
+    // Правка уходит вместо нового сообщения; лента поменяется, когда
+    // сервер подтвердит — так все увидят одно и то же
+    send({type: "edit", id: editing, text});
+    field.value = "";
+    cancelReply();
+    return;
+  }
 
   field.value = "";
   const local = `l${++localNumber}`;

@@ -285,6 +285,17 @@ def presence_message(user_id, online, seen=None):
                    "seen": seen})
 
 
+def edit_request(message_id, text):
+    """Поправить своё сообщение."""
+    return encode({"type": "edit", "id": message_id, "text": text})
+
+
+def edited_message(conversation, message_id, text, at):
+    """Сообщение поправили — у всех оно должно смениться."""
+    return encode({"type": "edited", "conversation": conversation,
+                   "id": message_id, "text": text, "edited": at})
+
+
 def deleted_message(conversation, message_id):
     return encode({"type": "deleted", "conversation": conversation,
                    "id": message_id})

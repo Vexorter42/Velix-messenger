@@ -71,6 +71,8 @@ SERVER_MESSAGES = {
     "client_too_old": "Клиент устарел: обновите Velix, этот сервер говорит на новом языке.",
     "session_expired": "Сессия больше не действует, войдите заново.",
     "server_slip": "Не получилось. Попробуйте ещё раз.",
+    "cannot_edit": "Это сообщение поправить нельзя.",
+    "empty_edit": "Пустое сообщение не сохраняем — удалите его.",
     "login_required": "Сначала нужно войти в аккаунт. "
                       "Если у вас старая версия Velix — обновите её.",
     "bad_login": "Логин: от 3 до 24 символов, латиница, цифры, точка, дефис"
@@ -211,6 +213,9 @@ ENGLISH = {
     "Выберите переписку слева.": "Pick a conversation on the left.",
     "Реакция": "Reaction",
     "Удалить": "Delete",
+    "Изменить": "Edit",
+    "Правим: {text}": "Editing: {text}",
+    "изменено": "edited",
     "Ответ {name}: {text}": "Reply to {name}: {text}",
     "Найдено: {count}": "Found: {count}",
     "По запросу «{query}» ничего нет": "Nothing found for “{query}”",
@@ -408,6 +413,9 @@ ENGLISH = {
     "Сессия больше не действует, войдите заново.":
         "This session is no longer valid, sign in again.",
     "Не получилось. Попробуйте ещё раз.": "That did not work. Try again.",
+    "Это сообщение поправить нельзя.": "This message cannot be edited.",
+    "Пустое сообщение не сохраняем — удалите его.":
+        "An empty message is not kept — delete it instead.",
     "Сначала нужно войти в аккаунт. Если у вас старая версия Velix — обновите её.":
         "You need to sign in first. If your Velix is old, update it.",
     "У группы должно быть название.": "A group needs a name.",
