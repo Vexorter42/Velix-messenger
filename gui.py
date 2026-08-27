@@ -519,6 +519,8 @@ class VelixApp(ctk.CTk):
         self.seen = {}                 # кто когда был в сети последний раз
         self.reply_to = None           # на какое сообщение отвечаем
         self.editing = None            # какое своё сообщение правим
+        self.drafts = {}               # недописанное по переписке
+        self.outbox = []               # написанное, пока не было связи
         self.quotes = {}               # выжимки цитируемых сообщений
         self.rows = {}                 # номер сообщения -> его ряд в ленте
         self.oldest = None             # самое старое загруженное сообщение
@@ -1543,7 +1545,7 @@ class VelixApp(ctk.CTk):
 
     def _on_send(self):
         text = self.message_entry.get().strip()
-        if not text or self.network.websocket is None or self.conversation is None:
+        if not text or self.conversation is None:
             return
 
         if self.editing is not None:
@@ -1555,14 +1557,20 @@ class VelixApp(ctk.CTk):
             return
 
         self.message_entry.delete(0, "end")
+        self.drafts.pop(self.conversation, None)
+        self._save_drafts()
         now = datetime.now()
         # Свой номер нужен, чтобы узнать сообщение в ответе сервера
         self.local_number += 1
         local = f"l{self.local_number}"
-        self.network.send(protocol.text_message(self.user.get("name", ""), text,
-                                                self.conversation, self.reply_to,
-                                                local))
+        кадр = protocol.text_message(self.user.get("name", ""), text,
+                                     self.conversation, self.reply_to, local)
+        if not self.network.send(кадр):
+            # Связи нет: сообщение подождёт в очереди и уйдёт само, когда
+            # она вернётся. Раньше оно просто не отправлялось — молча
+            self.outbox.append((local, кадр))
         item = {"text": text, "kind": "text", "local": local,
+                "waiting": self.network.websocket is None,
                 "nick": self.user.get("name", t("Я")),
                 "user": self.user.get("id"),
                 "at": now.astimezone().isoformat(),
@@ -1844,6 +1852,7 @@ class VelixApp(ctk.CTk):
 
     def _on_close(self):
         """Крестик окна: прячем в трей либо выходим совсем."""
+        self._keep_draft()
         if self.settings.get("tray", True) and self.tray.available:
             self.withdraw()
             self.tray.show()
@@ -1932,11 +1941,23 @@ class VelixApp(ctk.CTk):
             # Остальные подождут следующего захода — окно должно дышать
             self.events.put(("message", вложение))
 
+    def _flush_outbox(self):
+        """Связь вернулась — досылаем написанное, по порядку."""
+        while self.outbox:
+            local, кадр = self.outbox[0]
+            if not self.network.send(кадр):
+                return          # опять пропала: остальное подождёт
+            self.outbox.pop(0)
+            self._paint_tick(local, "sending")
+
     def _on_opened(self, secure):
         """Соединение открылось — отправляем то, чем собирались входить."""
         self.secure = bool(secure)
         if self.pending_login:
             self.network.send(self.pending_login)
+        # Написанное без связи ждало в очереди: теперь ему есть куда уйти.
+        # Даём входу пройти первым — сервер не примет чужое без него
+        self.after(1200, self._flush_outbox)
 
     def _on_welcome(self, message):
         self._stop_retrying()
@@ -1972,6 +1993,7 @@ class VelixApp(ctk.CTk):
         self.empty_hint = self._service_label(t("Пока тихо. Напишите первым."))
 
         self._refresh_me()
+        self._load_drafts()
         self.status_dot.configure(text_color=ONLINE)
         self._refresh_subtitle()
         if not self.secure:
@@ -2584,14 +2606,52 @@ class VelixApp(ctk.CTk):
         for child in row.winfo_children():
             child.bind("<Button-1>", lambda event, i=person["id"]: self._start_direct(i))
 
+    def _keep_draft(self):
+        """Запоминает недописанное перед уходом из переписки."""
+        if self.conversation is None or not hasattr(self, "message_entry"):
+            return
+        if self.editing is not None:
+            return          # правка — не черновик, она отменится сама
+        текст = self.message_entry.get().strip()
+        if текст:
+            self.drafts[self.conversation] = текст
+        else:
+            self.drafts.pop(self.conversation, None)
+        self._save_drafts()
+
+    def _restore_draft(self):
+        """Возвращает недописанное, когда человек вернулся в переписку."""
+        if not hasattr(self, "message_entry"):
+            return
+        self.message_entry.delete(0, "end")
+        текст = self.drafts.get(self.conversation)
+        if текст:
+            self.message_entry.insert(0, текст)
+
+    def _save_drafts(self):
+        """Черновики переживают и закрытие окна: их место — в настройках."""
+        try:
+            self.config_data.setdefault("drafts", {})[self.server] = {
+                str(номер): текст for номер, текст in self.drafts.items()}
+            store.save(self.config_data)
+        except Exception:
+            pass            # не сохранилось — черновик всё равно на экране
+
+    def _load_drafts(self):
+        сохранённые = (self.config_data.get("drafts") or {}).get(self.server) or {}
+        self.drafts = {int(номер): текст for номер, текст in сохранённые.items()
+                       if текст}
+
     def _open(self, conversation_id, force=False):
         """Открывает переписку и просит её историю."""
         if conversation_id == self.conversation and not force:
             return
+        self._keep_draft()
         self.conversation = conversation_id
         self.was_open = conversation_id
         self.unread.pop(conversation_id, None)
         self._cancel_reply()
+        self._restore_draft()
         self._clear_messages()
         self._refresh_side_list()
         self._update_header()
@@ -3478,7 +3538,10 @@ class VelixApp(ctk.CTk):
         state = item.get("state") or self.states.get(key)
         if state is None:
             # У своего сообщения до ответа сервера номера ещё нет
-            state = "sending" if item.get("id") is None else "sent"
+            if item.get("waiting"):
+                state = "waiting"       # связи не было, лежит в очереди
+            else:
+                state = "sending" if item.get("id") is None else "sent"
         self._paint_tick(key, state)
 
     def _paint_tick(self, key, state):
@@ -3487,7 +3550,8 @@ class VelixApp(ctk.CTk):
         label = self.ticks.get(key)
         if label is None or not label.winfo_exists():
             return
-        marks = {"sending": "·", "sent": "✓", "delivered": "✓✓", "read": "✓✓"}
+        marks = {"waiting": "🕓", "sending": "·", "sent": "✓",
+                 "delivered": "✓✓", "read": "✓✓"}
         label.configure(text=marks.get(state, "✓"),
                         text_color=TICK_READ if state == "read" else TICK_SENT)
 

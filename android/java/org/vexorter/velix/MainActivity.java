@@ -131,6 +131,8 @@ public class MainActivity extends Activity implements VelixService.Screen {
     private int conversation = -1;
     private int replyTo = -1;
     private int editing = 0;        // какое своё сообщение правим
+    private final Map<Integer, String> drafts = new HashMap<>();
+    private final List<JSONObject> outbox = new ArrayList<>();
     private int localNumber;
     private boolean pendingGroup;
     private int pendingDirect = -1;   // ждём переписку с этим человеком
@@ -978,6 +980,7 @@ public class MainActivity extends Activity implements VelixService.Screen {
     }
 
     private void openConversation(int id) {
+        keepDraft();
         conversation = id;
         // Android волен убить приложение, пока человек выбирает файл в
         // галерее. Тогда экран создаётся заново, и без этой пометки он
@@ -1006,6 +1009,7 @@ public class MainActivity extends Activity implements VelixService.Screen {
 
         typingWho = null;
         updateChatStatus();
+        restoreDraft();
         send(Net.frame("open", "conversation", id));
         show(chatScreen);
     }
@@ -1085,6 +1089,64 @@ public class MainActivity extends Activity implements VelixService.Screen {
                 был.get(Calendar.YEAR));
     }
 
+    /** Недописанное переживает и переключение, и закрытие приложения. */
+    private void keepDraft() {
+        if (conversation < 0 || messageField == null || editing > 0) {
+            return;
+        }
+        String текст = messageField.getText().toString().trim();
+        if (текст.isEmpty()) {
+            drafts.remove(conversation);
+        } else {
+            drafts.put(conversation, текст);
+        }
+        JSONObject свёрток = new JSONObject();
+        for (Map.Entry<Integer, String> пара : drafts.entrySet()) {
+            try {
+                свёрток.put(String.valueOf(пара.getKey()), пара.getValue());
+            } catch (Exception ignored) {
+                // Один черновик не сохранился — остальные всё равно лягут
+            }
+        }
+        prefs().edit().putString("drafts", свёрток.toString()).apply();
+    }
+
+    private void restoreDraft() {
+        if (messageField == null) {
+            return;
+        }
+        String текст = drafts.get(conversation);
+        messageField.setText(текст == null ? "" : текст);
+        if (текст != null) {
+            messageField.setSelection(messageField.getText().length());
+        }
+    }
+
+    private void loadDrafts() {
+        drafts.clear();
+        try {
+            JSONObject свёрток = new JSONObject(
+                    prefs().getString("drafts", "{}"));
+            java.util.Iterator<String> ключи = свёрток.keys();
+            while (ключи.hasNext()) {
+                String ключ = ключи.next();
+                drafts.put(Integer.parseInt(ключ), свёрток.optString(ключ));
+            }
+        } catch (Exception ignored) {
+            // Ничего не разобралось — начнём с чистого листа
+        }
+    }
+
+    /** Связь вернулась — досылаем написанное, по порядку. */
+    private void flushOutbox() {
+        if (service == null || !service.connected()) {
+            return;
+        }
+        while (!outbox.isEmpty()) {
+            send(outbox.remove(0));
+        }
+    }
+
     private JSONObject conversationById(int id) {
         for (JSONObject item : conversations) {
             if (item.optInt("id") == id) {
@@ -1109,6 +1171,9 @@ public class MainActivity extends Activity implements VelixService.Screen {
             return;
         }
 
+        drafts.remove(conversation);
+        keepDraft();
+
         String local = "l" + (++localNumber);
         JSONObject frame = Net.frame("text", "nick", me.optString("name"),
                 "text", text, "conversation", conversation, "local", local);
@@ -1119,7 +1184,13 @@ public class MainActivity extends Activity implements VelixService.Screen {
                 // Ответ не приложился — сообщение всё равно уйдёт
             }
         }
-        send(frame);
+        if (service != null && service.connected()) {
+            send(frame);
+        } else {
+            // Связи нет: сообщение подождёт в очереди и уйдёт само, когда
+            // она вернётся. Раньше оно просто пропадало
+            outbox.add(frame);
+        }
 
         JSONObject item = Net.frame("text", "nick", me.optString("name"),
                 "text", text, "user", me.optInt("id"), "local", local,
@@ -2624,6 +2695,8 @@ public class MainActivity extends Activity implements VelixService.Screen {
         if ("welcome".equals(kind)) {
             me = frame.optJSONObject("user");
             prefs().edit().putString("token", frame.optString("token")).apply();
+            loadDrafts();
+            flushOutbox();
             if (frame.optJSONObject("limits") != null) {
                 limits = frame.optJSONObject("limits");
             }

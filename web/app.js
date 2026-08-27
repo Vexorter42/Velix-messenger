@@ -30,6 +30,8 @@ let online = new Set();
 let quotes = {};
 let replyTo = null;
 let editing = null;            // какое своё сообщение правим
+let drafts = {};               // недописанное по переписке
+let outbox = [];               // написанное, пока не было связи
 let pendingDirect = false;     // ждём номер только что созданной личной
 let oldest = null;
 let hasOlder = false;
@@ -163,7 +165,11 @@ function connect(credentials) {
   socket = new WebSocket(`${scheme}://${location.host}/`);
   socket.binaryType = "arraybuffer";
 
-  socket.onopen = () => send(credentials);
+  socket.onopen = () => {
+    send(credentials);
+    // Написанному без связи есть куда уйти; входу даём пройти первым
+    setTimeout(flushOutbox, 1200);
+  };
 
   socket.onmessage = (event) => {
     if (typeof event.data !== "string") {
@@ -232,9 +238,49 @@ document.addEventListener("visibilitychange", () => {
 });
 
 function send(message, payload) {
-  if (!socket || socket.readyState !== WebSocket.OPEN) return;
+  if (!socket || socket.readyState !== WebSocket.OPEN) return false;
   socket.send(JSON.stringify({v: 6, ...message}));
   if (payload) socket.send(payload);
+  return true;
+}
+
+// --- черновики: недописанное переживает переключение и закрытие вкладки
+
+function keepDraft() {
+  if (conversation === null) return;
+  const field = $("text");
+  if (!field || editing !== null) return;
+  const текст = field.value.trim();
+  if (текст) drafts[conversation] = текст;
+  else delete drafts[conversation];
+  try {
+    localStorage.setItem("velix-drafts", JSON.stringify(drafts));
+  } catch (ignored) {
+    // Место кончилось или хранилище закрыто — черновик всё равно на экране
+  }
+}
+
+function restoreDraft() {
+  const field = $("text");
+  if (field) field.value = drafts[conversation] || "";
+}
+
+function loadDrafts() {
+  try {
+    drafts = JSON.parse(localStorage.getItem("velix-drafts") || "{}");
+  } catch (ignored) {
+    drafts = {};
+  }
+}
+
+// --- очередь: написанное без связи уходит, когда она вернётся
+
+function flushOutbox() {
+  while (outbox.length) {
+    if (!send(outbox[0])) return;
+    const кадр = outbox.shift();
+    paintTick(кадр.local, "sending");
+  }
 }
 
 function handle(message) {
@@ -351,6 +397,7 @@ function onUploadProgress(message) {
 function onWelcome(message) {
   reconnectAttempt = 0;
   user = message.user || {};
+  loadDrafts();
   if (message.limits) {
     limits = Object.assign({}, limits, message.limits);
   }
@@ -736,6 +783,7 @@ function drawList() {
 }
 
 function openConversation(id, title) {
+  keepDraft();
   conversation = id;
   unread.delete(id);
   cancelReply();
@@ -744,6 +792,7 @@ function openConversation(id, title) {
   paintAvatar($("chat-avatar"), title || t("Общий чат"),
               (conversations.find((c) => c.id === id) || {}).avatar);
   show("chat");
+  restoreDraft();
   typingWho = null;
   updateStatus();
   send({type: "open", conversation: id});
@@ -959,6 +1008,7 @@ function showItem(item, localUrl) {
     time.append(" ", mark);
     if (key !== undefined) {
       tickRows.set(key, mark);
+      if (item.waiting && !states.get(key)) states.set(key, "waiting");
       paintTick(key, item.state || states.get(key)
                      || (item.id ? "sent" : "sending"));
     }
@@ -988,7 +1038,8 @@ function showItem(item, localUrl) {
   scrollDown();
 }
 
-const TICKS = {sending: "·", sent: "✓", delivered: "✓✓", read: "✓✓"};
+const TICKS = {waiting: "🕓", sending: "·", sent: "✓",
+               delivered: "✓✓", read: "✓✓"};
 
 function paintTick(key, state) {
   states.set(key, state);
@@ -1546,10 +1597,15 @@ $("composer").addEventListener("submit", (event) => {
   }
 
   field.value = "";
+  delete drafts[conversation];
+  keepDraft();
   const local = `l${++localNumber}`;
-  send({type: "text", nick: user.name, text, conversation, reply_to: replyTo,
-        local});
+  const кадр = {type: "text", nick: user.name, text, conversation,
+                reply_to: replyTo, local};
+  const ушло = send(кадр);
+  if (!ушло) outbox.push(кадр);
   const item = {nick: user.name, user: user.id, text, kind: "text", local,
+                waiting: !ушло,
                 at: new Date().toISOString(), reply_to: replyTo, conversation};
   loadedItems.push(item);
   showItem(item);
