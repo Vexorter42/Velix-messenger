@@ -349,7 +349,7 @@ def avatar_header(name, size):
 
 
 def welcome_message(user, token, update=None, recovery=None, admin=False,
-                    limits=None):
+                    limits=None, apk=None):
     """Приветствие после входа.
 
     recovery появляется один раз — при регистрации и после смены пароля:
@@ -367,6 +367,9 @@ def welcome_message(user, token, update=None, recovery=None, admin=False,
         payload["limits"] = limits
     if update:
         payload["update"] = update
+    if apk:
+        # Телефон обновляется тем же путём: сравнит версию и попросит файл
+        payload["apk"] = apk
     if recovery:
         payload["recovery"] = recovery
     return encode(payload)
@@ -374,6 +377,17 @@ def welcome_message(user, token, update=None, recovery=None, admin=False,
 
 def update_request():
     return encode({"type": "update"})
+
+
+def apk_request():
+    """Телефон просит свежее приложение."""
+    return encode({"type": "apk"})
+
+
+def apk_header(version, size, parts=1):
+    """Описание приложения для телефона. Дальше идут parts кадров."""
+    return encode({"type": "apk_blob", "version": version, "size": size,
+                   "parts": max(1, int(parts))})
 
 
 def update_header(version, size, parts=1):

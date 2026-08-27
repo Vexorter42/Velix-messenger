@@ -243,10 +243,10 @@ def check_host(connection, request):
     return connection.respond(HTTPStatus.FORBIDDEN, "Здесь ничего нет.\n")
 
 
-def available_update():
-    """Что за версия лежит в каталоге обновлений. None, если ничего нет."""
-    build = UPDATES_DIR / "Velix.exe"
-    marker = UPDATES_DIR / "version.txt"
+def _published(файл, отметка):
+    """Что лежит в каталоге обновлений под этим именем. None, если ничего."""
+    build = UPDATES_DIR / файл
+    marker = UPDATES_DIR / отметка
     if not build.exists() or not marker.exists():
         return None
     try:
@@ -256,6 +256,37 @@ def available_update():
     if not version:
         return None
     return {"version": version, "size": build.stat().st_size}
+
+
+def available_update():
+    """Что за версия лежит в каталоге обновлений. None, если ничего нет."""
+    return _published("Velix.exe", "version.txt")
+
+
+def available_apk():
+    """То же для телефона: приложение и его версия."""
+    return _published("Velix.apk", "apk-version.txt")
+
+
+async def handle_apk(websocket):
+    """Отдаёт телефону свежее приложение — тем же путём, что и вложение."""
+    сведения = available_apk()
+    if сведения is None:
+        await websocket.send(protocol.error_message(
+            "Обновление недоступно.", "update_unavailable"))
+        return
+
+    data = await asyncio.to_thread((UPDATES_DIR / "Velix.apk").read_bytes)
+    куски = [data[место:место + protocol.CHUNK_SIZE]
+             for место in range(0, len(data), protocol.CHUNK_SIZE)] or [b""]
+    print(f"[Сервер]: Отдаём приложение {сведения['version']} "
+          f"({protocol.human_size(len(data))})")
+
+    async with blob_pen(websocket):
+        await websocket.send(protocol.apk_header(
+            сведения["version"], len(data), len(куски)))
+        for кусок in куски:
+            await websocket.send(кусок)
 
 
 async def handle_update(websocket):
@@ -1412,7 +1443,8 @@ async def chat_handler(websocket):
         await websocket.send(protocol.welcome_message(
             user, token, available_update(), recovery, await is_admin(user),
             {"file": limits["file"], "video": limits["video"],
-             "image": protocol.MAX_MEDIA_SIZE, "chunk": protocol.CHUNK_SIZE}))
+             "image": protocol.MAX_MEDIA_SIZE, "chunk": protocol.CHUNK_SIZE},
+            available_apk()))
         # Историю отдаём до регистрации в connected_clients, иначе новые
         # сообщения чата могли бы вклиниться в середину выгрузки.
         items = await storage.conversations(user["id"])
@@ -1514,6 +1546,8 @@ async def chat_handler(websocket):
                     await handle_avatar(websocket, user, message)
                 elif kind == "update":
                     await handle_update(websocket)
+                elif kind == "apk":
+                    await handle_apk(websocket)
                 elif kind == "logout":
                     await storage.forget_token(token)
                     await websocket.close()
@@ -1603,6 +1637,9 @@ async def main():
                 print(f"Веб-клиент раздаётся из {WEB_DIR}")
             print("Уведомления на телефон: включены" if push.public_key()
                   else "Уведомления на телефон: недоступны")
+            приложение = available_apk()
+            if приложение:
+                print(f"Приложение для телефона: {приложение['version']}")
             update = available_update()
             print(f"Раздаём обновление {update['version']}" if update
                   else "Обновление для раздачи не найдено")

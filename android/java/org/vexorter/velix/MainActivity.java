@@ -133,6 +133,7 @@ public class MainActivity extends Activity implements VelixService.Screen {
     private int editing = 0;        // какое своё сообщение правим
     private final Map<Integer, String> drafts = new HashMap<>();
     private final List<JSONObject> outbox = new ArrayList<>();
+    private JSONObject apkOffer;    // что за приложение раздаёт сервер
     private int localNumber;
     private boolean pendingGroup;
     private int pendingDirect = -1;   // ждём переписку с этим человеком
@@ -2658,6 +2659,22 @@ public class MainActivity extends Activity implements VelixService.Screen {
         column.addView(settingsRow(Lang.t("Версия"), appVersion(), null),
                 Ui.wide());
 
+        // Обновление: показываем строчку, только если сервер раздаёт новее
+        final String свежая = apkOffer == null ? "" : apkOffer.optString("version");
+        if (isNewer(свежая, appVersion())) {
+            TextView обновить = settingsRow(
+                    Lang.t("Обновить до {version}", "version", свежая),
+                    humanSize(apkOffer.optLong("size")), new Runnable() {
+                @Override
+                public void run() {
+                    toast(Lang.t("Скачиваю обновление…"));
+                    send(Net.frame("apk"));
+                }
+            });
+            обновить.setTextColor(Ui.ACCENT);
+            column.addView(обновить, Ui.wide());
+        }
+
         column.addView(section(""), Ui.wide());
         TextView выйти = settingsRow(Lang.t("Выйти из аккаунта"), "", new Runnable() {
             @Override
@@ -2701,6 +2718,83 @@ public class MainActivity extends Activity implements VelixService.Screen {
             });
         }
         return строка;
+    }
+
+    /**
+     * Правда ли, что candidate новее current.
+     *
+     * Считаем как в version.py: ведущий ноль — украшение, а не число, иначе
+     * 0.2.7.0 оказалось бы старше 2.6.0.
+     */
+    private static boolean isNewer(String candidate, String current) {
+        int[] свежая = разобрать(candidate);
+        int[] своя = разобрать(current);
+        for (int место = 0; место < 3; место++) {
+            if (свежая[место] != своя[место]) {
+                return свежая[место] > своя[место];
+            }
+        }
+        return false;
+    }
+
+    private static int[] разобрать(String версия) {
+        List<Integer> части = new ArrayList<>();
+        for (String кусок : String.valueOf(версия).split("\\.")) {
+            StringBuilder цифры = new StringBuilder();
+            for (char буква : кусок.toCharArray()) {
+                if (Character.isDigit(буква)) {
+                    цифры.append(буква);
+                }
+            }
+            части.add(цифры.length() == 0 ? 0 : Integer.parseInt(цифры.toString()));
+        }
+        while (части.size() > 1 && части.get(0) == 0) {
+            части.remove(0);
+        }
+        while (части.size() < 3) {
+            части.add(0);
+        }
+        return new int[]{части.get(0), части.get(1), части.get(2)};
+    }
+
+    /**
+     * Ставит присланное приложение.
+     *
+     * Через PackageInstaller, а не через «открыть файл»: своего
+     * FileProvider у нас нет, а системе поток отдать можно и так. Спросить
+     * человека она всё равно спросит — это её дело, не наше.
+     */
+    private void installApk(byte[] данные) {
+        if (данные == null || данные.length == 0) {
+            toast(Lang.t("Обновление не установилось"));
+            return;
+        }
+
+        try {
+            android.content.pm.PackageInstaller ставщик =
+                    getPackageManager().getPackageInstaller();
+            android.content.pm.PackageInstaller.SessionParams условия =
+                    new android.content.pm.PackageInstaller.SessionParams(
+                            android.content.pm.PackageInstaller.SessionParams
+                                    .MODE_FULL_INSTALL);
+            int номер = ставщик.createSession(условия);
+            android.content.pm.PackageInstaller.Session сессия =
+                    ставщик.openSession(номер);
+            java.io.OutputStream поток = сессия.openWrite("velix", 0, данные.length);
+            поток.write(данные);
+            сессия.fsync(поток);
+            поток.close();
+
+            android.app.PendingIntent ответ = android.app.PendingIntent.getBroadcast(
+                    this, номер, new Intent("org.vexorter.velix.INSTALLED"),
+                    android.app.PendingIntent.FLAG_MUTABLE
+                            | android.app.PendingIntent.FLAG_UPDATE_CURRENT);
+            сессия.commit(ответ.getIntentSender());
+            сессия.close();
+            toast(Lang.t("Установить обновление"));
+        } catch (Exception беда) {
+            toast(Lang.t("Обновление не установилось"));
+        }
     }
 
     /** Номер сборки — его знает сама система, дублировать незачем. */
@@ -2796,6 +2890,7 @@ public class MainActivity extends Activity implements VelixService.Screen {
             prefs().edit().putString("token", frame.optString("token")).apply();
             loadDrafts();
             flushOutbox();
+            apkOffer = frame.optJSONObject("apk");
             if (frame.optJSONObject("limits") != null) {
                 limits = frame.optJSONObject("limits");
             }
@@ -3159,6 +3254,34 @@ public class MainActivity extends Activity implements VelixService.Screen {
     @Override
     public void onBlob(JSONObject header, byte[] data) {
         String id = header.optString("id");
+
+        // Приложение для телефона приезжает тем же путём, что и вложение
+        if ("apk_blob".equals(header.optString("type"))) {
+            String файл = header.optString("file", "");
+            byte[] байты = data;
+            if (!файл.isEmpty()) {
+                try {
+                    java.io.File лежит = new java.io.File(файл);
+                    byte[] буфер = new byte[(int) лежит.length()];
+                    java.io.FileInputStream поток = new java.io.FileInputStream(лежит);
+                    int прочитано = 0;
+                    while (прочитано < буфер.length) {
+                        int шаг = поток.read(буфер, прочитано, буфер.length - прочитано);
+                        if (шаг <= 0) {
+                            break;
+                        }
+                        прочитано += шаг;
+                    }
+                    поток.close();
+                    лежит.delete();
+                    байты = буфер;
+                } catch (Exception ignored) {
+                    байты = null;
+                }
+            }
+            installApk(байты);
+            return;
+        }
 
         // Большое вложение приехало файлом: в памяти его не держим
         String путь = header.optString("file", "");

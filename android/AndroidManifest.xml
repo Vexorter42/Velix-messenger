@@ -6,6 +6,9 @@
           android:versionName="0.2.6.0">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Приложение обновляет себя само: систему всё равно спросят,
+         ставить ли, но без этого разрешения даже спросить нельзя -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Служба со связью живёт, пока чат свёрнут: без этого Android
          усыпил бы сокет и уведомления не приходили бы -->

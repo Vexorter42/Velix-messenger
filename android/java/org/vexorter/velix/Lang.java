@@ -130,6 +130,10 @@ class Lang {
         add("Кружок, который видят остальные", "The circle everyone else sees");
         add("Сервер", "Server");
         add("Версия", "Version");
+        add("Обновить до {version}", "Update to {version}");
+        add("Скачиваю обновление…", "Downloading the update…");
+        add("Обновление не установилось", "The update did not install");
+        add("Установить обновление", "Install the update");
         add("Файл", "File");
         add("Отправляю «{name}» — {percent}%", "Sending “{name}” — {percent}%");
         add("«{name}» весит {size}, а больше {limit} сервер не принимает.",

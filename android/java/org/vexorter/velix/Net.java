@@ -192,7 +192,8 @@ class Net implements Ws.Listener {
         try {
             final JSONObject frame = new JSONObject(text);
             String kind = frame.optString("type");
-            if ("blob".equals(kind) || "update_blob".equals(kind)) {
+            if ("blob".equals(kind) || "update_blob".equals(kind)
+                    || "apk_blob".equals(kind)) {
                 // Содержимое придёт следом; большое вложение — не одним куском
                 pendingHeader = frame;
                 pendingLeft = Math.max(1, frame.optInt("parts", 1));
