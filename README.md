@@ -360,6 +360,20 @@ dozen photos therefore opens instantly instead of pulling them over the network
 on every launch. The cache is allowed 500 MB, beyond which it drops whatever
 has gone untouched the longest.
 
+## Tests
+
+The tests live in `tests/` and need no harness:
+
+```bash
+python tests/run_all.py           # everything, windowed tests included
+python tests/run_all.py --quick   # only the ones that need no screen
+```
+
+The windowed ones raise a real Tk window and click inside it, so a machine
+without a monitor runs the quick set — the same one GitHub Actions runs on
+every push. Every test is its own sandbox: its own port, database and media
+folder; none of them touch live data.
+
 ## How it is built
 
 | File | What lives there |
