@@ -57,7 +57,7 @@ STEP_MS = 16
 GLIDE_MS = 190          # сколько едет прокрутка до места
 FADE_MS = 200           # сколько проявляется пузырь
 HOVER_MS = 120          # сколько разгорается строчка под указателем
-SIDEBAR_HOVER = ("#eef2f6", "#1d2a37")
+SIDEBAR_HOVER = ("#eef2f6", "#1f2c3a")
 
 
 def ease(доля):
@@ -104,14 +104,23 @@ MAX_GIF_FRAMES = 120
 AVATAR_SMALL = 36
 AVATAR_LARGE = 96
 
+# Скругления. Одна лесенка на весь интерфейс, чтобы углы не спорили друг с
+# другом: мелочь внутри строки, сама строка, карточка, пузырь, лист. Круглое
+# (аватарки, кнопки композера) считается от размера и в лесенку не входит.
+R_SMALL = 12       # крестики, значки, плашки внутри строки
+R_ITEM = 14        # поля ввода, строки списка, обычные кнопки
+R_CARD = 16        # меню, карточки внутри списков
+R_BUBBLE = 18      # пузыри сообщений
+R_SHEET = 20       # большие карточки: вход, профиль, настройки
+
 # Палитра снята с Telegram Desktop. Пары — (светлая тема, тёмная тема),
 # CustomTkinter сам подставит нужную половину.
 SIDEBAR = ("#ffffff", "#17212b")
 SIDEBAR_ACTIVE = ("#419fd9", "#2b5278")
-CHAT_BG = ("#e6ebf0", "#0e1621")
+CHAT_BG = ("#e9eef3", "#101a24")
 COMPOSER = ("#ffffff", "#17212b")
-INPUT_BG = ("#f1f3f5", "#242f3d")
-BUBBLE_IN = ("#ffffff", "#182533")
+INPUT_BG = ("#f2f4f7", "#26333f")
+BUBBLE_IN = ("#ffffff", "#1b2836")
 BUBBLE_OUT = ("#effdde", "#2b5278")
 TEXT = ("#000000", "#ffffff")
 TEXT_OUT = ("#000000", "#ffffff")
@@ -120,7 +129,7 @@ TIME_IN = ("#a1aab3", "#6d7f8f")
 TIME_OUT = ("#62ad5a", "#7da8d3")
 ACCENT = ("#3390ec", "#5288c1")
 ACCENT_HOVER = ("#2b7fd4", "#3f6d9e")
-SEPARATOR = ("#dfe4e9", "#1b2836")
+SEPARATOR = ("#e3e8ed", "#1f2c3a")
 SERVICE_BG = ("#ffffff", "#1b2836")
 ON_ACCENT = "#ffffff"
 ONLINE = ("#31a24c", "#4dc866")
@@ -623,7 +632,7 @@ class VelixApp(ctk.CTk):
     def _build_auth_view(self):
         self.auth_view = ctk.CTkFrame(self, fg_color="transparent")
 
-        card = ctk.CTkFrame(self.auth_view, fg_color=SIDEBAR, corner_radius=16)
+        card = ctk.CTkFrame(self.auth_view, fg_color=SIDEBAR, corner_radius=R_SHEET)
         card.place(relx=0.5, rely=0.5, anchor="center")
         self.auth_card = card
 
@@ -653,24 +662,24 @@ class VelixApp(ctk.CTk):
         self.code_entry = self._entry(self.form, t("Код восстановления"))
 
         self.primary_button = ctk.CTkButton(
-            self.form, text=t("ВОЙТИ"), width=300, height=46, corner_radius=10,
+            self.form, text=t("ВОЙТИ"), width=300, height=46, corner_radius=R_ITEM,
             font=self.font_button, fg_color=ACCENT, hover_color=ACCENT_HOVER,
             text_color=ON_ACCENT, command=self._on_primary)
 
         self.switch_button = ctk.CTkButton(
             self.form, text=t("Создать аккаунт"), width=300, height=32,
-            corner_radius=8, font=self.font_small, fg_color="transparent",
+            corner_radius=R_SMALL, font=self.font_small, fg_color="transparent",
             hover_color=INPUT_BG, text_color=ACCENT, command=self._toggle_mode)
 
         self.forgot_button = ctk.CTkButton(
             self.form, text=t("Забыли пароль?"), width=300, height=28,
-            corner_radius=8, font=self.font_small, fg_color="transparent",
+            corner_radius=R_SMALL, font=self.font_small, fg_color="transparent",
             hover_color=INPUT_BG, text_color=MUTED,
             command=lambda: self._show_form(recover=True))
 
         self.back_button = ctk.CTkButton(
             card, text=t("К списку аккаунтов"), width=300, height=32,
-            corner_radius=8, font=self.font_small, fg_color="transparent",
+            corner_radius=R_SMALL, font=self.font_small, fg_color="transparent",
             hover_color=INPUT_BG, text_color=MUTED,
             command=lambda: self._show_auth())
 
@@ -689,7 +698,7 @@ class VelixApp(ctk.CTk):
     def _entry(self, master, placeholder, show=None):
         entry = ctk.CTkEntry(
             master, placeholder_text=placeholder, width=300, height=46,
-            corner_radius=10, border_width=1, border_color=SEPARATOR,
+            corner_radius=R_ITEM, border_width=1, border_color=SEPARATOR,
             fg_color=INPUT_BG, text_color=TEXT, placeholder_text_color=MUTED,
             font=self.font_body)
         if show:
@@ -722,13 +731,13 @@ class VelixApp(ctk.CTk):
             self._account_row(account)
 
         ctk.CTkButton(self.saved_box, text=t("Войти в другой аккаунт"), width=300,
-                      height=38, corner_radius=10, font=self.font_small,
+                      height=38, corner_radius=R_ITEM, font=self.font_small,
                       fg_color="transparent", hover_color=INPUT_BG,
                       text_color=ACCENT,
                       command=lambda: self._show_form(register=False)).pack(pady=(6, 0))
 
     def _account_row(self, account):
-        row = ctk.CTkFrame(self.saved_box, fg_color=INPUT_BG, corner_radius=10,
+        row = ctk.CTkFrame(self.saved_box, fg_color=INPUT_BG, corner_radius=R_ITEM,
                            height=58)
         row.pack(fill="x", pady=4)
         row.pack_propagate(False)
@@ -746,7 +755,7 @@ class VelixApp(ctk.CTk):
         ctk.CTkLabel(lines, text=f"{account.get('login')} · {account.get('server')}",
                      font=self.font_small, text_color=MUTED, anchor="w").pack(fill="x")
 
-        ctk.CTkButton(row, text="✕", width=28, height=28, corner_radius=8,
+        ctk.CTkButton(row, text="✕", width=28, height=28, corner_radius=R_SMALL,
                       font=self.font_small, fg_color="transparent",
                       hover_color=SEPARATOR, text_color=MUTED,
                       command=lambda: self._forget(account)).pack(side="right", padx=(0, 8))
@@ -871,31 +880,31 @@ class VelixApp(ctk.CTk):
         buttons.pack(fill="x", padx=14, pady=(0, 10))
 
         self.profile_button = ctk.CTkButton(
-            buttons, text=t("Профиль"), width=70, height=30, corner_radius=8,
+            buttons, text=t("Профиль"), width=70, height=30, corner_radius=R_SMALL,
             font=self.font_small, fg_color=INPUT_BG, hover_color=SEPARATOR,
             text_color=MUTED, command=self._show_profile)
         self.profile_button.pack(side="left", expand=True, fill="x", padx=(0, 4))
 
         self.settings_button = ctk.CTkButton(
-            buttons, text=t("Настройки"), width=70, height=30, corner_radius=8,
+            buttons, text=t("Настройки"), width=70, height=30, corner_radius=R_SMALL,
             font=self.font_small, fg_color=INPUT_BG, hover_color=SEPARATOR,
             text_color=MUTED, command=self._show_settings)
         self.settings_button.pack(side="left", expand=True, fill="x", padx=4)
 
         self.leave_button = ctk.CTkButton(
-            buttons, text=t("Сменить"), width=70, height=30, corner_radius=8,
+            buttons, text=t("Сменить"), width=70, height=30, corner_radius=R_SMALL,
             font=self.font_small, fg_color=INPUT_BG, hover_color=SEPARATOR,
             text_color=MUTED, command=self._on_leave)
         self.leave_button.pack(side="left", expand=True, fill="x", padx=(4, 0))
 
         self.search_entry = ctk.CTkEntry(
             sidebar, placeholder_text=t("Поиск: @username или слово"), height=34,
-            corner_radius=10, border_width=0, fg_color=INPUT_BG, text_color=TEXT,
+            corner_radius=R_ITEM, border_width=0, fg_color=INPUT_BG, text_color=TEXT,
             placeholder_text_color=MUTED, font=self.font_small)
         self.search_entry.pack(fill="x", padx=14, pady=(0, 8))
 
         ctk.CTkButton(sidebar, text="＋ " + t("Новая группа"), height=30,
-                      corner_radius=8, font=self.font_small, fg_color=INPUT_BG,
+                      corner_radius=R_SMALL, font=self.font_small, fg_color=INPUT_BG,
                       hover_color=SEPARATOR, text_color=MUTED,
                       command=self._new_group).pack(fill="x", padx=14, pady=(0, 8))
         self.search_entry.bind("<Return>", lambda event: self._on_search())
@@ -939,7 +948,7 @@ class VelixApp(ctk.CTk):
 
         # Вложения переписки: их ищут не листанием вверх, а вот этой кнопкой
         self.gallery_button = ctk.CTkButton(
-            header, text=t("Медиа"), width=72, height=30, corner_radius=10,
+            header, text=t("Медиа"), width=72, height=30, corner_radius=R_ITEM,
             font=self.font_small, fg_color=INPUT_BG, hover_color=SEPARATOR,
             text_color=TEXT, command=self._ask_gallery)
         self.gallery_button.grid(row=0, column=2, padx=(0, 12))
@@ -957,7 +966,7 @@ class VelixApp(ctk.CTk):
         self.pin_label = ctk.CTkLabel(self.pin_bar, text="", font=self.font_small,
                                       text_color=MUTED, anchor="w")
         self.pin_label.grid(row=0, column=1, sticky="ew")
-        ctk.CTkButton(self.pin_bar, text="✕", width=28, height=24, corner_radius=8,
+        ctk.CTkButton(self.pin_bar, text="✕", width=28, height=24, corner_radius=R_SMALL,
                       font=self.font_small, fg_color="transparent",
                       hover_color=SEPARATOR, text_color=MUTED,
                       command=self._unpin).grid(row=0, column=2, padx=(6, 14))
@@ -976,7 +985,7 @@ class VelixApp(ctk.CTk):
         self.reply_label = ctk.CTkLabel(self.reply_bar, text="", font=self.font_small,
                                         text_color=MUTED, anchor="w")
         self.reply_label.pack(side="left", padx=(18, 8), pady=6)
-        ctk.CTkButton(self.reply_bar, text="✕", width=28, height=24, corner_radius=8,
+        ctk.CTkButton(self.reply_bar, text="✕", width=28, height=24, corner_radius=R_SMALL,
                       font=self.font_small, fg_color="transparent",
                       hover_color=SEPARATOR, text_color=MUTED,
                       command=self._cancel_reply).pack(side="right", padx=(0, 18))
@@ -1011,7 +1020,7 @@ class VelixApp(ctk.CTk):
     def _build_profile_view(self):
         self.profile_view = ctk.CTkFrame(self, fg_color="transparent")
 
-        card = ctk.CTkFrame(self.profile_view, fg_color=SIDEBAR, corner_radius=16)
+        card = ctk.CTkFrame(self.profile_view, fg_color=SIDEBAR, corner_radius=R_SHEET)
         card.place(relx=0.5, rely=0.5, anchor="center")
 
         ctk.CTkLabel(card, text=t("Профиль"), font=self.font_title,
@@ -1025,7 +1034,7 @@ class VelixApp(ctk.CTk):
         self.profile_avatar.bind("<Button-1>", lambda event: self._choose_avatar())
 
         ctk.CTkButton(card, text=t("Сменить фото"), width=300, height=32,
-                      corner_radius=8, font=self.font_small, fg_color="transparent",
+                      corner_radius=R_SMALL, font=self.font_small, fg_color="transparent",
                       hover_color=INPUT_BG, text_color=ACCENT,
                       command=self._choose_avatar).pack(padx=48, pady=(8, 16))
 
@@ -1034,7 +1043,7 @@ class VelixApp(ctk.CTk):
         self.profile_name.bind("<Control-KeyPress>", self._on_entry_shortcut)
 
         self.profile_bio = ctk.CTkTextbox(
-            card, width=300, height=90, corner_radius=10, border_width=1,
+            card, width=300, height=90, corner_radius=R_ITEM, border_width=1,
             border_color=SEPARATOR, fg_color=INPUT_BG, text_color=TEXT,
             font=self.font_body, wrap="word")
         self.profile_bio.pack(padx=48, pady=(0, 4))
@@ -1044,19 +1053,19 @@ class VelixApp(ctk.CTk):
         self.profile_hint.pack(padx=48, pady=(0, 14))
 
         ctk.CTkButton(card, text=t("СОХРАНИТЬ"), width=300, height=46,
-                      corner_radius=10, font=self.font_button, fg_color=ACCENT,
+                      corner_radius=R_ITEM, font=self.font_button, fg_color=ACCENT,
                       hover_color=ACCENT_HOVER, text_color=ON_ACCENT,
                       command=self._save_profile).pack(padx=48)
 
         ctk.CTkButton(card, text=t("Назад в чат"), width=300, height=32,
-                      corner_radius=8, font=self.font_small, fg_color="transparent",
+                      corner_radius=R_SMALL, font=self.font_small, fg_color="transparent",
                       hover_color=INPUT_BG, text_color=MUTED,
                       command=self._show_chat).pack(padx=48, pady=(8, 30))
 
     def _build_settings_view(self):
         self.settings_view = ctk.CTkFrame(self, fg_color="transparent")
 
-        card = ctk.CTkFrame(self.settings_view, fg_color=SIDEBAR, corner_radius=16)
+        card = ctk.CTkFrame(self.settings_view, fg_color=SIDEBAR, corner_radius=R_SHEET)
         card.place(relx=0.5, rely=0.5, anchor="center")
 
         ctk.CTkLabel(card, text=t("Настройки"), font=self.font_title,
@@ -1068,7 +1077,7 @@ class VelixApp(ctk.CTk):
                      text_color=TEXT).pack(side="left")
         self.language_picker = ctk.CTkSegmentedButton(
             language_row, values=[i18n.NAMES[code] for code in i18n.LANGUAGES],
-            font=self.font_small, height=28, corner_radius=8,
+            font=self.font_small, height=28, corner_radius=R_SMALL,
             fg_color=INPUT_BG, selected_color=ACCENT,
             selected_hover_color=ACCENT_HOVER, unselected_color=INPUT_BG,
             unselected_hover_color=SEPARATOR, text_color=TEXT,
@@ -1098,18 +1107,18 @@ class VelixApp(ctk.CTk):
         self.version_label.pack(padx=48)
 
         self.update_button = ctk.CTkButton(
-            card, text=t("Обновлений нет"), width=300, height=38, corner_radius=10,
+            card, text=t("Обновлений нет"), width=300, height=38, corner_radius=R_ITEM,
             font=self.font_small, fg_color=INPUT_BG, hover_color=SEPARATOR,
             text_color=MUTED, state="disabled", command=self._on_update)
         self.update_button.pack(padx=48, pady=(8, 4))
 
         self.admin_button = ctk.CTkButton(
             card, text=t("Панель управления"), width=300, height=38,
-            corner_radius=10, font=self.font_small, fg_color=INPUT_BG,
+            corner_radius=R_ITEM, font=self.font_small, fg_color=INPUT_BG,
             hover_color=SEPARATOR, text_color=TEXT, command=self._show_admin)
 
         ctk.CTkButton(card, text=t("Назад в чат"), width=300, height=32,
-                      corner_radius=8, font=self.font_small, fg_color="transparent",
+                      corner_radius=R_SMALL, font=self.font_small, fg_color="transparent",
                       hover_color=INPUT_BG, text_color=MUTED,
                       command=self._show_chat).pack(padx=48, pady=(0, 30))
 
@@ -1360,7 +1369,7 @@ class VelixApp(ctk.CTk):
                      font=self.font_small, text_color=MUTED,
                      anchor="w").pack(fill="x", pady=(4, 2))
 
-        карточка = ctk.CTkFrame(self.admin_list, fg_color=INPUT_BG, corner_radius=8)
+        карточка = ctk.CTkFrame(self.admin_list, fg_color=INPUT_BG, corner_radius=R_SMALL)
         карточка.pack(fill="x", pady=2)
 
         self.limit_entries = {}
@@ -1372,7 +1381,7 @@ class VelixApp(ctk.CTk):
             ctk.CTkLabel(строка, text=подпись, font=self.font_body,
                          text_color=TEXT, anchor="w").pack(side="left")
 
-            поле = ctk.CTkEntry(строка, width=110, height=30, corner_radius=8,
+            поле = ctk.CTkEntry(строка, width=110, height=30, corner_radius=R_SMALL,
                                 font=self.font_body, fg_color=SIDEBAR,
                                 border_width=0, text_color=TEXT)
             поле.insert(0, str(int(limits.get(имя, по_умолчанию)) // (1024 * 1024)))
@@ -1380,7 +1389,7 @@ class VelixApp(ctk.CTk):
             self.limit_entries[имя] = поле
 
         ctk.CTkButton(карточка, text=t("Сохранить пределы"), height=32,
-                      corner_radius=8, font=self.font_small, fg_color=ACCENT,
+                      corner_radius=R_SMALL, font=self.font_small, fg_color=ACCENT,
                       hover_color=ACCENT_HOVER, text_color=ON_ACCENT,
                       command=self._admin_save_limits).pack(fill="x", padx=10,
                                                             pady=(2, 10))
@@ -1400,7 +1409,7 @@ class VelixApp(ctk.CTk):
             self.network.send(protocol.admin_request("limits", **значения))
 
     def _admin_row(self, title, note, on_delete):
-        row = ctk.CTkFrame(self.admin_list, fg_color=INPUT_BG, corner_radius=8)
+        row = ctk.CTkFrame(self.admin_list, fg_color=INPUT_BG, corner_radius=R_SMALL)
         row.pack(fill="x", pady=2)
 
         lines = ctk.CTkFrame(row, fg_color="transparent")
@@ -1412,7 +1421,7 @@ class VelixApp(ctk.CTk):
 
         if on_delete is not None:
             ctk.CTkButton(row, text=t("Удалить"), width=90, height=28,
-                          corner_radius=8, font=self.font_small, fg_color=SEPARATOR,
+                          corner_radius=R_SMALL, font=self.font_small, fg_color=SEPARATOR,
                           hover_color=OFFLINE, text_color=TEXT,
                           command=on_delete).pack(side="right", padx=10)
 
@@ -1452,11 +1461,11 @@ class VelixApp(ctk.CTk):
         buttons = ctk.CTkFrame(window, fg_color="transparent")
         buttons.pack(pady=16)
         ctk.CTkButton(buttons, text=t("Удалить"), width=140, height=34,
-                      corner_radius=8, font=self.font_small, fg_color=OFFLINE,
+                      corner_radius=R_SMALL, font=self.font_small, fg_color=OFFLINE,
                       hover_color=SEPARATOR, text_color=TEXT,
                       command=lambda: say(True)).pack(side="left", padx=6)
         ctk.CTkButton(buttons, text=t("Отмена"), width=140, height=34,
-                      corner_radius=8, font=self.font_small, fg_color=INPUT_BG,
+                      corner_radius=R_SMALL, font=self.font_small, fg_color=INPUT_BG,
                       hover_color=SEPARATOR, text_color=TEXT,
                       command=lambda: say(False)).pack(side="left", padx=6)
 
@@ -2148,7 +2157,7 @@ class VelixApp(ctk.CTk):
             hint.configure(text=t("Код скопирован"))
 
         ctk.CTkButton(window, text=t("Копировать"), width=300, height=38,
-                      corner_radius=10, font=self.font_small, fg_color=INPUT_BG,
+                      corner_radius=R_ITEM, font=self.font_small, fg_color=INPUT_BG,
                       hover_color=SEPARATOR, text_color=TEXT,
                       command=copy).pack(pady=(14, 4))
 
@@ -2157,7 +2166,7 @@ class VelixApp(ctk.CTk):
         hint.pack()
 
         ctk.CTkButton(window, text=t("Понятно"), width=300, height=32,
-                      corner_radius=8, font=self.font_small,
+                      corner_radius=R_SMALL, font=self.font_small,
                       fg_color="transparent", hover_color=INPUT_BG,
                       text_color=MUTED, command=window.destroy).pack(pady=(2, 12))
 
@@ -2520,8 +2529,8 @@ class VelixApp(ctk.CTk):
         active = item["id"] == self.conversation
         row = ctk.CTkFrame(self.side_list,
                            fg_color=SIDEBAR_ACTIVE if active else "transparent",
-                           corner_radius=10, height=60)
-        row.pack(fill="x", pady=2)
+                           corner_radius=R_ITEM, height=64)
+        row.pack(fill="x", pady=3)
         row.pack_propagate(False)
 
         title = self._title_of(item)
@@ -2561,7 +2570,7 @@ class VelixApp(ctk.CTk):
         if waiting:
             значок = ctk.CTkLabel(row, text=f" {waiting} ", font=self.font_small,
                                   text_color=ON_ACCENT, fg_color=OFFLINE,
-                                  corner_radius=10, width=24, height=20)
+                                  corner_radius=R_ITEM, width=24, height=20)
             значок.pack(side="right", padx=(0, 10))
             # Кружок с числом выскакивает, а не появляется из ниоткуда
             self._tween(160, lambda доля: значок.winfo_exists()
@@ -2744,7 +2753,7 @@ class VelixApp(ctk.CTk):
         window.after(200, window.grab_set)
 
         name = ctk.CTkEntry(window, placeholder_text=t("Название группы"),
-                            height=40, corner_radius=10, border_width=1,
+                            height=40, corner_radius=R_ITEM, border_width=1,
                             border_color=SEPARATOR, fg_color=INPUT_BG,
                             text_color=TEXT, font=self.font_body)
         name.pack(fill="x", padx=18, pady=(18, 10))
@@ -2768,12 +2777,12 @@ class VelixApp(ctk.CTk):
 
         row = ctk.CTkFrame(window, fg_color="transparent")
         row.pack(fill="x", padx=18, pady=(0, 16))
-        ctk.CTkButton(row, text=t("Отмена"), height=38, corner_radius=10,
+        ctk.CTkButton(row, text=t("Отмена"), height=38, corner_radius=R_ITEM,
                       font=self.font_small, fg_color=INPUT_BG,
                       hover_color=SEPARATOR, text_color=MUTED,
                       command=window.destroy).pack(side="left", expand=True,
                                                    fill="x", padx=(0, 6))
-        ctk.CTkButton(row, text=t("Создать"), height=38, corner_radius=10,
+        ctk.CTkButton(row, text=t("Создать"), height=38, corner_radius=R_ITEM,
                       font=self.font_button, fg_color=ACCENT,
                       hover_color=ACCENT_HOVER, text_color=ON_ACCENT,
                       command=lambda: self._create_group(window, name, chosen)).pack(
@@ -2849,7 +2858,7 @@ class VelixApp(ctk.CTk):
 
     def _gallery_cell(self, ряд, item):
         """Одна клетка сетки: картинка или подпись про видео и файл."""
-        клетка = ctk.CTkFrame(ряд, fg_color=INPUT_BG, corner_radius=10,
+        клетка = ctk.CTkFrame(ряд, fg_color=INPUT_BG, corner_radius=R_ITEM,
                               width=132, height=132)
         клетка.pack(side="left", padx=3)
         клетка.pack_propagate(False)
@@ -3013,7 +3022,7 @@ class VelixApp(ctk.CTk):
         if self.has_older:
             self.older_button = ctk.CTkButton(
                 self.messages, text=t("Показать более старые"), height=30,
-                corner_radius=10, font=self.font_small, fg_color=INPUT_BG,
+                corner_radius=R_ITEM, font=self.font_small, fg_color=INPUT_BG,
                 hover_color=SEPARATOR, text_color=MUTED, command=self._load_older)
             self.older_button.pack(pady=(8, 4))
 
@@ -3085,7 +3094,7 @@ class VelixApp(ctk.CTk):
             mine = self.user.get("id") in people
             ctk.CTkButton(
                 holder, text=f"{emoji} {len(people)}", width=44, height=24,
-                corner_radius=12, font=self.font_small,
+                corner_radius=R_CARD, font=self.font_small,
                 fg_color=ACCENT if mine else SEPARATOR,
                 hover_color=ACCENT_HOVER if mine else MUTED,
                 text_color=ON_ACCENT if mine else TEXT,
@@ -3160,7 +3169,7 @@ class VelixApp(ctk.CTk):
         self.bind_all("<Button-1>", self._click_outside_menu, add="+")
         self.bind_all("<Button-3>", self._click_outside_menu, add="+")
 
-        card = ctk.CTkFrame(holder, fg_color=MENU_BG, corner_radius=12)
+        card = ctk.CTkFrame(holder, fg_color=MENU_BG, corner_radius=R_CARD)
         card.pack(anchor="w")
 
         self._menu_row(card, "copy", t("Фото группы"),
@@ -3243,12 +3252,12 @@ class VelixApp(ctk.CTk):
         def flag_of(переменная):
             return bool(переменная.get())
 
-        ctk.CTkButton(строка, text=t("Отмена"), height=38, corner_radius=10,
+        ctk.CTkButton(строка, text=t("Отмена"), height=38, corner_radius=R_ITEM,
                       font=self.font_small, fg_color=INPUT_BG,
                       hover_color=SEPARATOR, text_color=MUTED,
                       command=window.destroy).pack(side="left", expand=True,
                                                    fill="x", padx=(0, 6))
-        ctk.CTkButton(строка, text=t("Позвать"), height=38, corner_radius=10,
+        ctk.CTkButton(строка, text=t("Позвать"), height=38, corner_radius=R_ITEM,
                       font=self.font_small, fg_color=ACCENT,
                       hover_color=ACCENT_HOVER, text_color=ON_ACCENT,
                       command=позвать).pack(side="left", expand=True, fill="x",
@@ -3289,7 +3298,7 @@ class VelixApp(ctk.CTk):
                               command=lambda e=emoji: self._pick_reaction(item, e)
                               ).pack(side="left", padx=2, pady=3)
 
-        card = ctk.CTkFrame(holder, fg_color=MENU_BG, corner_radius=12)
+        card = ctk.CTkFrame(holder, fg_color=MENU_BG, corner_radius=R_CARD)
         card.pack(anchor="w")
 
         actions = [("reply", t("Ответить"), lambda: self._start_reply(item))]
@@ -3328,7 +3337,7 @@ class VelixApp(ctk.CTk):
         """Строка меню: значок слева, надпись рядом, подсветка под мышью."""
         row = ctk.CTkButton(card, text=f"   {label}", image=menu_icon(icon),
                             compound="left", anchor="w",
-                            height=38, corner_radius=8, font=self.font_body,
+                            height=38, corner_radius=R_SMALL, font=self.font_body,
                             fg_color="transparent", hover_color=MENU_HOVER,
                             text_color=TEXT,
                             command=lambda: (self._close_menu(), command()))
@@ -3416,7 +3425,7 @@ class VelixApp(ctk.CTk):
                 continue
             ctk.CTkButton(
                 listing, text=self._title_of(conversation), anchor="w", height=38,
-                corner_radius=8, font=self.font_body, fg_color=INPUT_BG,
+                corner_radius=R_SMALL, font=self.font_body, fg_color=INPUT_BG,
                 hover_color=SEPARATOR, text_color=TEXT,
                 command=lambda c=conversation["id"]: (
                     self.network.send(protocol.forward_request(item["id"], c)),
@@ -3590,7 +3599,7 @@ class VelixApp(ctk.CTk):
         row = ctk.CTkFrame(self.messages, fg_color="transparent")
         row.pack(fill="x", pady=8)
         ctk.CTkLabel(row, text=text, font=self.font_small, text_color=MUTED,
-                     fg_color=SERVICE_BG, corner_radius=12, height=26,
+                     fg_color=SERVICE_BG, corner_radius=R_CARD, height=26,
                      wraplength=self.wrap_length).pack(padx=14, ipadx=10)
         self._scroll_to_bottom()
         return row
@@ -3601,7 +3610,7 @@ class VelixApp(ctk.CTk):
         self.last_sender = (nickname, own)
 
         row = ctk.CTkFrame(self.messages, fg_color="transparent")
-        row.pack(fill="x", padx=22, pady=(1 if grouped else 5, 0))
+        row.pack(fill="x", padx=26, pady=(2 if grouped else 7, 0))
 
         if not own:
             # Аватарку показываем только у первого сообщения в серии, дальше
@@ -3616,7 +3625,7 @@ class VelixApp(ctk.CTk):
                 self._paint_avatar(label, nickname, avatar, AVATAR_SMALL)
 
         цвет = BUBBLE_OUT if own else BUBBLE_IN
-        bubble = ctk.CTkFrame(row, corner_radius=14, fg_color=цвет)
+        bubble = ctk.CTkFrame(row, corner_radius=R_BUBBLE, fg_color=цвет)
         bubble.pack(side="right" if own else "left")
 
         # Пришедшее сообщение проявляется из фона. Всю ленту разом так не
@@ -3627,7 +3636,7 @@ class VelixApp(ctk.CTk):
         if not own and not grouped:
             ctk.CTkLabel(bubble, text=nickname, font=self.font_sender,
                          text_color=avatar_color(nickname), anchor="w").pack(
-                fill="x", padx=13, pady=(7, 0))
+                fill="x", padx=15, pady=(8, 0))
 
         return bubble, grouped
 
@@ -3635,7 +3644,7 @@ class VelixApp(ctk.CTk):
         item = item or {}
         if time_text:
             line = ctk.CTkFrame(bubble, fg_color="transparent")
-            line.pack(fill="x", padx=13, pady=(0, 5))
+            line.pack(fill="x", padx=15, pady=(0, 6))
             if own:
                 # Галочки: одна — сервер принял, две — дошло до всех,
                 # голубые — все прочитали
@@ -3767,7 +3776,7 @@ class VelixApp(ctk.CTk):
         if not quoted:
             return
         what = quoted.get("text") or quoted.get("name") or t("вложение")
-        strip = ctk.CTkFrame(bubble, fg_color=SEPARATOR, corner_radius=6)
+        strip = ctk.CTkFrame(bubble, fg_color=SEPARATOR, corner_radius=R_SMALL)
         strip.pack(fill="x", padx=13, pady=(6, 2))
         ctk.CTkLabel(strip, text=f"{quoted.get('nick', '')}: {what[:60]}",
                      font=self.font_small, text_color=MUTED, anchor="w",
@@ -3792,7 +3801,7 @@ class VelixApp(ctk.CTk):
                              text_color=TEXT_OUT if own else TEXT, justify="left",
                              anchor="w", wraplength=self.wrap_length)
         label.velix_body = True         # эту подпись меняет правка
-        label.pack(fill="x", padx=13, pady=(3 if own or grouped else 1, 0))
+        label.pack(fill="x", padx=15, pady=(4 if own or grouped else 2, 0))
 
         if self.user.get("id") in (item.get("mentions") or []):
             # Окликнули именно нас: рамка заметна, но не кричит
@@ -3868,7 +3877,7 @@ class VelixApp(ctk.CTk):
         ctk.CTkLabel(card, text=protocol.human_size(size or 0), font=self.font_small,
                      text_color=TIME_OUT if own else TIME_IN, anchor="w").pack(fill="x")
 
-        button = ctk.CTkButton(card, text=t("Открыть"), height=30, corner_radius=8,
+        button = ctk.CTkButton(card, text=t("Открыть"), height=30, corner_radius=R_SMALL,
                                font=self.font_small, fg_color=ACCENT,
                                hover_color=ACCENT_HOVER, text_color=ON_ACCENT)
         button.pack(fill="x", pady=(6, 2))
@@ -4035,7 +4044,7 @@ class VelixApp(ctk.CTk):
 
         self.viewer_counter = ctk.CTkLabel(overlay, text="", font=self.font_small,
                                            text_color=MUTED, fg_color=INPUT_BG,
-                                           corner_radius=10, height=26)
+                                           corner_radius=R_ITEM, height=26)
         self.viewer_counter.place(relx=0.0, rely=0.0, x=20, y=20, anchor="nw")
 
         ctk.CTkButton(overlay, text="✕", width=36, height=36, corner_radius=18,
@@ -4047,7 +4056,7 @@ class VelixApp(ctk.CTk):
         if len(self.viewer_items) > 1:
             for знак, куда, сдвиг, край in (("‹", 0.0, 20, "w"), ("›", 1.0, -20, "e")):
                 ctk.CTkButton(overlay, text=знак, width=44, height=64,
-                              corner_radius=14, font=self.font_button,
+                              corner_radius=R_BUBBLE, font=self.font_button,
                               fg_color=INPUT_BG, hover_color=SEPARATOR,
                               text_color=TEXT,
                               command=lambda шаг=1 if край == "e" else -1:
@@ -4142,7 +4151,7 @@ class VelixApp(ctk.CTk):
         путь = self._video_file(item.get("media"), item.get("name"), данные)
         if путь is None or not videoplayer.available():
             ctk.CTkButton(self.viewer_stage, text=t("Открыть"), height=36,
-                          corner_radius=10, font=self.font_button, fg_color=ACCENT,
+                          corner_radius=R_ITEM, font=self.font_button, fg_color=ACCENT,
                           hover_color=ACCENT_HOVER, text_color=ON_ACCENT,
                           command=lambda: self._open_media(
                               item.get("name") or "video.mp4", данные)).place(
@@ -4153,11 +4162,11 @@ class VelixApp(ctk.CTk):
                               borderwidth=0, highlightthickness=0)
         экран.place(relx=0.5, rely=0.45, anchor="center")
 
-        пульт = ctk.CTkFrame(self.viewer_stage, fg_color=INPUT_BG, corner_radius=14)
+        пульт = ctk.CTkFrame(self.viewer_stage, fg_color=INPUT_BG, corner_radius=R_BUBBLE)
         пульт.place(relx=0.5, rely=1.0, y=-20, anchor="s")
 
         играть = ctk.CTkButton(пульт, text="⏸", width=40, height=32,
-                               corner_radius=10, font=self.font_button,
+                               corner_radius=R_ITEM, font=self.font_button,
                                fg_color=SEPARATOR, hover_color=ACCENT,
                                text_color=TEXT)
         играть.pack(side="left", padx=(10, 6), pady=8)
@@ -4273,7 +4282,7 @@ class VelixApp(ctk.CTk):
 
         подпись = ctk.CTkLabel(overlay, text="100%", font=self.font_small,
                                text_color=MUTED, fg_color=INPUT_BG,
-                               corner_radius=10, width=64, height=26)
+                               corner_radius=R_ITEM, width=64, height=26)
         подпись.place(relx=0.5, rely=1.0, y=-24, anchor="s")
 
         def нарисовать():
@@ -4346,7 +4355,7 @@ class VelixApp(ctk.CTk):
                               ("1:1", целиком),
                               ("+", lambda: приблизить(1.4))):
             ctk.CTkButton(кнопки, text=надпись, width=44, height=32,
-                          corner_radius=10, font=self.font_button,
+                          corner_radius=R_ITEM, font=self.font_button,
                           fg_color=INPUT_BG, hover_color=SEPARATOR,
                           text_color=TEXT, command=дело).pack(side="left", padx=4)
 

@@ -20,11 +20,11 @@ import android.widget.TextView;
 class Ui {
 
     static final int SIDEBAR = Color.parseColor("#17212b");
-    static final int CHAT_BG = Color.parseColor("#0e1621");
-    static final int BUBBLE_IN = Color.parseColor("#182533");
+    static final int CHAT_BG = Color.parseColor("#101a24");
+    static final int BUBBLE_IN = Color.parseColor("#1b2836");
     static final int BUBBLE_OUT = Color.parseColor("#2b5278");
-    static final int INPUT_BG = Color.parseColor("#242f3d");
-    static final int SEPARATOR = Color.parseColor("#1b2836");
+    static final int INPUT_BG = Color.parseColor("#26333f");
+    static final int SEPARATOR = Color.parseColor("#1f2c3a");
     static final int TEXT = Color.parseColor("#ffffff");
     static final int MUTED = Color.parseColor("#708499");
     static final int ACCENT = Color.parseColor("#5288c1");

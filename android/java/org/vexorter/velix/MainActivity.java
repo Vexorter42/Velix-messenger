@@ -1285,7 +1285,7 @@ public class MainActivity extends Activity implements VelixService.Screen {
         if (quoted != null) {
             TextView quote = Ui.text(this, quoted.optString("nick") + ": "
                     + cut(quoted.optString("text", Lang.t("вложение")), 50), 12, Ui.MUTED);
-            quote.setBackground(Ui.rounded(Ui.SEPARATOR, Ui.dp(this, 8)));
+            quote.setBackground(Ui.rounded(Ui.SEPARATOR, Ui.dp(this, 12)));
             quote.setPadding(Ui.dp(this, 8), Ui.dp(this, 4), Ui.dp(this, 8),
                     Ui.dp(this, 4));
             bubble.addView(quote, Ui.wide());
@@ -1558,7 +1558,7 @@ public class MainActivity extends Activity implements VelixService.Screen {
         dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
 
         LinearLayout card = Ui.column(this);
-        card.setBackground(Ui.rounded(Ui.SIDEBAR, Ui.dp(this, 14)));
+        card.setBackground(Ui.rounded(Ui.SIDEBAR, Ui.dp(this, 18)));
         card.setPadding(Ui.dp(this, 10), Ui.dp(this, 10), Ui.dp(this, 10),
                 Ui.dp(this, 10));
 
@@ -1592,7 +1592,7 @@ public class MainActivity extends Activity implements VelixService.Screen {
             final String номер = one.optString("media", "");
             ImageView клетка = new ImageView(this);
             клетка.setScaleType(ImageView.ScaleType.CENTER_CROP);
-            клетка.setBackground(Ui.rounded(Ui.INPUT_BG, Ui.dp(this, 10)));
+            клетка.setBackground(Ui.rounded(Ui.INPUT_BG, Ui.dp(this, 14)));
             LinearLayout.LayoutParams где =
                     new LinearLayout.LayoutParams(сторона, сторона);
             где.setMargins(Ui.dp(this, 3), Ui.dp(this, 3), Ui.dp(this, 3),
@@ -1632,7 +1632,7 @@ public class MainActivity extends Activity implements VelixService.Screen {
         dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
 
         LinearLayout card = Ui.column(this);
-        card.setBackground(Ui.rounded(Ui.SIDEBAR, Ui.dp(this, 14)));
+        card.setBackground(Ui.rounded(Ui.SIDEBAR, Ui.dp(this, 18)));
         card.setPadding(Ui.dp(this, 8), Ui.dp(this, 8), Ui.dp(this, 8),
                 Ui.dp(this, 8));
 
@@ -2226,7 +2226,7 @@ public class MainActivity extends Activity implements VelixService.Screen {
                 continue;
             }
             TextView mark = Ui.text(this, emoji + " " + count, 13, Ui.TEXT);
-            mark.setBackground(Ui.rounded(Ui.INPUT_BG, Ui.dp(this, 10)));
+            mark.setBackground(Ui.rounded(Ui.INPUT_BG, Ui.dp(this, 14)));
             mark.setPadding(Ui.dp(this, 8), Ui.dp(this, 3), Ui.dp(this, 8),
                     Ui.dp(this, 3));
             final int messageId = id;
