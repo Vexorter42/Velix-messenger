@@ -13,13 +13,15 @@ set -e
 VELIX_DIR="${VELIX_DIR:-$HOME/velix}"
 BACKUP_DIR="${BACKUP_DIR:-$HOME/velix-backups}"
 KEEP="${KEEP:-14}"
+PYTHON="${PYTHON:-$VELIX_DIR/.venv/bin/python}"
+[ -x "$PYTHON" ] || PYTHON=python3
 
 STAMP=$(date +%Y-%m-%d_%H-%M)
 TARGET="$BACKUP_DIR/$STAMP"
 
 mkdir -p "$TARGET"
 
-"$VELIX_DIR/.venv/bin/python" - "$VELIX_DIR/velix.db" "$TARGET/velix.db" <<'PYTHON'
+"$PYTHON" - "$VELIX_DIR/velix.db" "$TARGET/velix.db" <<'PYTHON'
 import sqlite3
 import sys
 

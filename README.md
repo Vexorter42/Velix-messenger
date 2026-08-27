@@ -271,6 +271,28 @@ in `~/velix-backups`. Once a day from cron:
 30 4 * * * $HOME/velix/backup.sh >> $HOME/velix-backups/backup.log 2>&1
 ```
 
+A backup you have never restored from is not a backup, it is a hope. So
+`restore.sh` sits next to it:
+
+```bash
+~/velix/restore.sh --list                        # what exists, and how many messages
+~/velix/restore.sh --check 2026-08-27_07-17      # database integrity, all attachments present
+~/velix/restore.sh --into /tmp/proba 2026-08-27_07-17   # a dry run into a sandbox
+```
+
+A real restore asks you to stop the server first and never deletes what was
+there — it moves it aside as `velix.db.before-…` and `media.before-…`:
+
+```bash
+sudo systemctl stop velix
+~/velix/restore.sh 2026-08-27_07-17
+sudo systemctl start velix
+```
+
+Worth doing the dry run now and then: `--into` raises the copy off to one
+side and touches nothing, and `tests/backup_test.py` walks the whole path —
+takes a backup, damages it, and brings it back.
+
 ### The control panel
 
 The chat owner is whoever registered first, or whoever's login is named in

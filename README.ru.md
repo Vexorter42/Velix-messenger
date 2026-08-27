@@ -270,6 +270,28 @@ VELIX_ALLOWED_HOSTS=velix.example.org,localhost python server.py
 30 4 * * * $HOME/velix/backup.sh >> $HOME/velix-backups/backup.log 2>&1
 ```
 
+Копия, из которой ни разу не восстанавливались, — это не копия, а надежда.
+Поэтому рядом лежит `restore.sh`:
+
+```bash
+~/velix/restore.sh --list                        # что есть и сколько там сообщений
+~/velix/restore.sh --check 2026-08-27_07-17      # целость базы и все ли вложения на месте
+~/velix/restore.sh --into /tmp/proba 2026-08-27_07-17   # примерка в песочницу
+```
+
+Настоящее восстановление просит остановить сервер и не стирает прежнее, а
+уводит его в сторону — `velix.db.before-…` и `media.before-…`:
+
+```bash
+sudo systemctl stop velix
+~/velix/restore.sh 2026-08-27_07-17
+sudo systemctl start velix
+```
+
+Примерку стоит делать хотя бы изредка: `--into` поднимает копию в стороне и
+ничего не трогает, а `tests/backup_test.py` проходит весь путь целиком —
+снимает копию, портит её и поднимает обратно.
+
 ### Панель управления
 
 Хозяин чата — тот, кто завёл аккаунт первым, или тот, чей логин записан в

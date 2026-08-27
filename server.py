@@ -433,8 +433,14 @@ async def announce_presence(user_id, is_online, sender=None, seen=None):
 
 
 def clean_filename(value):
-    """Оставляет от присланного имени только сам файл, без путей."""
-    name = Path(str(value or "файл")).name.strip()[:120]
+    """Оставляет от присланного имени только сам файл, без путей.
+
+    Разделители режем оба, независимо от того, где стоит сервер: имя
+    приходит от клиента, а Windows шлёт «C:\папка\кот.png», и на малине
+    Path такое за путь не считает — весь этот хвост оседал бы в имени.
+    """
+    name = str(value or "файл").replace("\\", "/").rsplit("/", 1)[-1]
+    name = name.strip().strip(".")[:120]
     return name or "файл"
 
 
