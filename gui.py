@@ -3664,6 +3664,10 @@ class VelixApp(ctk.CTk):
         label.velix_body = True         # эту подпись меняет правка
         label.pack(fill="x", padx=13, pady=(3 if own or grouped else 1, 0))
 
+        if self.user.get("id") in (item.get("mentions") or []):
+            # Окликнули именно нас: рамка заметна, но не кричит
+            bubble.configure(border_width=2, border_color=ACCENT)
+
         self._add_time(bubble, own, time_text, item)
         self._attach_menu((bubble, label), item, own)
         if item.get("id") or item.get("local"):

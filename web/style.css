@@ -138,6 +138,9 @@ main {
 }
 .own .bubble { background: var(--bubble-out); }
 
+/* Окликнули именно вас */
+.bubble.mention { box-shadow: inset 0 0 0 2px var(--accent); }
+
 .sender { font-size: 13px; font-weight: 600; margin-bottom: 2px; }
 .time { font-size: 11px; color: var(--time-in); text-align: right; margin-top: 2px; }
 .own .time { color: var(--time-out); }

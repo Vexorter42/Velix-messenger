@@ -1,6 +1,7 @@
 import asyncio
 import os
 import shutil
+import re
 import ssl
 import tempfile
 import time
@@ -358,7 +359,28 @@ async def handle_delete(websocket, user, message):
     await send_to_conversation(conversation, frame, websocket)
 
 
-async def notify_absent(conversation_id, sender_id, title, body):
+async def find_mentions(conversation_id, text, sender_id):
+    """Кого позвали в тексте: @username среди участников переписки.
+
+    Логин ищем целиком, без учёта регистра: человек пишет «@Lena», а в базе
+    он «lena». Самого себя не считаем — звать себя незачем.
+    """
+    найдено = set(re.findall(r"@([A-Za-z0-9._-]{3,24})", text or ""))
+    if not найдено:
+        return []
+
+    низкий = {one.lower() for one in найдено}
+    участники = set(await storage.members(conversation_id))
+    позвали = []
+    for person in await storage.people():
+        if (person["login"] or "").lower() in низкий \
+                and person["id"] in участники and person["id"] != sender_id:
+            позвали.append(person["id"])
+    return позвали
+
+
+async def notify_absent(conversation_id, sender_id, title, body,
+                        mentioned=()):
     """Шлёт уведомления тем участникам, кого сейчас нет в сети.
 
     Тем, кто сидит в чате, ничего не отправляем: они и так всё видят.
@@ -373,10 +395,14 @@ async def notify_absent(conversation_id, sender_id, title, body):
 
     absent = [user_id for user_id in people
               if user_id != sender_id and user_id not in online]
+    # Позванного будим, даже если он сидит в другой переписке: его окликнули
+    absent += [user_id for user_id in mentioned if user_id not in absent]
     for user_id, subscription in await storage.pushes_for(absent):
         # Язык подписчик прислал вместе с подпиской: на телефоне
         # уведомление должно быть на том же языке, что и приложение
-        spoken = i18n.in_language(subscription.get("language"), body)
+        язык = subscription.get("language")
+        spoken = (i18n.in_language(язык, "упомянул вас: {text}", text=body)
+                  if user_id in mentioned else i18n.in_language(язык, body))
         problem = await asyncio.to_thread(push.send, subscription, title, spoken,
                                           str(conversation_id))
         if problem == "gone":
@@ -974,8 +1000,11 @@ async def handle_text(websocket, user, message):
         user["id"], user["name"], text, conversation, reply_to)
     print(f"[Лог]: {user['name']} в переписку {conversation}: {text}")
 
+    позвали = await find_mentions(conversation, text, user["id"])
     payload = {"type": "text", "id": message_id, "nick": user["name"], "text": text,
                "at": created_at, "conversation": conversation, "user": user["id"]}
+    if позвали:
+        payload["mentions"] = позвали
     if reply_to:
         payload["reply_to"] = reply_to
     if user.get("avatar"):
@@ -988,7 +1017,8 @@ async def handle_text(websocket, user, message):
     reached = await send_to_conversation(conversation, protocol.encode(payload),
                                          websocket)
     await note_delivery(message_id, user["id"], reached)
-    await notify_absent(conversation, user["id"], user["name"], text[:120])
+    await notify_absent(conversation, user["id"], user["name"], text[:120],
+                        позвали)
 
 
 async def handle_media(websocket, user, message):

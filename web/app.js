@@ -980,6 +980,7 @@ function showItem(item, localUrl) {
     text.className = "body";
     text.textContent = item.text || "";
     bubble.append(text);
+    if ((item.mentions || []).includes(user.id)) bubble.classList.add("mention");
   } else {
     const slot = document.createElement("div");
     bubble.append(slot);

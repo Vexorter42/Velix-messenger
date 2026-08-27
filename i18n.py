@@ -414,6 +414,7 @@ ENGLISH = {
         "This session is no longer valid, sign in again.",
     "Не получилось. Попробуйте ещё раз.": "That did not work. Try again.",
     "Это сообщение поправить нельзя.": "This message cannot be edited.",
+    "упомянул вас: {text}": "mentioned you: {text}",
     "Пустое сообщение не сохраняем — удалите его.":
         "An empty message is not kept — delete it instead.",
     "Сначала нужно войти в аккаунт. Если у вас старая версия Velix — обновите её.":

@@ -1239,8 +1239,19 @@ public class MainActivity extends Activity implements VelixService.Screen {
         }
 
         LinearLayout bubble = Ui.column(this);
-        bubble.setBackground(Ui.rounded(own ? Ui.BUBBLE_OUT : Ui.BUBBLE_IN,
-                Ui.dp(this, 14)));
+        android.graphics.drawable.GradientDrawable фон = Ui.rounded(
+                own ? Ui.BUBBLE_OUT : Ui.BUBBLE_IN, Ui.dp(this, 14));
+        JSONArray позвали = item.optJSONArray("mentions");
+        if (позвали != null && me != null) {
+            for (int место = 0; место < позвали.length(); место++) {
+                if (позвали.optInt(место) == me.optInt("id")) {
+                    // Окликнули именно нас: рамка заметна, но не кричит
+                    фон.setStroke(Ui.dp(this, 2), Ui.ACCENT);
+                    break;
+                }
+            }
+        }
+        bubble.setBackground(фон);
         bubble.setPadding(Ui.dp(this, 12), Ui.dp(this, 8), Ui.dp(this, 12),
                 Ui.dp(this, 6));
 
