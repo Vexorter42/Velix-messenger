@@ -21,6 +21,10 @@ store.CONFIG_PATH = уголок / "velix.json"
 os.environ["VELIX_CACHE"] = tempfile.mkdtemp(prefix="velix-cache-")
 
 import localcache  # noqa: E402
+
+# Сохранённое должно лежать рядом с настройками проверки, а не в настоящем
+# профиле: однажды проверка уже записала свою переписку хозяину
+check_isolated = localcache.cache_dir()
 import protocol  # noqa: E402
 import gui  # noqa: E402
 
@@ -89,6 +93,10 @@ def войти_без_сети():
 
 @step
 def проверить_показанное():
+    check("offline-cache-isolated",
+          str(check_isolated).startswith(os.environ["VELIX_CACHE"])
+          or str(check_isolated).startswith(str(уголок)),
+          f"кэш ушёл мимо песочницы: {check_isolated}")
     check("offline-chat-shown", app.chat_view.winfo_ismapped(),
           "окно осталось на экране входа")
     check("offline-rooms-listed", len(app.conversations) == 2, app.conversations)

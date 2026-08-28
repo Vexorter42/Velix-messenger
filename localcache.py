@@ -27,9 +27,15 @@ ROOMS = 40
 
 
 def cache_dir():
-    """Где лежит сохранённое. VELIX_CACHE пригождается проверкам."""
+    """Где лежит сохранённое — рядом с настройками.
+
+    Место считаем от store.CONFIG_PATH, а не от каталога настроек вообще:
+    проверки подменяют именно его, и без этого одна из них однажды записала
+    свою переписку в настоящий профиль хозяина.
+    """
     свой = os.environ.get("VELIX_CACHE")
-    папка = (Path(свой) if свой else store.config_dir()) / "offline"
+    основа = Path(свой) if свой else Path(store.CONFIG_PATH).parent
+    папка = основа / "offline"
     папка.mkdir(parents=True, exist_ok=True)
     return папка
 
