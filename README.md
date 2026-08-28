@@ -38,6 +38,7 @@ The server is a single `python server.py` away.
 | ✓✓ **Delivery ticks** | One grey tick — the server took it. Two grey — it reached the other side. Two blue — it was read. In a group one reader is enough: people read at their own pace, and waiting for the quietest member means waiting forever. |
 | ▶ **Video inside** | A clip plays right in the window — with sound, pause, seeking and volume; on the phone and on the web the system player does the same job. No external programs, no “save it to watch it”. |
 | 🖼 **Gallery** | Full screen pages through the conversation: arrows and the wheel in the window, a swipe on the phone and on the web. The order is the order of the feed, video pages alongside photos, and the corner shows which attachment of how many is open. |
+| 📴 **Offline** | The last thing the server sent lives on disk: the window brings a conversation up immediately at start, before the connection is made, and opens the one you were in last. Anything written on the road waits in line and goes out by itself. |
 | ✏️ **Editing and drafts** | Your own text message can be corrected — “edited” appears next to the time. An unfinished line stays with its conversation and survives closing the window, and anything written offline waits with a clock instead of a tick and goes out on its own when the connection returns. |
 | 🖼 **Attachments of a conversation** | A button in the header shows everything ever sent, as a grid, newest first. Full screen opens from there and pages through the whole conversation, not only what happened to reach the feed. |
 | 🔔 **Mentions and sound** | `@username` in a group calls the person out: their bubble gets a border, and the notification reaches them even when they are in another conversation. Plus a short sound on a new message, switchable in settings. |
@@ -47,7 +48,7 @@ The server is a single `python server.py` away.
 | 👤 **Accounts** | Invite-only registration, scrypt password hashing, session tokens, brute-force lockout. A recovery code instead of email resets. Profile with a name, a bio and a photo. Everyone has a `@username` — that is how you find them in search. |
 | 🔒 **Encryption** | TLS 1.3 (`wss://`) with a Let's Encrypt certificate. The client falls back to plain `ws://` only if the server has no certificate — and says so on screen. |
 | 📱 **Phones** | A native Android app (`Velix.apk`) — real Android views, not a web page in a frame, with notifications for new messages. The web client is still there for iPhones. |
-| 🔄 **Updates** | A button in Settings. The server hands out the fresh build, the client swaps itself and restarts — no reinstall. |
+| 🔄 **Updates** | A button in Settings — in the window and on the phone alike: the server hands out both the build and the app, and the client swaps itself. No reinstalling, no hunting for an apk in your downloads. |
 | 🌍 **Two languages** | English and Russian, switched in Settings, applied instantly. |
 | 🛠 **Control panel** | The chat owner gets an extra button in Settings: how much space attachments and the database take, how much is free on the disk, who writes how much. Users and conversations are deleted from there too, and the file and video limits are set there. |
 
