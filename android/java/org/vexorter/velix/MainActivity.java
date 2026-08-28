@@ -134,6 +134,7 @@ public class MainActivity extends Activity implements VelixService.Screen {
     private final Map<Integer, String> drafts = new HashMap<>();
     private final List<JSONObject> outbox = new ArrayList<>();
     private JSONObject apkOffer;    // что за приложение раздаёт сервер
+    private boolean fromCache;      // показываем сохранённое, связи ещё нет
     private int localNumber;
     private boolean pendingGroup;
     private int pendingDirect = -1;   // ждём переписку с этим человеком
@@ -163,6 +164,9 @@ public class MainActivity extends Activity implements VelixService.Screen {
         String token = prefs().getString("token", null);
         if (token != null) {
             authSubtitle.setText(Lang.t("Подключаемся…"));
+            // Сохранённое показываем сразу: в метро это единственное, что
+            // вообще можно показать, а связь подтянется сама
+            showSaved();
             startService();
         }
     }
@@ -1024,7 +1028,11 @@ public class MainActivity extends Activity implements VelixService.Screen {
         typingWho = null;
         updateChatStatus();
         restoreDraft();
-        send(Net.frame("open", "conversation", id));
+        if (service != null && service.connected()) {
+            send(Net.frame("open", "conversation", id));
+        } else {
+            showCached(id);
+        }
         show(chatScreen);
     }
 
@@ -1104,6 +1112,136 @@ public class MainActivity extends Activity implements VelixService.Screen {
     }
 
     /** Недописанное переживает и переключение, и закрытие приложения. */
+    /**
+     * Сохранённая переписка.
+     *
+     * Связь рвётся в метро и в лифте, а история живёт на сервере — и
+     * спросить его в такую минуту не у кого. Поэтому последнее, что он
+     * присылал, лежит в файлах приложения и показывается сразу.
+     */
+    private java.io.File offlineFile(String кусок) {
+        java.io.File папка = new java.io.File(getFilesDir(), "offline");
+        папка.mkdirs();
+        return new java.io.File(папка, кусок + ".json");
+    }
+
+    private void keepRooms(JSONArray items) {
+        if (items == null) {
+            return;
+        }
+        write(offlineFile("rooms"), items.toString());
+    }
+
+    private JSONArray loadRooms() {
+        String что = read(offlineFile("rooms"));
+        try {
+            return что == null ? null : new JSONArray(что);
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private void keepHistory(int переписка, List<JSONObject> лента) {
+        JSONArray что = new JSONArray();
+        int начало = Math.max(0, лента.size() - 200);
+        for (int место = начало; место < лента.size(); место++) {
+            что.put(лента.get(место));
+        }
+        write(offlineFile("room-" + переписка), что.toString());
+    }
+
+    private List<JSONObject> loadHistory(int переписка) {
+        List<JSONObject> лента = new ArrayList<>();
+        String что = read(offlineFile("room-" + переписка));
+        if (что == null) {
+            return лента;
+        }
+        try {
+            JSONArray список = new JSONArray(что);
+            for (int место = 0; место < список.length(); место++) {
+                лента.add(список.optJSONObject(место));
+            }
+        } catch (Exception ignored) {
+            // Файл испортился — покажем пустую ленту, не беда
+        }
+        return лента;
+    }
+
+    private void write(java.io.File куда, String что) {
+        try {
+            java.io.FileOutputStream поток = new java.io.FileOutputStream(куда);
+            поток.write(что.getBytes("UTF-8"));
+            поток.close();
+        } catch (Exception ignored) {
+            // Не сохранилось — на экране всё равно всё есть
+        }
+    }
+
+    private String read(java.io.File откуда) {
+        if (!откуда.exists()) {
+            return null;
+        }
+        try {
+            byte[] буфер = new byte[(int) откуда.length()];
+            java.io.FileInputStream поток = new java.io.FileInputStream(откуда);
+            int прочитано = 0;
+            while (прочитано < буфер.length) {
+                int шаг = поток.read(буфер, прочитано, буфер.length - прочитано);
+                if (шаг <= 0) {
+                    break;
+                }
+                прочитано += шаг;
+            }
+            поток.close();
+            return new String(буфер, 0, прочитано, "UTF-8");
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    /** Рисует ленту из сохранённого и честно говорит, что она такая. */
+    private void showCached(int переписка) {
+        feed.removeAllViews();
+        items.clear();
+        ticks.clear();
+        reactionRows.clear();
+        currentDate = null;
+
+        List<JSONObject> лента = loadHistory(переписка);
+        drawingHistory = true;
+        try {
+            for (JSONObject one : лента) {
+                items.add(one);
+                showItem(one);
+            }
+        } finally {
+            drawingHistory = false;
+        }
+
+        TextView слово = Ui.text(this, лента.isEmpty()
+                ? Lang.t("нет связи")
+                : Lang.t("Нет связи — показываем сохранённое."), 13, Ui.MUTED);
+        слово.setGravity(Gravity.CENTER);
+        слово.setPadding(0, Ui.dp(this, 12), 0, Ui.dp(this, 4));
+        feed.addView(слово, Ui.wide());
+        scrollDown();
+    }
+
+    /** Показывает сохранённое, пока соединение только устанавливается. */
+    private void showSaved() {
+        JSONArray сохранённые = loadRooms();
+        if (сохранённые == null || сохранённые.length() == 0) {
+            return;
+        }
+        fromCache = true;
+        conversations.clear();
+        for (int место = 0; место < сохранённые.length(); место++) {
+            conversations.add(сохранённые.optJSONObject(место));
+        }
+        drawList();
+        show(listScreen);
+    }
+
     private void keepDraft() {
         if (conversation < 0 || messageField == null || editing > 0) {
             return;
@@ -2924,6 +3062,8 @@ public class MainActivity extends Activity implements VelixService.Screen {
             toast(Lang.fromServer(frame));
 
         } else if ("conversations".equals(kind)) {
+            fromCache = false;
+            keepRooms(frame.optJSONArray("items"));
             conversations.clear();
             JSONArray list = frame.optJSONArray("items");
             for (int index = 0; list != null && index < list.length(); index++) {
@@ -3227,6 +3367,8 @@ public class MainActivity extends Activity implements VelixService.Screen {
         } finally {
             drawingHistory = false;
         }
+
+        keepHistory(conversation, items);
 
         if (items.isEmpty()) {
             TextView hint = Ui.text(this, Lang.t("Пока тихо. Напишите первым."),

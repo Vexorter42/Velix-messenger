@@ -65,6 +65,9 @@ const EN = {
   "Реакция": "Reaction",
   "Удалить": "Delete",
   "Медиа": "Media",
+  "Нет связи — показываем сохранённое.":
+      "No connection — showing what was saved.",
+  "Нет связи.": "No connection.",
   "Вложения переписки": "Attachments in this conversation",
   "всего: {count}": "in total: {count}",
   "Пока ничего не присылали": "Nothing has been sent yet",

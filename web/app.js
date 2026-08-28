@@ -32,6 +32,7 @@ let replyTo = null;
 let editing = null;            // какое своё сообщение правим
 let drafts = {};               // недописанное по переписке
 let outbox = [];               // написанное, пока не было связи
+let fromCache = false;         // показываем сохранённое, связи ещё нет
 let pendingDirect = false;     // ждём номер только что созданной личной
 let oldest = null;
 let hasOlder = false;
@@ -273,6 +274,60 @@ function loadDrafts() {
   }
 }
 
+// --- сохранённая переписка: связь рвётся, а читать хочется
+
+function keepRooms(items) {
+  try {
+    localStorage.setItem("velix-rooms", JSON.stringify(items || []));
+  } catch (ignored) {
+    // Место кончилось — не беда, на экране всё равно всё есть
+  }
+}
+
+function loadRooms() {
+  try {
+    return JSON.parse(localStorage.getItem("velix-rooms") || "[]");
+  } catch (ignored) {
+    return [];
+  }
+}
+
+function keepHistory(id, лента) {
+  try {
+    localStorage.setItem(`velix-room-${id}`,
+                         JSON.stringify((лента || []).slice(-200)));
+  } catch (ignored) {
+    // См. выше
+  }
+}
+
+function loadHistory(id) {
+  try {
+    return JSON.parse(localStorage.getItem(`velix-room-${id}`) || "[]");
+  } catch (ignored) {
+    return [];
+  }
+}
+
+function showCached(id) {
+  const лента = loadHistory(id);
+  clearMessages();
+  loadedItems = лента.slice();
+  for (const item of loadedItems) showItem(item);
+  service(лента.length ? t("Нет связи — показываем сохранённое.")
+                       : t("Нет связи."));
+}
+
+function showSaved() {
+  const сохранённые = loadRooms();
+  if (!сохранённые.length) return false;
+  fromCache = true;
+  conversations = сохранённые;
+  drawList();
+  show("list");
+  return true;
+}
+
 // --- очередь: написанное без связи уходит, когда она вернётся
 
 function flushOutbox() {
@@ -396,6 +451,7 @@ function onUploadProgress(message) {
 }
 
 function onWelcome(message) {
+  fromCache = false;
   reconnectAttempt = 0;
   user = message.user || {};
   loadDrafts();
@@ -442,6 +498,8 @@ function onProfile(updated) {
 // -------------------------------------------------------- список переписок
 
 function onConversations(items) {
+  fromCache = false;
+  keepRooms(items);
   conversations = items;
   drawList();
   if (conversation === null && items.length) {
@@ -786,6 +844,7 @@ function drawList() {
 function openConversation(id, title) {
   keepDraft();
   conversation = id;
+  localStorage.setItem("velix-last-room", String(id));
   unread.delete(id);
   cancelReply();
   clearMessages();
@@ -796,7 +855,11 @@ function openConversation(id, title) {
   restoreDraft();
   typingWho = null;
   updateStatus();
-  send({type: "open", conversation: id});
+  if (!send({type: "open", conversation: id})) {
+    // Связи нет — показываем сохранённое: пусто оставлять нельзя, запрос
+    // ушёл в никуда и перерисовать переписку больше нечему
+    showCached(id);
+  }
 }
 
 // -------------------------------------------------------------- сообщения
@@ -868,6 +931,7 @@ function onHistory(message) {
 
   const previous = message.before ? [...loadedItems] : [];
   loadedItems = message.before ? items.concat(previous) : items;
+  keepHistory(message.conversation, loadedItems);
 
   clearMessages();
   if (hasOlder) {
@@ -1799,6 +1863,14 @@ $("chat-title").textContent = t("Общий чат");
 const savedToken = localStorage.getItem("velix.token");
 if (savedToken) {
   $("login").value = localStorage.getItem("velix.login") || "";
+  // Сохранённое показываем сразу, ещё до соединения: в метро это
+  // единственное, что вообще можно показать
+  if (showSaved()) {
+    const прошлая = Number(localStorage.getItem("velix-last-room") || 0);
+    const есть = conversations.find((one) => one.id === прошлая)
+                 || conversations[0];
+    if (есть) openConversation(есть.id, titleOf(есть));
+  }
   connect({type: "auth", token: savedToken});
 } else {
   show("auth");

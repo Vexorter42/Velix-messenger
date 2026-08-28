@@ -214,6 +214,8 @@ ENGLISH = {
     "Реакция": "Reaction",
     "Удалить": "Delete",
     "Медиа": "Media",
+    "Нет связи — показываем сохранённое.":
+        "No connection — showing what was saved.",
     "Вложения переписки": "Attachments in this conversation",
     "всего: {count}": "in total: {count}",
     "Пока ничего не присылали": "Nothing has been sent yet",

@@ -30,6 +30,7 @@ from PIL import Image, ImageDraw, ImageSequence
 import autostart
 import i18n
 import chime
+import localcache
 import mediacache
 import videoplayer
 import protocol
@@ -532,6 +533,8 @@ class VelixApp(ctk.CTk):
         self.editing = None            # какое своё сообщение правим
         self.drafts = {}               # недописанное по переписке
         self.outbox = []               # написанное, пока не было связи
+        self.from_cache = False        # показываем сохранённое, связи ещё нет
+        self.cache_pending = False     # сохранение ленты уже назначено
         self.quotes = {}               # выжимки цитируемых сообщений
         self.rows = {}                 # номер сообщения -> его ряд в ленте
         self.oldest = None             # самое старое загруженное сообщение
@@ -1572,6 +1575,76 @@ class VelixApp(ctk.CTk):
         self.auth_subtitle.configure(
             text=t("Входим как {name}…", name=account.get("name")))
         self.network.connect(connection_uris(self.server))
+        # Пока соединение устанавливается, показываем сохранённое: в метро
+        # или в лифте это единственное, что вообще можно показать
+        self._show_saved()
+
+    def _show_saved(self):
+        """Поднимает переписку с диска и показывает её до всякой связи."""
+        кто, переписки = localcache.load_rooms(self.server)
+        if not переписки:
+            return False
+
+        self.from_cache = True
+        self.user = dict(кто)
+        self.conversations = переписки
+        self._load_drafts()
+        self._show_chat()
+        self._refresh_me()
+        self.status_dot.configure(text_color=OFFLINE)
+        self._refresh_side_list()
+
+        последняя = self.config_data.get("last_room", {}).get(self.server)
+        если_есть = [one["id"] for one in переписки]
+        куда = последняя if последняя in если_есть else если_есть[0]
+        self.conversation = куда
+        self._update_header()
+        self._show_cached_history(куда)
+        return True
+
+    def _show_cached_history(self, conversation_id):
+        """Рисует ленту из сохранённого и честно говорит, что она такая."""
+        items = localcache.load_history(self.server, conversation_id)
+        self._clear_messages()
+        self.loaded_items = list(items)
+        self.drawing_history = True
+        try:
+            for item in self.loaded_items:
+                self._show_item(item)
+        finally:
+            self.drawing_history = False
+        self._service_label(t("Нет связи — показываем сохранённое.")
+                            if items else t("Нет связи. Переписка откроется, "
+                                            "как только она вернётся."))
+
+    def _keep_history_later(self):
+        """Откладывает запись ленты на диск.
+
+        Писать файл на каждое сообщение — это десяток записей за минуту
+        живой беседы. Полторы секунды тишины, и хватит одной.
+        """
+        if self.cache_pending or self.conversation is None:
+            return
+        self.cache_pending = True
+        self.after(1500, self._keep_history_now)
+
+    def _keep_history_now(self):
+        self.cache_pending = False
+        if self.conversation is None or self.from_cache:
+            return
+        localcache.save_history(self.server, self.conversation,
+                                self.loaded_items)
+
+    def _remember_room(self):
+        """Запоминает, какая переписка была открыта последней."""
+        if self.conversation is None:
+            return
+        try:
+            self.config_data.setdefault("last_room", {})[self.server] = \
+                self.conversation
+            store.save(self.config_data)
+        except Exception:
+            pass
 
     def _on_send(self):
         text = self.message_entry.get().strip()
@@ -1990,6 +2063,7 @@ class VelixApp(ctk.CTk):
         self.after(1200, self._flush_outbox)
 
     def _on_welcome(self, message):
+        self.from_cache = False
         self._stop_retrying()
         self.recover_mode = False
         self.user = dict(message.get("user") or {})
@@ -2054,6 +2128,8 @@ class VelixApp(ctk.CTk):
         elif kind == "history":
             self._show_history(message)
         elif kind == "conversations":
+            localcache.save_rooms(self.server, self.user,
+                                  message.get("items") or [])
             self.conversations = message.get("items") or []
             self._refresh_side_list()
             self._update_header()
@@ -2201,6 +2277,7 @@ class VelixApp(ctk.CTk):
             return
         self.loaded_items.append(message)
         self._show_item(message)
+        self._keep_history_later()
         self._bump_preview(message, notify=False)
         if message.get("id"):
             self._mark_read([message["id"]])
@@ -2693,11 +2770,11 @@ class VelixApp(ctk.CTk):
         self._update_header()
         self._refresh_pin_bar()
 
+        self._remember_room()
         if not self.network.send(protocol.open_request(conversation_id)):
-            # Связи нет: без этого переписка осталась бы пустой навсегда —
-            # запрос ушёл в никуда, а перерисовать её больше нечему
-            self._service_label(t("Нет связи. Переписка откроется, "
-                                  "как только она вернётся."))
+            # Связи нет — показываем сохранённое. Пусто оставлять нельзя:
+            # запрос ушёл в никуда, и перерисовать переписку больше нечему
+            self._show_cached_history(conversation_id)
             return
 
         # Сокет мог умереть молча — например, после сна ноутбука. Тогда
@@ -3042,6 +3119,11 @@ class VelixApp(ctk.CTk):
                          if item.get("id") and item.get("user") != self.user.get("id")])
         if self.loaded_items:
             self.oldest = self.loaded_items[0].get("id")
+
+        # То, что пришло, кладём на диск: в следующий раз без связи это и
+        # покажется
+        localcache.save_history(self.server, self.conversation,
+                                self.loaded_items)
 
     def _nudge_history(self, conversation_id, попытка, пропуск):
         """История не пришла — просим ещё раз, а потом сознаёмся.
