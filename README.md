@@ -297,6 +297,66 @@ Worth doing the dry run now and then: `--into` raises the copy off to one
 side and touches nothing, and `tests/backup_test.py` walks the whole path —
 takes a backup, damages it, and brings it back.
 
+### Copies leave the card
+
+The copies lay on the same card as the conversation: the card dies and both go
+at once. So once a day, after the nightly backup, the home server fetches the
+fresh one to itself.
+
+It pulls; the Pi does not push. The Pi faces the internet and holds no keys to
+the backup server, so if it is ever broken into, the copies stay whole. The
+backup server's own key is locked to `serve-backup.sh`: whatever it asks for,
+only that script runs. The line in `~/.ssh/authorized_keys` on the Pi:
+
+```
+from="192.168.0.100",restrict,command="/home/vexorter/velix/serve-backup.sh" ssh-ed25519 AAAA… velix-backup
+```
+
+On the home server there is `pull-backup.sh` and a daily timer after 4:30:
+
+```bash
+~/velix-backup/pull-backup.sh                       # fetch right now
+systemctl --user list-timers velix-backup.timer     # when it goes next
+```
+
+What arrives is opened straight away to see that the base is whole and holds a
+conversation. Identical attachments across copies are folded into one place
+with hard links — the space is taken once. The Pi notes every trip in
+`~/velix/backup-pull.log`: that is how the watchdog notices if the backup
+server ever goes quiet.
+
+### The watchdog
+
+`Restart=on-failure` raises a process that fell over. But a process that hangs
+does not fall over: the unit stays `active`, the port is listened on, and
+nobody answers the greeting — and you find out only when you open the window
+yourself and see “no connection”.
+
+So every five minutes `watchdog.py` behaves like an ordinary client: it knocks,
+says hello with a deliberately useless key, and waits for “that session is no
+longer valid”. That answer means the event loop and the database are both
+alive. Silence means they are not: then the watchdog asks systemd to raise the
+unit again and writes to Telegram about it. If it has been raised three times
+in an hour to no effect, it stops and calls for hands instead of beating on the
+wall.
+
+```bash
+~/velix/.venv/bin/python ~/velix/watchdog.py --once   # look only
+journalctl -u velix-watchdog -n 20
+```
+
+Velix keeps no bot of its own: `notify.py` reads the settings of the one
+already living on the Pi, copying nothing anywhere. No settings — the watchdog
+works in silence.
+
+```ini
+# /etc/systemd/system/velix-watchdog.timer
+[Timer]
+OnBootSec=4min
+OnUnitInactiveSec=5min
+AccuracySec=30s
+```
+
 ### The control panel
 
 The chat owner is whoever registered first, or whoever's login is named in
@@ -420,7 +480,9 @@ folder; none of them touch live data.
 | `updates.py`, `version.py` | Updating in place |
 | `invite.py` | Invite codes |
 | `recover.py` | Recovery codes for a forgotten password |
-| `backup.sh`, `publish-update.sh`, `test-server.sh` | Server-side chores |
+| `backup.sh`, `restore.sh`, `publish-update.sh`, `test-server.sh` | Server-side chores |
+| `serve-backup.sh`, `pull-backup.sh` | A copy leaves the card for the home server |
+| `watchdog.py`, `notify.py` | The watchdog, and a word to Telegram when the server goes quiet |
 
 A message travels as a JSON text frame; the bytes of an attachment follow in a
 separate binary frame. The desktop client keeps the network on its own thread
