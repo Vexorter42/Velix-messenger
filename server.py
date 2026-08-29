@@ -2,6 +2,7 @@ import asyncio
 import os
 import shutil
 import re
+import signal
 import ssl
 import tempfile
 import time
@@ -1599,6 +1600,29 @@ def build_ssl_context():
     return context
 
 
+def wait_for_stop():
+    """Ждёт, пока службу не попросят остановиться.
+
+    systemd останавливает сервер сигналом, а Python по умолчанию просто
+    обрывает процесс: finally не отрабатывает, база остаётся с недослитым
+    журналом. Поэтому сигнал переводим в обычное завершение и уходим по
+    той же дороге, что и от Ctrl+C.
+    """
+    остановка = asyncio.get_running_loop().create_future()
+
+    def просят():
+        if not остановка.done():
+            остановка.set_result(None)
+
+    for сигнал in (signal.SIGTERM, signal.SIGINT):
+        try:
+            asyncio.get_running_loop().add_signal_handler(сигнал, просят)
+        except (NotImplementedError, AttributeError, ValueError):
+            # Windows так не умеет: там Ctrl+C прилетит исключением
+            pass
+    return остановка
+
+
 async def main():
     await storage.init()
     await load_limits()
@@ -1644,8 +1668,9 @@ async def main():
             print(f"Раздаём обновление {update['version']}" if update
                   else "Обновление для раздачи не найдено")
 
-            # future() работает как бесконечный цикл, не давая серверу завершить работу
-            await asyncio.Future()
+            # Ждём вечно — ровно до просьбы остановиться
+            await wait_for_stop()
+            print("[Сервер]: Просят остановиться, закрываемся.")
     finally:
         await storage.close()
 

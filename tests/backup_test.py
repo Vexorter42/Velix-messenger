@@ -84,6 +84,24 @@ check("backup-has-db", (копия / "velix.db").exists())
 check("backup-has-media", list((копия / "media").glob(media_id + "*")),
       list((копия / "media").glob("*")))
 
+# --------------------------------- боевая база после копии стоит сама по себе
+#
+# В режиме WAL переписка копится в velix.db-wal, а velix.db остаётся
+# заготовкой: скопируешь руками один файл — увезёшь пустоту. Копия читает и
+# журнал, но backup.sh заодно сливает его, чтобы база была правдой сама по себе.
+
+одна = песочница / "одна-база"
+одна.mkdir()
+shutil.copy(БОЕВОЕ / "velix.db", одна / "velix.db")
+проверяем = sqlite3.connect(одна / "velix.db")
+try:
+    сама = проверяем.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+except sqlite3.OperationalError as беда:
+    сама = str(беда)
+finally:
+    проверяем.close()
+check("backup-checkpoints-live-base", сама == 2, сама)
+
 # --------------------------------------------------- копию можно проверить
 
 осмотр = запустить("restore.sh", "--check", копия.name)

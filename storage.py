@@ -1191,11 +1191,39 @@ def _last_messages_sync(limit):
     return items
 
 
+def _checkpoint_sync():
+    """Сливает журнал в саму базу и обрезает его.
+
+    В режиме WAL свежие записи копятся отдельным файлом velix.db-wal, а сам
+    velix.db может месяцами оставаться заготовкой в одну страницу. Копия
+    через sqlite3.backup читает и журнал, ей это не мешает, — но стоит
+    кому-нибудь скопировать руками один velix.db, и он увезёт пустоту,
+    будучи уверенным, что увёз переписку.
+
+    Возвращает True, если слить удалось. Если базу в эту секунду читают,
+    SQLite отвечает «занято» — не беда, сольётся в следующий раз.
+    """
+    with _lock:
+        if _connection is None:
+            return False
+        try:
+            занято, _, _ = _connection.execute(
+                "PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        except sqlite3.Error:
+            return False
+        return not занято
+
+
 def _close_sync():
     global _connection
 
     with _lock:
         if _connection is not None:
+            try:
+                _connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except sqlite3.Error:
+                # Закрыться важнее, чем слить журнал
+                pass
             _connection.close()
             _connection = None
 
@@ -1570,6 +1598,11 @@ async def last_messages(limit=HISTORY_LIMIT):
 async def close():
     """Закрывает соединение с базой."""
     await asyncio.to_thread(_close_sync)
+
+
+async def checkpoint():
+    """Сливает журнал в базу. True, если получилось."""
+    return await asyncio.to_thread(_checkpoint_sync)
 
 
 def format_time(created_at):
