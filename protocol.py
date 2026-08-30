@@ -40,13 +40,26 @@ def limit_for(kind, limits=None):
     limits = limits or {}
     if kind == "video":
         return int(limits.get("video", DEFAULT_VIDEO_LIMIT))
-    if kind in ("image", "gif"):
+    if kind in ("image", "gif", "voice", "circle"):
+        # Голос и кружок пишутся самим клиентом и короткие по замыслу: в
+        # один кадр они помещаются с большим запасом
         return MAX_MEDIA_SIZE
     return int(limits.get("file", DEFAULT_FILE_LIMIT))
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 GIF_SUFFIXES = {".gif"}
 VIDEO_SUFFIXES = {".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v"}
+
+# Голос и кружок — не расширение, а замысел: тот же .m4a может быть и
+# записанным сообщением, и просто присланной песней. Поэтому вид объявляет
+# клиент, а сервер лишь смотрит, не спорит ли объявленное с расширением
+VOICE_SUFFIXES = {".ogg", ".oga", ".opus", ".m4a", ".mp3", ".aac", ".wav",
+                  ".webm", ".mp4", ".3gp"}
+CIRCLE_SUFFIXES = VIDEO_SUFFIXES | {".3gp"}
+
+# Кружок — короткий по замыслу, голос — тоже не на час
+MAX_CIRCLE_SECONDS = 60
+MAX_VOICE_SECONDS = 300
 
 
 def kind_of(filename):
@@ -59,6 +72,21 @@ def kind_of(filename):
     if suffix in VIDEO_SUFFIXES:
         return "video"
     return "file"
+
+
+def claimed_kind(filename, asked):
+    """Вид, о котором просит клиент, — если расширение не против.
+
+    Присланному на слово не верим: назвать «кружочком» гигабайтный фильм
+    не выйдет. Но и по одному расширению голос от песни не отличить, так
+    что слово клиента здесь единственный источник замысла.
+    """
+    suffix = Path(filename).suffix.lower()
+    if asked == "voice" and suffix in VOICE_SUFFIXES:
+        return "voice"
+    if asked == "circle" and suffix in CIRCLE_SUFFIXES:
+        return "circle"
+    return kind_of(filename)
 
 
 def encode(payload):
@@ -98,10 +126,15 @@ def text_message(nickname, text, conversation=1, reply_to=None, local=None):
 
 
 def media_header(nickname, kind, name, size, conversation=1, reply_to=None,
-                 local=None):
+                 local=None, seconds=None):
+    """Описание вложения; следом идёт двоичный кадр с содержимым.
+
+    seconds нужен голосу и кружочку: их полоску рисуют до того, как байты
+    доедут, а узнать длительность из файла клиент может не всегда.
+    """
     return encode({"type": "media", "nick": nickname, "kind": kind,
                    "name": name, "size": size, "conversation": conversation,
-                   "reply_to": reply_to, "local": local})
+                   "reply_to": reply_to, "local": local, "seconds": seconds})
 
 
 def fetch_request(media_id):

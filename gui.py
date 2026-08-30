@@ -33,6 +33,7 @@ import i18n
 import chime
 import localcache
 import mediacache
+import recorder
 import videoplayer
 import protocol
 import store
@@ -558,6 +559,10 @@ class VelixApp(ctk.CTk):
         self.viewer_stage = None       # где рисуется само вложение
         self.viewer_counter = None     # «3 / 12» в углу просмотра
         self.video = None              # проигрыватель, если открыт ролик
+        self.recording = None          # идущая запись голоса или кружочка
+        self.recording_job = None      # отсчёт секунд у этой записи
+        self.voices = {}               # вложение -> проигрыватель голоса
+        self.circles = {}              # вложение -> проигрыватель кружочка
         self.glides = {}               # какие списки сейчас доезжают
         self.drawing_history = False   # рисуем ленту целиком, не по одному
         self.typing_dots = None        # мигание точек в «печатает…»
@@ -997,6 +1002,7 @@ class VelixApp(ctk.CTk):
         composer = ctk.CTkFrame(main, fg_color=COMPOSER, corner_radius=0)
         composer.grid(row=4, column=0, sticky="ew")
         composer.grid_columnconfigure(1, weight=1)
+        self.composer = composer
 
         self.attach_button = ctk.CTkButton(
             composer, text="+", width=44, height=44, corner_radius=22,
@@ -1015,11 +1021,49 @@ class VelixApp(ctk.CTk):
         self.message_entry.bind("<Control-KeyPress>", self._on_ctrl_key)
         self.message_entry.bind("<KeyRelease>", self._notify_typing)
 
+        # Микрофон и кружочек. Если записывать нечем — например, сборка без
+        # ffmpeg или в системе нет ни одного микрофона, — кнопок просто нет:
+        # кнопка, которая всегда отвечает «не могу», хуже её отсутствия
+        self.voice_button = ctk.CTkButton(
+            composer, text="🎤", width=44, height=44, corner_radius=22,
+            font=ctk.CTkFont(family="Segoe UI", size=17), fg_color=INPUT_BG,
+            hover_color=SEPARATOR, text_color=MUTED,
+            command=lambda: self._start_recording("voice"))
+        self.circle_button = ctk.CTkButton(
+            composer, text="◉", width=44, height=44, corner_radius=22,
+            font=ctk.CTkFont(family="Segoe UI", size=19), fg_color=INPUT_BG,
+            hover_color=SEPARATOR, text_color=MUTED,
+            command=lambda: self._start_recording("circle"))
+        self._place_record_buttons()
+
         self.send_button = ctk.CTkButton(
             composer, text="➤", width=44, height=44, corner_radius=22,
             font=ctk.CTkFont(family="Segoe UI", size=16), fg_color=ACCENT,
             hover_color=ACCENT_HOVER, text_color=ON_ACCENT, command=self._on_send)
-        self.send_button.grid(row=0, column=2, padx=(0, 18), pady=13)
+        self.send_button.grid(row=0, column=4, padx=(0, 18), pady=13)
+
+        # Полоска записи встаёт на место композера: пока идёт запись, писать
+        # всё равно нечего, а два ряда подряд только мешались бы
+        self.record_bar = ctk.CTkFrame(main, fg_color=COMPOSER,
+                                       corner_radius=0)
+        self.record_dot = ctk.CTkLabel(self.record_bar, text="●",
+                                       font=ctk.CTkFont(family="Segoe UI", size=18),
+                                       text_color=OFFLINE)
+        self.record_dot.pack(side="left", padx=(20, 8), pady=13)
+        self.record_label = ctk.CTkLabel(self.record_bar, text="",
+                                         font=self.font_body, text_color=TEXT,
+                                         anchor="w")
+        self.record_label.pack(side="left")
+        ctk.CTkButton(self.record_bar, text="➤", width=44, height=44,
+                      corner_radius=22, font=ctk.CTkFont(family="Segoe UI", size=16),
+                      fg_color=ACCENT, hover_color=ACCENT_HOVER,
+                      text_color=ON_ACCENT,
+                      command=self._finish_recording).pack(side="right",
+                                                           padx=(0, 18), pady=13)
+        ctk.CTkButton(self.record_bar, text="✕", width=44, height=44,
+                      corner_radius=22, font=ctk.CTkFont(family="Segoe UI", size=16),
+                      fg_color=INPUT_BG, hover_color=SEPARATOR, text_color=MUTED,
+                      command=self._cancel_recording).pack(side="right", padx=(0, 8))
 
     def _build_profile_view(self):
         self.profile_view = ctk.CTkFrame(self, fg_color="transparent")
@@ -1098,6 +1142,15 @@ class VelixApp(ctk.CTk):
         self.sound_switch = self._switch(card, t("Звук о новом сообщении"),
                                          self._on_sound_switch)
 
+        # Микрофонов на машине бывает три, и первый попавшийся — обычно не
+        # тот. Спрашиваем один раз и запоминаем
+        self.microphone_picker = self._device_picker(
+            card, t("Микрофон"), recorder.microphones(),
+            self.settings.get("microphone"), self._on_microphone)
+        self.camera_picker = self._device_picker(
+            card, t("Камера"), recorder.cameras(),
+            self.settings.get("camera"), self._on_camera)
+
         self.settings_hint = ctk.CTkLabel(card, text="", font=self.font_small,
                                           text_color=MUTED, wraplength=300,
                                           justify="left")
@@ -1125,6 +1178,46 @@ class VelixApp(ctk.CTk):
                       corner_radius=R_SMALL, font=self.font_small, fg_color="transparent",
                       hover_color=INPUT_BG, text_color=MUTED,
                       command=self._show_chat).pack(padx=48, pady=(0, 30))
+
+    def _device_picker(self, master, caption, устройства, выбранное, command):
+        """Выпадающий список устройств. Пусто — строчки просто нет."""
+        if not устройства:
+            return None
+
+        имена = [одно["name"] for одно in устройства]
+        row = ctk.CTkFrame(master, fg_color="transparent", width=300)
+        row.pack(padx=48, pady=(0, 14), fill="x")
+        ctk.CTkLabel(row, text=caption, font=self.font_body,
+                     text_color=TEXT).pack(side="left")
+        picker = ctk.CTkOptionMenu(
+            row, values=имена, width=190, height=28, corner_radius=R_SMALL,
+            font=self.font_small, dropdown_font=self.font_small,
+            fg_color=INPUT_BG, button_color=INPUT_BG,
+            button_hover_color=SEPARATOR, text_color=TEXT,
+            dropdown_fg_color=MENU_BG, dropdown_hover_color=MENU_HOVER,
+            dropdown_text_color=TEXT, command=command)
+
+        сейчас = next((одно["name"] for одно in устройства
+                       if одно["id"] == выбранное or одно["name"] == выбранное),
+                      имена[0])
+        picker.set(сейчас)
+        picker.pack(side="right")
+        return picker
+
+    def _on_microphone(self, имя):
+        """Запоминаем выбранный микрофон по системному имени, не по показанному."""
+        for одно in recorder.microphones():
+            if одно["name"] == имя:
+                self.settings["microphone"] = одно["id"]
+                break
+        self._save_settings()
+
+    def _on_camera(self, имя):
+        for одно in recorder.cameras():
+            if одно["name"] == имя:
+                self.settings["camera"] = одно["id"]
+                break
+        self._save_settings()
 
     def _switch(self, master, text, command):
         row = ctk.CTkFrame(master, fg_color="transparent", width=300)
@@ -1913,7 +2006,114 @@ class VelixApp(ctk.CTk):
                 widget.configure(text=t("Отправляю «{name}» — {percent}%",
                                         name=отправка["name"], percent=доля))
 
-    def _send_bytes(self, name, data):
+    # ------------------------------------------------- голос и кружочки
+
+    def _place_record_buttons(self):
+        """Ставит кнопки записи, если записывать есть чем."""
+        есть_чем = recorder.available() and recorder.microphones()
+        if not есть_чем:
+            self.voice_button.grid_remove()
+            self.circle_button.grid_remove()
+            return
+        self.voice_button.grid(row=0, column=2, padx=(0, 8), pady=13)
+        if recorder.cameras():
+            self.circle_button.grid(row=0, column=3, padx=(0, 8), pady=13)
+        else:
+            self.circle_button.grid_remove()
+
+    def _start_recording(self, kind):
+        """Начинает запись голоса или кружочка."""
+        if self.recording is not None or self.conversation is None:
+            return
+
+        микрофон = recorder.pick_microphone(self.settings.get("microphone"))
+        камера = (recorder.pick_camera(self.settings.get("camera"))
+                  if kind == "circle" else None)
+
+        запись = recorder.Recording(kind, микрофон, камера)
+        if запись.error or not запись.running:
+            запись.cancel()
+            self._service_label(t("Записать не вышло: {error}",
+                                  error=запись.error or t("устройство занято")))
+            return
+
+        self.recording = запись
+        self.composer.grid_remove()
+        self.record_bar.grid(row=4, column=0, sticky="ew")
+        self.record_label.configure(text=t("Записываю голос…") if kind == "voice"
+                                    else t("Записываю кружочек…"))
+        self._tick_recording()
+
+    def _tick_recording(self):
+        """Считает секунды и мигает точкой, пока идёт запись."""
+        if self.recording is None:
+            return
+
+        прошло = self.recording.seconds
+        предел = (recorder.MAX_VOICE if self.recording.kind == "voice"
+                  else recorder.MAX_CIRCLE)
+        осталось = предел - прошло
+        подпись = (t("Записываю голос…") if self.recording.kind == "voice"
+                   else t("Записываю кружочек…"))
+        self.record_label.configure(
+            text=f"{подпись}  {int(прошло) // 60}:{int(прошло) % 60:02d}"
+                 + (f"  ·  {t('осталось')} {int(осталось)}" if осталось < 11 else ""))
+        # Точка мигает раз в секунду: так видно, что запись жива
+        self.record_dot.configure(
+            text_color=OFFLINE if int(прошло * 2) % 2 == 0 else SEPARATOR)
+
+        if not self.recording.running or осталось <= 0:
+            # ffmpeg остановился сам, дойдя до предела
+            self._finish_recording()
+            return
+        self.recording_job = self.after(200, self._tick_recording)
+
+    def _hide_record_bar(self):
+        if self.recording_job is not None:
+            try:
+                self.after_cancel(self.recording_job)
+            except Exception:
+                pass
+            self.recording_job = None
+        self.record_bar.grid_remove()
+        self.composer.grid(row=4, column=0, sticky="ew")
+
+    def _cancel_recording(self):
+        """Бросает запись, ничего не отправляя."""
+        if self.recording is None:
+            return
+        self.recording.cancel()
+        self.recording = None
+        self._hide_record_bar()
+
+    def _finish_recording(self):
+        """Останавливает запись и отправляет её как сообщение."""
+        запись = self.recording
+        if запись is None:
+            return
+        self.recording = None
+        self._hide_record_bar()
+
+        файл = запись.stop()
+        if файл is None:
+            self._service_label(t("Записать не вышло: {error}",
+                                  error=запись.error or t("пустая запись")))
+            return
+
+        try:
+            данные = файл.read_bytes()
+        except OSError as беда:
+            self._service_label(t("Не удалось прочитать файл: {error}", error=беда))
+            запись.forget()
+            return
+        finally:
+            pass
+
+        секунд = getattr(запись, "seconds_done", None)
+        self._send_bytes(файл.name, данные, kind=запись.kind, seconds=секунд)
+        запись.forget()
+
+    def _send_bytes(self, name, data, kind=None, seconds=None):
         if len(data) > protocol.MAX_MEDIA_SIZE:
             self._service_label(t(
                 "«{name}» весит {size}, а больше {limit} сервер не принимает.",
@@ -1921,24 +2121,27 @@ class VelixApp(ctk.CTk):
                 limit=protocol.human_size(protocol.MAX_MEDIA_SIZE)))
             return
 
-        kind = protocol.kind_of(name)
+        kind = kind or protocol.kind_of(name)
         self.local_number += 1
         local = f"l{self.local_number}"
         self.network.send(protocol.media_header(self.user.get("name", ""), kind,
                                                 name, len(data), self.conversation,
-                                                self.reply_to, local), data)
+                                                self.reply_to, local, seconds), data)
 
         now = datetime.now()
         self._ensure_date(now.strftime("%d.%m"))
-        self.loaded_items.append({"kind": kind, "name": name, "size": len(data),
-                                  "nick": self.user.get("name", t("Я")),
-                                  "user": self.user.get("id"), "local": local,
-                                  "at": datetime.now().astimezone().isoformat(),
-                                  "conversation": self.conversation})
+        запись = {"kind": kind, "name": name, "size": len(data),
+                  "nick": self.user.get("name", t("Я")),
+                  "user": self.user.get("id"), "local": local,
+                  "at": datetime.now().astimezone().isoformat(),
+                  "conversation": self.conversation}
+        if seconds:
+            запись["seconds"] = seconds
+        self.loaded_items.append(запись)
         self._add_media_bubble(self.user.get("name", t("Я")), own=True, kind=kind,
                                media_id=None, name=name, size=len(data),
                                time_text=now.strftime("%H:%M"), data=data,
-                               item={"reply_to": self.reply_to})
+                               item={"reply_to": self.reply_to, "seconds": seconds})
         self._cancel_reply()
 
     def _on_leave(self):
@@ -2638,7 +2841,7 @@ class VelixApp(ctk.CTk):
             moment = local_time(last.get("at"))
             ctk.CTkLabel(top, text=moment.strftime("%H:%M"), font=self.font_small,
                          text_color=quiet).pack(side="right")
-            preview = last.get("text") if last.get("kind") == "text" else t("вложение")
+            preview = self._what_it_was(last)
             preview = f"{last.get('nick') or ''}: {preview}".strip(": ")
         else:
             preview = t("нет сообщений")
@@ -3053,6 +3256,8 @@ class VelixApp(ctk.CTk):
         self.after(60000, self._keep_subtitle_fresh)
 
     def _clear_messages(self):
+        # Голос из прошлой переписки не должен доигрывать в новой
+        self._stop_voices()
         for widget in self.messages.winfo_children():
             widget.destroy()
         self.rows.clear()
@@ -4060,6 +4265,18 @@ class VelixApp(ctk.CTk):
         if item.get("reply_to"):
             self._add_quote(bubble, item)
 
+        if kind in ("voice", "circle"):
+            if kind == "voice":
+                self._voice_card(bubble, own, media_id, name, item, data)
+            else:
+                self._circle_card(bubble, own, media_id, name, item, data)
+            self._add_time(bubble, own, time_text, item)
+            self._attach_menu((bubble,), item, own)
+            if item.get("id"):
+                self.rows[item["id"]] = bubble.master
+            self._scroll_to_bottom()
+            return
+
         if kind in ("image", "gif"):
             holder = ctk.CTkLabel(bubble, text=t("загружаю картинку…"),
                                   font=self.font_small, text_color=MUTED)
@@ -4086,6 +4303,204 @@ class VelixApp(ctk.CTk):
         if item.get("id"):
             self.rows[item["id"]] = bubble.master
         self._scroll_to_bottom()
+
+    def _voice_card(self, bubble, own, media_id, name, item, data=None):
+        """Голосовое: кнопка, полоска и время.
+
+        Полоску рисуем сразу, ещё до того как приедут байты: длительность
+        приходит вместе с описанием, и пустое место вместо сообщения
+        выглядело бы поломкой.
+        """
+        секунд = int(item.get("seconds") or 0)
+        карточка = ctk.CTkFrame(bubble, fg_color="transparent")
+        карточка.pack(fill="x", padx=13, pady=(5, 2))
+
+        кнопка = ctk.CTkButton(карточка, text="▶", width=38, height=38,
+                               corner_radius=19,
+                               font=ctk.CTkFont(family="Segoe UI", size=15),
+                               fg_color=ACCENT, hover_color=ACCENT_HOVER,
+                               text_color=ON_ACCENT)
+        кнопка.pack(side="left", padx=(0, 10))
+
+        справа = ctk.CTkFrame(карточка, fg_color="transparent")
+        справа.pack(side="left", fill="x", expand=True)
+
+        полоска = ctk.CTkProgressBar(справа, width=150, height=5,
+                                     corner_radius=3, progress_color=ACCENT,
+                                     fg_color=SEPARATOR)
+        полоска.set(0)
+        полоска.pack(fill="x", pady=(6, 3))
+
+        часы = ctk.CTkLabel(справа, text=self._duration_text(0, секунд),
+                            font=self.font_small,
+                            text_color=TIME_OUT if own else TIME_IN, anchor="w")
+        часы.pack(fill="x")
+
+        состояние = {"box": None, "data": data, "seconds": секунд}
+        if data is None and media_id:
+            состояние["data"] = mediacache.get(media_id)
+        кнопка.configure(command=lambda: self._play_voice(
+            media_id, name, состояние, кнопка, полоска, часы))
+
+    def _what_it_was(self, last):
+        """Чем было последнее сообщение — строчкой для списка переписок."""
+        вид = last.get("kind")
+        if вид == "text":
+            return last.get("text") or ""
+        if вид == "voice":
+            return t("голосовое")
+        if вид == "circle":
+            return t("кружочек")
+        return t("вложение")
+
+    def _duration_text(self, сколько, всего):
+        """0:07 / 0:31 — так же, как подписано в любом проигрывателе."""
+        def часы(секунд):
+            секунд = max(0, int(секунд))
+            return f"{секунд // 60}:{секунд % 60:02d}"
+
+        return часы(сколько) + (f" / {часы(всего)}" if всего else "")
+
+    def _play_voice(self, media_id, name, состояние, кнопка, полоска, часы):
+        """Первое нажатие — играем, следующие — пауза и продолжение."""
+        коробка = состояние.get("box")
+        if коробка is not None:
+            коробка.toggle()
+            кнопка.configure(text="▶" if коробка.paused else "❚❚")
+            return
+
+        данные = состояние.get("data") or (mediacache.get(media_id)
+                                           if media_id else None)
+        if данные is None:
+            if not media_id:
+                return
+            кнопка.configure(text="…")
+            self.pending_media[media_id] = ("voice", кнопка,
+                                            (состояние, полоска, часы, name))
+            self._ask_media(media_id)
+            return
+
+        состояние["data"] = данные
+        путь = self._video_file(media_id or name, name, данные)
+        if путь is None:
+            self._service_label(t("Не удалось открыть голосовое"))
+            return
+
+        # Играем по одному: два голоса разом — это каша
+        self._stop_voices()
+
+        def шаг(сейчас, всего):
+            if not кнопка.winfo_exists():
+                return
+            длительность = всего or состояние.get("seconds") or 0
+            полоска.set(min(1.0, сейчас / длительность) if длительность else 0)
+            часы.configure(text=self._duration_text(сейчас, длительность))
+
+        def конец():
+            if not кнопка.winfo_exists():
+                return
+            кнопка.configure(text="▶")
+            полоска.set(0)
+            часы.configure(text=self._duration_text(
+                0, состояние.get("seconds") or 0))
+
+        коробка = videoplayer.VoiceBox(self, путь, on_tick=шаг, on_end=конец)
+        if коробка.error:
+            self._service_label(t("Не удалось открыть голосовое"))
+            return
+
+        состояние["box"] = коробка
+        self.voices[media_id or name] = коробка
+        кнопка.configure(text="❚❚")
+
+    def _stop_voices(self):
+        """Закрывает голосовые проигрыватели: SDL держит звук открытым."""
+        for коробка in list(self.voices.values()):
+            коробка.close()
+        self.voices.clear()
+        for одна in self.circles.values():
+            одна.close()
+        self.circles.clear()
+
+    def _circle_card(self, bubble, own, media_id, name, item, data=None):
+        """Кружочек: круглое видео прямо в ленте."""
+        сторона = 200
+        карточка = ctk.CTkFrame(bubble, fg_color="transparent")
+        карточка.pack(padx=10, pady=(6, 2))
+
+        фон = self._hex(BUBBLE_OUT if own else BUBBLE_IN)
+        холст = tkinter.Label(карточка, text=t("кружочек"), bd=0,
+                              highlightthickness=0, bg=фон,
+                              fg=self._hex(MUTED),
+                              width=сторона // 8, height=сторона // 16)
+        холст.pack()
+
+        секунд = int(item.get("seconds") or 0)
+        подпись = ctk.CTkLabel(карточка, text=self._duration_text(0, секунд),
+                               font=self.font_small,
+                               text_color=TIME_OUT if own else TIME_IN)
+        подпись.pack(pady=(4, 0))
+
+        состояние = {"box": None, "data": data}
+        if data is None and media_id:
+            состояние["data"] = mediacache.get(media_id)
+
+        холст.configure(cursor="hand2")
+        холст.bind("<Button-1>", lambda event: self._play_circle(
+            media_id, name, состояние, холст, подпись, сторона, own))
+
+    def _play_circle(self, media_id, name, состояние, холст, подпись, сторона,
+                     own):
+        коробка = состояние.get("box")
+        if коробка is not None:
+            коробка.toggle()
+            return
+
+        данные = состояние.get("data") or (mediacache.get(media_id)
+                                           if media_id else None)
+        if данные is None:
+            if not media_id:
+                return
+            холст.configure(text=t("загружаю…"))
+            self.pending_media[media_id] = (
+                "circle", холст, (состояние, подпись, сторона, own, name))
+            self._ask_media(media_id)
+            return
+
+        состояние["data"] = данные
+        путь = self._video_file(media_id or name, name, данные)
+        if путь is None:
+            self._service_label(t("Не удалось открыть кружочек"))
+            return
+
+        self._stop_voices()
+
+        def шаг(коробка):
+            if холст.winfo_exists():
+                подпись.configure(text=self._duration_text(коробка.position,
+                                                           коробка.duration))
+
+        def конец(коробка):
+            if холст.winfo_exists():
+                подпись.configure(text=self._duration_text(0, коробка.duration))
+
+        холст.configure(text="")
+        коробка = videoplayer.VideoBox(
+            холст, путь, (сторона, сторона), on_tick=шаг, on_end=конец,
+            round_on=self._hex(BUBBLE_OUT if own else BUBBLE_IN))
+        if коробка.error:
+            холст.configure(text=t("кружочек"))
+            self._service_label(t("Не удалось открыть кружочек"))
+            return
+
+        состояние["box"] = коробка
+        self.circles[media_id or name] = коробка
+
+    def _hex(self, цвет):
+        """Цвет под текущую тему: у обычных Tk-виджетов пары цветов нет."""
+        if isinstance(цвет, (tuple, list)):
+            return цвет[1] if ctk.get_appearance_mode() == "Dark" else цвет[0]
+        return цвет
 
     def _file_card(self, bubble, own, kind, media_id, name, size, data):
         """Видео и прочие файлы показываем карточкой с кнопкой «Открыть»."""
@@ -4188,6 +4603,18 @@ class VelixApp(ctk.CTk):
             self._copy_bytes(extra, data)
         elif mode == "picture":
             self._show_picture(widget, extra, data, media_id)
+        elif mode == "voice":
+            состояние, полоска, часы, имя = extra
+            if widget is not None and widget.winfo_exists():
+                состояние["data"] = data
+                widget.configure(text="▶")
+                self._play_voice(media_id, имя, состояние, widget, полоска, часы)
+        elif mode == "circle":
+            состояние, подпись, сторона, own, имя = extra
+            if widget is not None and widget.winfo_exists():
+                состояние["data"] = data
+                self._play_circle(media_id, имя, состояние, widget, подпись,
+                                  сторона, own)
         elif mode == "card":
             if widget is not None and widget.winfo_exists():
                 self._paint_link_picture(widget, data, extra)

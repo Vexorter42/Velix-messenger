@@ -1170,8 +1170,18 @@ async def handle_media(websocket, user, message):
     if not await allowed(websocket, user, conversation):
         return
 
-    # Вид вложения определяем сами, присланному на слово не верим
-    kind = protocol.kind_of(name)
+    # Вид вложения определяем сами, присланному на слово не верим. Голос и
+    # кружочек — исключение: по расширению их от обычной песни или ролика не
+    # отличить, поэтому слово клиента принимаем, но сверяем с расширением
+    kind = protocol.claimed_kind(name, message.get("kind"))
+
+    # Длительность приходит от того, кто записывал: полоску под голосом
+    # рисуют раньше, чем доедут байты
+    seconds = message.get("seconds")
+    try:
+        seconds = max(1, min(int(seconds), protocol.MAX_VOICE_SECONDS))             if seconds else None
+    except (TypeError, ValueError):
+        seconds = None
 
     # Картинку ужимаем до отправки в хранилище: на диске малины лежит уже
     # сжатая, оригинал не нужен. Работа с картинкой упирается в процессор,
@@ -1180,7 +1190,8 @@ async def handle_media(websocket, user, message):
     name, packed = await asyncio.to_thread(media.compress, kind, name, bytes(payload))
 
     message_id, media_id, created_at = await storage.save_media(
-        user["id"], user["name"], kind, name, packed, conversation, reply_to)
+        user["id"], user["name"], kind, name, packed, conversation, reply_to,
+        seconds)
     print(f"[Лог]: {user['name']} прислал {kind} '{name}' "
           f"({protocol.human_size(len(packed))}, {media.describe(original_size, len(packed))})")
 
@@ -1190,6 +1201,8 @@ async def handle_media(websocket, user, message):
              "nick": user["name"], "kind": kind, "name": name,
              "size": len(packed), "at": created_at, "conversation": conversation,
              "user": user["id"]}
+    if seconds:
+        frame["seconds"] = seconds
     if reply_to:
         frame["reply_to"] = reply_to
     if user.get("avatar"):

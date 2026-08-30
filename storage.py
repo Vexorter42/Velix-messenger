@@ -47,6 +47,8 @@ MESSAGE_COLUMNS = {
     "deleted": "INTEGER NOT NULL DEFAULT 0",
     "forwarded": "TEXT",
     "edited_at": "TEXT",
+    # Длительность голоса и кружочка: полоску рисуют раньше, чем доедут байты
+    "seconds": "INTEGER",
 }
 
 # Код восстановления пароля хранится хешем, как и сам пароль
@@ -787,7 +789,8 @@ def _pin_sync(conversation_id, message_id):
         _connection.commit()
 
 
-def _save_media_sync(user_id, nickname, kind, name, data, conversation_id, reply_to):
+def _save_media_sync(user_id, nickname, kind, name, data, conversation_id,
+                     reply_to, seconds=None):
     media_id = uuid.uuid4().hex
     suffix = Path(name).suffix.lower()[:16]
     (_media_dir / f"{media_id}{suffix}").write_bytes(data)
@@ -796,10 +799,11 @@ def _save_media_sync(user_id, nickname, kind, name, data, conversation_id, reply
     with _lock:
         cursor = _connection.execute(
             "INSERT INTO messages (nickname, text, created_at, kind,"
-            " media_id, media_name, media_size, user_id, conversation_id, reply_to)"
-            " VALUES (?, '', ?, ?, ?, ?, ?, ?, ?, ?)",
+            " media_id, media_name, media_size, user_id, conversation_id,"
+            " reply_to, seconds)"
+            " VALUES (?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (nickname, created_at, kind, media_id, name, len(data), user_id,
-             conversation_id, reply_to),
+             conversation_id, reply_to, seconds),
         )
         _connection.commit()
     return cursor.lastrowid, media_id, created_at
@@ -1060,7 +1064,7 @@ def _row_to_item(row):
     """Одна строка из базы — в то, что понимает клиент."""
     (message_id, nickname, text, created_at, kind, media_id, media_name,
      media_size, deleted, reply_to, user_id, profile_name, avatar_id,
-     forwarded, edited_at) = row
+     forwarded, edited_at, seconds) = row
 
     item = {"id": message_id, "nick": profile_name or nickname, "at": created_at,
             "kind": kind or "text", "user": user_id}
@@ -1083,12 +1087,14 @@ def _row_to_item(row):
         item["media"] = media_id
         item["name"] = media_name
         item["size"] = media_size
+        if seconds:
+            item["seconds"] = seconds
     return item
 
 
 MESSAGE_FIELDS = ("m.id, m.nickname, m.text, m.created_at, m.kind, m.media_id,"
                   " m.media_name, m.media_size, m.deleted, m.reply_to, m.user_id,"
-                  " u.name, u.avatar_id, m.forwarded, m.edited_at")
+                  " u.name, u.avatar_id, m.forwarded, m.edited_at, m.seconds")
 
 
 def _messages_sync(conversation_id, limit, before):
@@ -1432,6 +1438,8 @@ def _media_of_sync(conversation_id, limit=300):
             " LEFT JOIN users u ON u.id = m.user_id"
             " WHERE m.conversation_id = ? AND m.deleted = 0"
             "   AND m.media_id IS NOT NULL AND m.media_id != ''"
+            # Голосу в сетке картинок делать нечего, а кружочку — есть
+            "   AND m.kind != 'voice'"
             " ORDER BY m.id DESC LIMIT ?",
             (conversation_id, limit)).fetchall()
     return [_row_to_item(row) for row in rows]
@@ -1635,10 +1643,10 @@ async def save_media_file(user_id, nickname, kind, name, path, size,
 
 
 async def save_media(user_id, nickname, kind, name, data,
-                     conversation_id=GENERAL_ID, reply_to=None):
+                     conversation_id=GENERAL_ID, reply_to=None, seconds=None):
     """Сохраняет вложение файлом, возвращает (номер, идентификатор, время)."""
     return await asyncio.to_thread(_save_media_sync, user_id, nickname, kind, name,
-                                   data, conversation_id, reply_to)
+                                   data, conversation_id, reply_to, seconds)
 
 
 async def add_push(user_id, subscription):

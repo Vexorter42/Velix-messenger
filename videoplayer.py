@@ -10,7 +10,7 @@ Tkinter не умеет видео вовсе, поэтому делаем эт�
 клиент предложит открыть файл системным проигрывателем, как и раньше.
 """
 
-from PIL import Image, ImageTk
+from PIL import Image, ImageDraw, ImageTk
 
 try:
     from ffpyplayer.player import MediaPlayer
@@ -21,6 +21,14 @@ except Exception:                       # pragma: no cover — сборка бе
 def available():
     """Умеет ли эта сборка показывать видео сама."""
     return MediaPlayer is not None
+
+
+def circle_mask(side):
+    """Круглая маска: белое внутри круга, чёрное снаружи."""
+    маска = Image.new("L", (side * 4, side * 4), 0)
+    ImageDraw.Draw(маска).ellipse((0, 0, side * 4 - 1, side * 4 - 1), fill=255)
+    # Рисуем вчетверо крупнее и уменьшаем: край получается гладким
+    return маска.resize((side, side), Image.LANCZOS)
 
 
 def fit(size, box):
@@ -35,6 +43,122 @@ def fit(size, box):
     return max(int(ширина * доля), 16), max(int(высота * доля), 16)
 
 
+class VoiceBox:
+    """Голосовое сообщение: звук есть, показывать нечего.
+
+    Тот же ffpyplayer, только без картинки — «vn» выключает видеодорожку,
+    и остаётся один звук через SDL. Наше дело — вовремя спрашивать, где мы
+    сейчас, чтобы полоска под сообщением ехала вместе с голосом.
+    """
+
+    def __init__(self, widget, path, on_tick=None, on_end=None):
+        self.widget = widget            # к нему привязаны отложенные вызовы
+        self.on_tick = on_tick
+        self.on_end = on_end
+
+        self.player = None
+        self.job = None
+        self.paused = False
+        self.finished = False
+        self.duration = 0.0
+        self.position = 0.0
+        self.error = None
+
+        if MediaPlayer is None:
+            self.error = "нет библиотеки"
+            return
+
+        try:
+            self.player = MediaPlayer(str(path), ff_opts={"vn": True,
+                                                          "sync": "audio"})
+        except Exception as беда:                     # pragma: no cover
+            self.error = str(беда)
+            return
+
+        self.job = self.widget.after(60, self._tick)
+
+    def toggle(self):
+        if self.player is None:
+            return
+        if self.finished:
+            self.seek_to(0.0)
+            self.paused = False
+        else:
+            self.paused = not self.paused
+        self.player.set_pause(self.paused)
+        if not self.paused and self.job is None:
+            self.job = self.widget.after(30, self._tick)
+
+    def seek_to(self, доля):
+        if self.player is None or self.duration <= 0:
+            return
+        try:
+            self.player.seek(max(0.0, min(доля, 0.999)) * self.duration,
+                             relative=False, accurate=False)
+        except Exception:                             # pragma: no cover
+            return
+        self.finished = False
+        if self.job is None:
+            self.job = self.widget.after(30, self._tick)
+
+    def close(self):
+        if self.job is not None:
+            try:
+                self.widget.after_cancel(self.job)
+            except Exception:                         # pragma: no cover
+                pass
+            self.job = None
+        if self.player is not None:
+            try:
+                self.player.close_player()
+            except Exception:                         # pragma: no cover
+                pass
+            self.player = None
+
+    def _tick(self):
+        self.job = None
+        if self.player is None:
+            return
+
+        try:
+            кадр, состояние = self.player.get_frame(show=False)
+        except Exception:                             # pragma: no cover
+            состояние = "eof"
+
+        if self.duration <= 0:
+            # Длительность появляется не сразу: сначала нужно прочитать шапку
+            try:
+                self.duration = float(self.player.get_metadata()
+                                      .get("duration") or 0.0)
+            except Exception:                         # pragma: no cover
+                self.duration = 0.0
+
+        try:
+            self.position = float(self.player.get_pts() or 0.0)
+        except Exception:                             # pragma: no cover
+            pass
+
+        # Конца звуковой дорожке ffpyplayer не объявляет так же ясно, как
+        # видео: кадров тут нет, и «eof» может не прийти вовсе. Поэтому
+        # смотрим ещё и на то, докатились ли мы до длительности
+        кончилось = состояние == "eof" or (
+            self.duration > 0 and self.position >= self.duration - 0.12)
+
+        if кончилось:
+            self.finished = True
+            self.position = self.duration
+            if self.on_tick:
+                self.on_tick(self.position, self.duration)
+            if self.on_end:
+                self.on_end()
+            return
+
+        if self.on_tick:
+            self.on_tick(self.position, self.duration)
+
+        self.job = self.widget.after(100, self._tick)
+
+
 class VideoBox:
     """Проигрывание одного файла на одну метку.
 
@@ -42,11 +166,16 @@ class VideoBox:
     десятками в секунду, и каждый лишний слой на этом пути виден глазу.
     """
 
-    def __init__(self, surface, path, box, on_tick=None, on_end=None):
+    def __init__(self, surface, path, box, on_tick=None, on_end=None,
+                 round_on=None):
         self.surface = surface
         self.box = box
         self.on_tick = on_tick
         self.on_end = on_end
+        # Кружочек круглый только на вид: в файле он обычный квадратный mp4,
+        # а маску накладываем здесь, кадр за кадром
+        self.round_on = round_on
+        self.mask = None
 
         self.player = None
         self.photo = None              # ссылку держим, иначе Tk сотрёт картинку
@@ -168,6 +297,20 @@ class VideoBox:
         пауза = 0.03 if состояние == "paused" or not состояние else float(состояние)
         self.job = self.surface.after(max(int(пауза * 1000), 4), self._tick)
 
+    def _round(self, кадр):
+        """Вписывает кадр в круг на заданном фоне."""
+        сторона = min(кадр.size)
+        if self.mask is None or self.mask.size != (сторона, сторона):
+            self.mask = circle_mask(сторона)
+
+        обрезанный = кадр.crop((
+            (кадр.width - сторона) // 2, (кадр.height - сторона) // 2,
+            (кадр.width - сторона) // 2 + сторона,
+            (кадр.height - сторона) // 2 + сторона))
+        холст = Image.new("RGB", (сторона, сторона), self.round_on)
+        холст.paste(обрезанный, (0, 0), self.mask)
+        return холст
+
     def _draw(self, картинка):
         if self.size is None:
             self.size = fit(картинка.get_size(), self.box)
@@ -185,6 +328,9 @@ class VideoBox:
                                        "raw", "RGB", шаг, 1)
         except (ValueError, TypeError):               # pragma: no cover
             return
+
+        if self.round_on is not None:
+            готовое = self._round(готовое)
 
         self.photo = ImageTk.PhotoImage(готовое)
         self.surface.configure(image=self.photo)
