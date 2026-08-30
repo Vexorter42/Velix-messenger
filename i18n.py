@@ -202,6 +202,7 @@ ENGLISH = {
     "Переслано от {name}": "Forwarded from {name}",
     "Закреплённое сообщение": "Pinned message",
     "Скопировано": "Copied",
+    "Не получилось открыть ссылку": "Could not open the link",
     "Не удалось скопировать: {error}": "Could not copy: {error}",
     "Новая группа": "New group",
     "Название группы": "Group name",

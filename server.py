@@ -17,6 +17,7 @@ from websockets.datastructures import Headers, MultipleValuesError
 
 import accounts
 import i18n
+import linkpreview
 import media
 import protocol
 import push
@@ -376,6 +377,9 @@ async def handle_edit(websocket, user, message):
 
     conversation, когда = правка
     print(f"[Лог]: {user['name']} поправил сообщение {message_id}")
+    # Текст стал другим — прежняя карточка могла остаться от прежней ссылки
+    await storage.forget_previews([message_id])
+    find_preview_later(conversation, message_id, text)
     кадр = protocol.edited_message(conversation, message_id, text, когда)
     await websocket.send(кадр)
     await send_to_conversation(conversation, кадр, websocket)
@@ -395,9 +399,91 @@ async def handle_delete(websocket, user, message):
         return
 
     print(f"[Лог]: {user['name']} удалил сообщение {message_id}")
+    await storage.forget_previews([message_id])
     frame = protocol.deleted_message(conversation, message_id)
     await websocket.send(frame)
     await send_to_conversation(conversation, frame, websocket)
+
+
+# Задачи с карточками держим за руку: иначе сборщик мусора может их
+# подобрать раньше, чем сервер сходит по ссылке
+preview_tasks = set()
+
+# Ходим не больше чем за двумя ссылками разом и не дольше полуминуты на
+# каждую: сайт на том конце может отвечать по байту в семь секунд, и без
+# этого он занял бы малину надолго
+preview_pen = asyncio.Semaphore(2)
+PREVIEW_WAIT = 30
+
+# Картинке карточки хватает и половины обычной стороны
+PREVIEW_SIDE = 800
+
+# Больше этого в карточку не кладём: она украшение, а не вложение
+PREVIEW_PICTURE = 400 * 1024
+
+
+async def look_up_link(message_id, ссылка):
+    """Ходит по ссылке и запоминает, что нашла."""
+    карточка = await asyncio.to_thread(linkpreview.look, ссылка)
+    if not карточка:
+        return None
+
+    байты, окончание = None, ".jpg"
+    адрес = карточка.pop("image", "")
+    if адрес:
+        сырое = await asyncio.to_thread(linkpreview.picture, адрес)
+        if сырое:
+            имя, байты = await asyncio.to_thread(
+                media.compress, "image", "preview.jpg", сырое, PREVIEW_SIDE)
+            окончание = Path(имя).suffix or ".jpg"
+            if len(байты) > PREVIEW_PICTURE:
+                байты = None
+
+    # Показываем ту ссылку, по которой ходили: куда увела переадресация —
+    # дело сайта, а человеку в переписке важна его собственная
+    карточка["url"] = ссылка
+    return await storage.save_preview(message_id, карточка, байты, окончание)
+
+
+async def add_preview(conversation, message_id, text):
+    """Показывает ссылку карточкой: заголовок, описание, картинка.
+
+    Ходит по ссылке сервер, а не клиенты: иначе каждый, кто просто открыл
+    переписку, засветил бы свой адрес чужому сайту. Отдельной задачей — сайт
+    может думать секунды, а сообщение должно улететь сразу.
+    """
+    ссылка = linkpreview.find_link(text)
+    if not ссылка:
+        return
+
+    # Помним карточку по тому адресу, который просили, а не по тому, куда
+    # нас в итоге увела переадресация: иначе за одной ссылкой сервер ходил
+    # бы снова и снова
+    ключ = await asyncio.to_thread(linkpreview.наружу, ссылка) or ссылка
+
+    try:
+        готовая = await storage.preview_by_url(ключ)
+        if готовая:
+            карточка = await storage.save_preview(message_id, готовая)
+        else:
+            async with preview_pen:
+                карточка = await asyncio.wait_for(
+                    look_up_link(message_id, ключ), timeout=PREVIEW_WAIT)
+        if карточка:
+            await send_to_conversation(conversation, protocol.preview_message(
+                conversation, message_id, карточка))
+    except asyncio.TimeoutError:
+        print(f"[Сервер]: {ключ} отвечает слишком долго, карточки не будет")
+    except Exception:
+        # Карточка не сложилась — сообщение от этого не страдает
+        traceback.print_exc()
+
+
+def find_preview_later(conversation, message_id, text):
+    """Заводит поиск карточки отдельной задачей."""
+    задача = asyncio.create_task(add_preview(conversation, message_id, text))
+    preview_tasks.add(задача)
+    задача.add_done_callback(preview_tasks.discard)
 
 
 async def find_mentions(conversation_id, text, sender_id):
@@ -1060,6 +1146,7 @@ async def handle_text(websocket, user, message):
     await note_delivery(message_id, user["id"], reached)
     await notify_absent(conversation, user["id"], user["name"], text[:120],
                         позвали)
+    find_preview_later(conversation, message_id, text)
 
 
 async def handle_media(websocket, user, message):

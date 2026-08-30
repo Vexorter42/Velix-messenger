@@ -46,7 +46,7 @@ if SANDBOX.exists():
     shutil.rmtree(SANDBOX)
 SANDBOX.mkdir()
 for name in ("server.py", "storage.py", "protocol.py", "media.py", "accounts.py",
-             "push.py", "i18n.py",
+             "push.py", "i18n.py", "linkpreview.py",
              "invite.py"):
     shutil.copy(REPO / name, SANDBOX / name)
 

@@ -37,7 +37,7 @@ if SANDBOX.exists():
 SANDBOX.mkdir()
 SHOTS.mkdir(exist_ok=True)
 for name in ("server.py", "storage.py", "protocol.py", "media.py", "accounts.py",
-             "push.py", "i18n.py"):
+             "push.py", "i18n.py", "linkpreview.py"):
     shutil.copy(REPO / name, SANDBOX / name)
 
 server = subprocess.Popen([sys.executable, "server.py"], cwd=SANDBOX, env=ENV,

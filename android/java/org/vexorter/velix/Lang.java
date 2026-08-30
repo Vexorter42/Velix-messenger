@@ -202,6 +202,8 @@ class Lang {
         add("▶ Смотреть", "▶ Watch");
         add("Видео не открылось", "The video would not play");
         add("нет связи", "no connection");
+        add("Не получилось открыть ссылку",
+            "Could not open the link");
         add("Нет связи — показываем сохранённое.",
             "No connection — showing what was saved.");
         add("Связь потеряна, переподключаемся…", "Connection lost, reconnecting…");

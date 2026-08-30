@@ -34,7 +34,7 @@ if SANDBOX.exists():
     shutil.rmtree(SANDBOX)
 SANDBOX.mkdir()
 for name in ("server.py", "storage.py", "protocol.py", "media.py", "accounts.py",
-             "push.py", "i18n.py"):
+             "push.py", "i18n.py", "linkpreview.py"):
     shutil.copy(REPO / name, SANDBOX / name)
 
 # --- база от прошлой версии: общий чат отдельной переписки и сообщение в нём

@@ -180,6 +180,24 @@ def _init_sync(path, media_dir):
             )
             """
         )
+        # Карточка ссылки: что сервер увидел, сходив по адресу из сообщения.
+        # Одна строчка на сообщение — так её легко отдать вместе с историей
+        # и так же легко убрать вместе с сообщением
+        _connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS previews (
+                message_id INTEGER PRIMARY KEY,
+                url        TEXT NOT NULL,
+                title      TEXT NOT NULL DEFAULT '',
+                text       TEXT NOT NULL DEFAULT '',
+                image_id   TEXT,
+                site       TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        _connection.execute(
+            "CREATE INDEX IF NOT EXISTS previews_url ON previews (url)")
         # База могла остаться от прежней версии — дописываем недостающие столбцы
         existing = {row[1] for row in _connection.execute("PRAGMA table_info(messages)")}
         for column, definition in MESSAGE_COLUMNS.items():
@@ -680,6 +698,15 @@ def _delete_conversation_sync(conversation_id):
             "DELETE FROM reactions WHERE message_id IN"
             " (SELECT id FROM messages WHERE conversation_id = ?)",
             (conversation_id,))
+        картинки = _connection.execute(
+            "SELECT image_id FROM previews WHERE message_id IN"
+            " (SELECT id FROM messages WHERE conversation_id = ?)",
+            (conversation_id,)).fetchall()
+        rows.extend(картинки)
+        _connection.execute(
+            "DELETE FROM previews WHERE message_id IN"
+            " (SELECT id FROM messages WHERE conversation_id = ?)",
+            (conversation_id,))
         _connection.execute("DELETE FROM messages WHERE conversation_id = ?",
                             (conversation_id,))
         _connection.execute("DELETE FROM members WHERE conversation_id = ?",
@@ -860,6 +887,11 @@ def _media_bytes_sync(media_id):
         row = _connection.execute(
             "SELECT kind, media_name FROM messages WHERE media_id = ?", (media_id,)
         ).fetchone()
+        if row is None:
+            # Картинка карточки сообщением не является, но забирается так же
+            row = _connection.execute(
+                "SELECT 'image', 'preview' FROM previews WHERE image_id = ?",
+                (media_id,)).fetchone()
     if row is None:
         return None
 
@@ -1076,7 +1108,101 @@ def _messages_sync(conversation_id, limit, before):
             ") m LEFT JOIN users u ON u.id = m.user_id ORDER BY m.id ASC",
             parameters,
         ).fetchall()
-    return [_row_to_item(row) for row in rows]
+
+    items = [_row_to_item(row) for row in rows]
+    # Карточки ссылок едут вместе с историей: иначе после перезахода в
+    # переписку от них оставались бы голые адреса
+    карточки = _previews_for_sync([one["id"] for one in items])
+    for one in items:
+        if one["id"] in карточки:
+            one["preview"] = карточки[one["id"]]
+    return items
+
+
+def _preview_row(row):
+    """Строка карточки — в то, что понимает клиент."""
+    url, title, text, image_id, site = row
+    карточка = {"url": url, "title": title or "", "text": text or "",
+                "site": site or ""}
+    if image_id:
+        карточка["image"] = image_id
+    return карточка
+
+
+def _previews_for_sync(message_ids):
+    """Карточки этих сообщений: номер -> карточка."""
+    if not message_ids:
+        return {}
+    marks = ",".join("?" * len(message_ids))
+    with _lock:
+        rows = _connection.execute(
+            "SELECT message_id, url, title, text, image_id, site FROM previews"
+            " WHERE message_id IN (" + marks + ")", list(message_ids)).fetchall()
+    return {row[0]: _preview_row(row[1:]) for row in rows}
+
+
+def _preview_by_url_sync(url):
+    """Самая свежая карточка этого адреса — чтобы не ходить за ней снова."""
+    with _lock:
+        row = _connection.execute(
+            "SELECT url, title, text, image_id, site FROM previews"
+            " WHERE url = ? ORDER BY message_id DESC LIMIT 1", (url,)).fetchone()
+    return _preview_row(row) if row else None
+
+
+def _save_preview_sync(message_id, card, picture=None, suffix=".jpg"):
+    """Записывает карточку и, если есть, её картинку.
+
+    Картинка ложится в media отдельным файлом со своим именем. Сообщением она
+    не становится: в переписке не висит и во вкладку «медиа» не попадает, —
+    но забирается тем же путём, что и обычное вложение.
+    """
+    # Если картинка уже скачана раньше — берём готовую: за одной и той же
+    # ссылкой сервер ходит один раз на всех
+    image_id = card.get("image") or None
+    if picture:
+        image_id = uuid.uuid4().hex
+        (_media_dir / f"{image_id}{suffix}").write_bytes(picture)
+
+    with _lock:
+        _connection.execute(
+            "INSERT OR REPLACE INTO previews"
+            " (message_id, url, title, text, image_id, site, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (message_id, card.get("url", ""), card.get("title", "")[:200],
+             card.get("text", "")[:400], image_id, card.get("site", "")[:80],
+             now()))
+        _connection.commit()
+
+    готово = dict(card)
+    готово.pop("image", None)
+    if image_id:
+        готово["image"] = image_id
+    return готово
+
+
+def _forget_previews_sync(message_ids):
+    """Убирает карточки вместе с их картинками."""
+    if not message_ids:
+        return
+    marks = ",".join("?" * len(message_ids))
+    with _lock:
+        были = {row[0] for row in _connection.execute(
+            "SELECT image_id FROM previews WHERE message_id IN (" + marks + ")",
+            list(message_ids)).fetchall() if row[0]}
+        _connection.execute(
+            "DELETE FROM previews WHERE message_id IN (" + marks + ")",
+            list(message_ids))
+        _connection.commit()
+
+        # Одну и ту же картинку могли получить несколько сообщений: файл
+        # убираем, только когда его не держит уже никто
+        осиротели = [картинка for картинка in были
+                     if not _connection.execute(
+                         "SELECT 1 FROM previews WHERE image_id = ? LIMIT 1",
+                         (картинка,)).fetchone()]
+
+    _forget_media(осиротели)
 
 
 def _messages_by_ids_sync(message_ids):
@@ -1327,6 +1453,27 @@ async def edit_message(message_id, user_id, text):
     return await asyncio.to_thread(_edit_message_sync, message_id, user_id, text)
 
 
+async def previews_for(message_ids):
+    """Карточки ссылок этих сообщений."""
+    return await asyncio.to_thread(_previews_for_sync, list(message_ids))
+
+
+async def preview_by_url(url):
+    """Готовая карточка этого адреса или None."""
+    return await asyncio.to_thread(_preview_by_url_sync, url)
+
+
+async def save_preview(message_id, card, picture=None, suffix=".jpg"):
+    """Запоминает карточку ссылки для сообщения."""
+    return await asyncio.to_thread(_save_preview_sync, message_id, card,
+                                   picture, suffix)
+
+
+async def forget_previews(message_ids):
+    """Убирает карточки вместе с картинками."""
+    await asyncio.to_thread(_forget_previews_sync, list(message_ids))
+
+
 async def media_of(conversation_id, limit=300):
     """Вложения переписки — для вкладки «медиа»."""
     return await asyncio.to_thread(_media_of_sync, conversation_id, limit)
@@ -1459,6 +1606,13 @@ def _media_described_sync(media_id):
         row = _connection.execute(
             "SELECT kind, media_name FROM messages WHERE media_id = ?",
             (media_id,)).fetchone()
+        if row is None:
+            # Картинка карточки ссылки сообщением не является: в переписке она
+            # не висит и во вкладку «медиа» не попадает, — но забирается тем
+            # же путём, что и обычное вложение
+            row = _connection.execute(
+                "SELECT 'image', 'preview' FROM previews WHERE image_id = ?",
+                (media_id,)).fetchone()
     if row is None:
         return None
 

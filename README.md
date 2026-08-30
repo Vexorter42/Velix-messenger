@@ -38,6 +38,7 @@ The server is a single `python server.py` away.
 | ✓✓ **Delivery ticks** | One grey tick — the server took it. Two grey — it reached the other side. Two blue — it was read. In a group one reader is enough: people read at their own pace, and waiting for the quietest member means waiting forever. |
 | ▶ **Video inside** | A clip plays right in the window — with sound, pause, seeking and volume; on the phone and on the web the system player does the same job. No external programs, no “save it to watch it”. |
 | 🖼 **Gallery** | Full screen pages through the conversation: arrows and the wheel in the window, a swipe on the phone and on the web. The order is the order of the feed, video pages alongside photos, and the corner shows which attachment of how many is open. |
+| 🔗 **Link cards** | A link that arrives is shown with its title, a summary and a picture instead of a bare address. The server is what visits it — once for everyone, remembering what it found: otherwise everyone who merely opened the conversation would show their address to a stranger's site. |
 | 📴 **Offline** | The last thing the server sent lives on disk: the window brings a conversation up immediately at start, before the connection is made, and opens the one you were in last. Anything written on the road waits in line and goes out by itself. |
 | ✏️ **Editing and drafts** | Your own text message can be corrected — “edited” appears next to the time. An unfinished line stays with its conversation and survives closing the window, and anything written offline waits with a clock instead of a tick and goes out on its own when the connection returns. |
 | 🖼 **Attachments of a conversation** | A button in the header shows everything ever sent, as a grid, newest first. Full screen opens from there and pages through the whole conversation, not only what happened to reach the feed. |
@@ -102,13 +103,22 @@ the normal way.
 Building it yourself needs `pip install pyinstaller`:
 
 ```bash
-python -m PyInstaller --noconfirm --onefile --windowed --name Velix --icon icon.ico --add-data "icon.ico;." --collect-all customtkinter --collect-all darkdetect --collect-all ffpyplayer gui.py
+python -m PyInstaller --noconfirm Velix.spec
 ```
 
+Everything the builder needs lives in `Velix.spec`: the build repeats itself
+the same way every time, and you can see what was thrown out and why.
+
 `ffpyplayer` is what plays video inside the window: it carries ffmpeg and SDL
-with it, which is why the build weighs close to a hundred megabytes. Built
-without it, the window behaves as before and offers to open the clip in the
-system player.
+with it, and that is where most of the weight goes. Built without it, the
+window behaves as before and offers to open the clip in the system player.
+
+The rest has been thrown out. The builder used to pick up numpy — Pillow is
+happy to use it when it is around — and openblas came along with it, twenty
+megabytes for something no line of Velix ever imports. AVIF image support went
+the same way (eight megabytes for a format that never turns up in a
+conversation), along with the ready-made ffmpeg programs: we play video with
+the library, not by launching someone else's player.
 
 The installer is compiled from `installer.iss` with Inno Setup 6; it picks the
 build up from `dist/Velix.exe`, exactly where PyInstaller leaves it:
@@ -481,6 +491,7 @@ folder; none of them touch live data.
 | `invite.py` | Invite codes |
 | `recover.py` | Recovery codes for a forgotten password |
 | `backup.sh`, `restore.sh`, `publish-update.sh`, `test-server.sh` | Server-side chores |
+| `linkpreview.py` | What the server sees when it follows a link that arrived |
 | `serve-backup.sh`, `pull-backup.sh` | A copy leaves the card for the home server |
 | `watchdog.py`, `notify.py` | The watchdog, and a word to Telegram when the server goes quiet |
 

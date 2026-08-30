@@ -29,6 +29,8 @@ velix.db-shm
 build/
 dist/
 *.spec
+# ...кроме нашего: он не сгенерирован, а написан руками, и сборка идёт по нему
+!Velix.spec
 Velix.exe
 VelixSetup.exe
 

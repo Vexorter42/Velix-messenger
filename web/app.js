@@ -44,6 +44,8 @@ const rows = new Map();        // номер сообщения -> его ряд
 const reactions = new Map();   // номер сообщения -> {смайлик: [кто поставил]}
 const reactionRows = new Map();// куда рисовать реакции
 const mediaSlots = new Map();
+const cardSlots = new Map();   // куда рисовать картинку карточки ссылки
+const cardUrls = new Map();    // уже скачанные картинки карточек
 const gallery = [];            // что можно листать в полном экране
 const tickRows = new Map();    // номер (или свой временный) -> значок галочек
 const states = new Map();      // номер -> sent | delivered | read
@@ -359,6 +361,7 @@ function handle(message) {
     case "reactions": onReactions(message); break;
     case "typing": onTyping(message); break;
     case "edited": onEdited(message); break;
+    case "preview": onPreview(message); break;
     case "gallery": showGallery(message); break;
     case "search": onSearch(message); break;
     case "profile": onProfile(message.user); break;
@@ -394,6 +397,14 @@ function handleBinary(buffer) {
       }
     }
     avatarSlots.delete(id);
+    return;
+  }
+
+  if (cardSlots.has(id)) {
+    // Картинка карточки ссылки: в ленте она сообщением не висит
+    cardUrls.set(id, url);
+    paintCardPicture(cardSlots.get(id), url);
+    cardSlots.delete(id);
     return;
   }
 
@@ -1046,6 +1057,7 @@ function showItem(item, localUrl) {
     text.textContent = item.text || "";
     bubble.append(text);
     if ((item.mentions || []).includes(user.id)) bubble.classList.add("mention");
+    if (item.preview) showCard(bubble, item.preview);
   } else {
     const slot = document.createElement("div");
     bubble.append(slot);
@@ -1102,6 +1114,86 @@ function showItem(item, localUrl) {
   row.append(bubble);
   $("messages").append(row);
   scrollDown();
+}
+
+// --- карточка ссылки: сайт, заголовок, выжимка и картинка
+//
+// Ходит по ссылке сервер и присылает уже готовое: иначе каждый, кто просто
+// открыл переписку, засветил бы свой адрес чужому сайту.
+
+function showCard(bubble, card) {
+  if (bubble.querySelector(".card")) return;
+
+  const holder = document.createElement("a");
+  holder.className = "card";
+  if (card.url) {
+    holder.href = card.url;
+    holder.target = "_blank";
+    holder.rel = "noopener noreferrer";
+  }
+
+  if (card.site) {
+    const site = document.createElement("div");
+    site.className = "card-site";
+    site.textContent = card.site.slice(0, 60);
+    holder.append(site);
+  }
+  if (card.title) {
+    const title = document.createElement("div");
+    title.className = "card-title";
+    title.textContent = card.title;
+    holder.append(title);
+  }
+  if (card.text) {
+    const text = document.createElement("div");
+    text.className = "card-text";
+    text.textContent = card.text.slice(0, 180);
+    holder.append(text);
+  }
+  if (card.image) {
+    const slot = document.createElement("div");
+    slot.className = "card-picture";
+    holder.append(slot);
+    const готовое = cardUrls.get(card.image);
+    if (готовое) {
+      paintCardPicture(slot, готовое);
+    } else {
+      cardSlots.set(card.image, slot);
+      send({type: "fetch", id: card.image});
+    }
+  }
+
+  bubble.append(holder);
+}
+
+function paintCardPicture(slot, url) {
+  const picture = document.createElement("img");
+  picture.src = url;
+  picture.alt = "";
+  slot.append(picture);
+}
+
+function onPreview(frame) {
+  if (frame.conversation !== conversation) return;
+
+  const card = {};
+  for (const ключ of ["url", "title", "text", "site", "image"]) {
+    if (frame[ключ] !== undefined) card[ключ] = frame[ключ];
+  }
+  for (const item of loadedItems) {
+    if (item.id === frame.id) item.preview = card;
+  }
+
+  // Карточка приезжает после истории — сохранённое обновляем, иначе без
+  // сети от ссылки остался бы голый адрес
+  keepHistory(conversation, loadedItems);
+
+  const row = rows.get(frame.id);
+  const bubble = row && row.querySelector(".bubble");
+  if (bubble) {
+    showCard(bubble, card);
+    scrollDown();
+  }
 }
 
 const TICKS = {waiting: "🕓", sending: "·", sent: "✓",

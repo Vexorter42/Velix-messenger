@@ -1012,6 +1012,7 @@ public class MainActivity extends Activity implements VelixService.Screen {
         feed.removeAllViews();
         items.clear();
         ticks.clear();
+        bubbles.clear();
         reactionRows.clear();
         gallery.clear();
 
@@ -1204,6 +1205,7 @@ public class MainActivity extends Activity implements VelixService.Screen {
         feed.removeAllViews();
         items.clear();
         ticks.clear();
+        bubbles.clear();
         reactionRows.clear();
         currentDate = null;
 
@@ -1434,6 +1436,14 @@ public class MainActivity extends Activity implements VelixService.Screen {
         if ("text".equals(kind)) {
             TextView body = Ui.text(this, item.optString("text"), 16, Ui.TEXT);
             bubble.addView(body, Ui.wide());
+            if (item.optInt("id", 0) > 0) {
+                // Карточка ссылки может приехать позже самого сообщения
+                bubbles.put(item.optInt("id"), bubble);
+            }
+            JSONObject карточка = item.optJSONObject("preview");
+            if (карточка != null) {
+                linkCard(bubble, карточка);
+            }
         } else {
             bubble.addView(attachment(item), Ui.wide());
         }
@@ -1581,6 +1591,86 @@ public class MainActivity extends Activity implements VelixService.Screen {
             }
         });
         return picture;
+    }
+
+    private final Map<Integer, LinearLayout> bubbles = new HashMap<>();
+
+    /**
+     * Карточка ссылки: сайт, заголовок, выжимка и картинка.
+     *
+     * По ссылке ходит сервер и присылает уже готовое: иначе каждый, кто
+     * просто открыл переписку, засветил бы свой адрес чужому сайту.
+     */
+    private void linkCard(LinearLayout bubble, JSONObject card) {
+        if (bubble.findViewWithTag("velix-card") != null) {
+            return;             // карточка уже нарисована
+        }
+
+        LinearLayout холст = Ui.column(this);
+        холст.setTag("velix-card");
+        холст.setBackground(Ui.rounded(Ui.SEPARATOR, Ui.dp(this, 12)));
+        холст.setPadding(Ui.dp(this, 10), Ui.dp(this, 8), Ui.dp(this, 10),
+                Ui.dp(this, 8));
+
+        String сайт = card.optString("site", "");
+        if (!сайт.isEmpty()) {
+            холст.addView(Ui.text(this, cut(сайт, 60), 12, Ui.ACCENT), Ui.wide());
+        }
+        String заголовок = card.optString("title", "");
+        if (!заголовок.isEmpty()) {
+            холст.addView(Ui.text(this, заголовок, 15, Ui.TEXT), Ui.wide());
+        }
+        String выжимка = card.optString("text", "");
+        if (!выжимка.isEmpty()) {
+            холст.addView(Ui.text(this, cut(выжимка, 180), 13, Ui.MUTED),
+                    Ui.wide());
+        }
+
+        final String картинка = card.optString("image", "");
+        if (!картинка.isEmpty()) {
+            ImageView вид = new ImageView(this);
+            вид.setAdjustViewBounds(true);
+            вид.setMaxHeight(Ui.dp(this, 170));
+            вид.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            вид.setLayoutParams(new LinearLayout.LayoutParams(
+                    Ui.dp(this, 220), ViewGroup.LayoutParams.WRAP_CONTENT));
+            byte[] данные = media.get(картинка);
+            if (данные != null) {
+                вид.setImageBitmap(BitmapFactory.decodeByteArray(
+                        данные, 0, данные.length));
+            } else {
+                List<ImageView> слоты = waiting.get(картинка);
+                if (слоты == null) {
+                    слоты = new ArrayList<>();
+                    waiting.put(картинка, слоты);
+                    send(Net.frame("fetch", "id", картинка));
+                }
+                слоты.add(вид);
+            }
+            холст.addView(вид);
+        }
+
+        final String куда = card.optString("url", "");
+        if (!куда.isEmpty()) {
+            холст.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View view) {
+                    openLink(куда);
+                }
+            });
+        }
+
+        LinearLayout.LayoutParams как = Ui.wide();
+        как.topMargin = Ui.dp(this, 6);
+        bubble.addView(холст, как);
+    }
+
+    private void openLink(String куда) {
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(куда)));
+        } catch (Exception ignored) {
+            toast(Lang.t("Не получилось открыть ссылку"));
+        }
     }
 
     private void datePill(String at) {
@@ -3223,6 +3313,35 @@ public class MainActivity extends Activity implements VelixService.Screen {
                 showGallery(frame.optJSONArray("items"));
             }
 
+        } else if ("preview".equals(kind)) {
+            if (frame.optInt("conversation") == conversation) {
+                JSONObject карточка = new JSONObject();
+                try {
+                    for (String ключ : new String[]{"url", "title", "text",
+                                                    "site", "image"}) {
+                        if (frame.has(ключ)) {
+                            карточка.put(ключ, frame.get(ключ));
+                        }
+                    }
+                    for (JSONObject one : items) {
+                        if (one.optInt("id") == frame.optInt("id")) {
+                            one.put("preview", карточка);
+                        }
+                    }
+                } catch (Exception ignored) {
+                    // Кадр пришёл странный — карточку просто не покажем
+                }
+                // Карточка приезжает после истории — сохранённое обновляем,
+                // иначе без сети от ссылки остался бы голый адрес
+                keepHistory(conversation, items);
+
+                LinearLayout пузырь = bubbles.get(frame.optInt("id"));
+                if (пузырь != null) {
+                    linkCard(пузырь, карточка);
+                    scrollDown();
+                }
+            }
+
         } else if ("edited".equals(kind)) {
             int номер = frame.optInt("id");
             for (JSONObject one : items) {
@@ -3352,6 +3471,7 @@ public class MainActivity extends Activity implements VelixService.Screen {
         feed.removeAllViews();
         items.clear();
         ticks.clear();
+        bubbles.clear();
         reactionRows.clear();
         currentDate = null;
         emptyHint = null;

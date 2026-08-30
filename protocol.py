@@ -311,6 +311,13 @@ def gallery_message(conversation, items):
                    "items": items})
 
 
+def preview_message(conversation, message_id, card):
+    """Карточка ссылки: приезжает следом за сообщением, когда сервер сходил."""
+    кадр = {"type": "preview", "conversation": conversation, "id": message_id}
+    кадр.update(card)
+    return encode(кадр)
+
+
 def search_result(query, items):
     return encode({"type": "search", "query": query, "items": items})
 

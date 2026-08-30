@@ -36,11 +36,14 @@ def _encode(image, has_alpha):
     return buffer.getvalue(), ".jpg"
 
 
-def compress(kind, name, data):
+def compress(kind, name, data, side=MAX_SIDE):
     """Возвращает (имя, байты) — по возможности меньшего объёма.
 
     Если сжатие не помогло или картинка не читается, возвращаем как было:
     испортить вложение хуже, чем потратить лишние килобайты.
+
+    side задаёт длинную сторону: картинке карточки ссылки хватает и меньшего,
+    её никто не разглядывает.
     """
     if kind != "image" or Image is None:
         return name, data
@@ -51,8 +54,8 @@ def compress(kind, name, data):
             has_alpha = image.mode in ("RGBA", "LA", "PA") or "transparency" in image.info
             picture = image.convert("RGBA") if has_alpha else image.convert("RGB")
 
-            if max(picture.size) > MAX_SIDE:
-                picture.thumbnail((MAX_SIDE, MAX_SIDE), Image.LANCZOS)
+            if max(picture.size) > side:
+                picture.thumbnail((side, side), Image.LANCZOS)
 
             packed, suffix = _encode(picture, has_alpha)
     except Exception:

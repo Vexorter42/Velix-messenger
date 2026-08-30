@@ -17,6 +17,7 @@ import sys
 import tempfile
 import threading
 import traceback
+import webbrowser
 import time
 import tkinter
 from datetime import datetime
@@ -2167,6 +2168,8 @@ class VelixApp(ctk.CTk):
             self._on_typing(message)
         elif kind == "gallery":
             self._show_gallery(message)
+        elif kind == "preview":
+            self._on_preview(message)
         elif kind == "edited":
             self._on_edited(message)
         elif kind == "deleted":
@@ -3885,6 +3888,11 @@ class VelixApp(ctk.CTk):
         label.velix_body = True         # эту подпись меняет правка
         label.pack(fill="x", padx=15, pady=(4 if own or grouped else 2, 0))
 
+        bubble.velix_bubble = True      # в него же приезжает карточка ссылки
+        bubble.velix_own = own
+        if item.get("preview"):
+            self._add_link_card(bubble, item["preview"], own)
+
         if self.user.get("id") in (item.get("mentions") or []):
             # Окликнули именно нас: рамка заметна, но не кричит
             bubble.configure(border_width=2, border_color=ACCENT)
@@ -3894,6 +3902,138 @@ class VelixApp(ctk.CTk):
         if item.get("id") or item.get("local"):
             self.rows[item.get("id") or item["local"]] = bubble.master
         self._scroll_to_bottom()
+
+    # -------------------------------------------------------- карточка ссылки
+
+    def _bubble_of(self, row):
+        """Находит пузырь внутри ряда: карточке ссылки ехать некуда больше."""
+        для_обхода = list(row.winfo_children())
+        while для_обхода:
+            какой = для_обхода.pop(0)
+            if getattr(какой, "velix_bubble", False):
+                return какой
+            для_обхода.extend(какой.winfo_children())
+        return None
+
+    def _add_link_card(self, bubble, card, own):
+        """Показывает ссылку карточкой: сайт, заголовок, выжимка, картинка.
+
+        Полоска слева — как у цитаты: глазу сразу понятно, что это не текст
+        сообщения, а то, что нашлось по ссылке.
+        """
+        if getattr(bubble, "velix_card", None) is not None:
+            return          # карточка уже нарисована — второй не нужно
+
+        ширина = self.wrap_length - 30
+        обёртка = ctk.CTkFrame(bubble, fg_color=SEPARATOR,
+                               corner_radius=R_ITEM)
+        обёртка.pack(fill="x", padx=15, pady=(6, 2))
+        bubble.velix_card = обёртка
+
+        полоска = ctk.CTkFrame(обёртка, fg_color=ACCENT, corner_radius=R_SMALL,
+                               width=3)
+        полоска.pack(side="left", fill="y", padx=(4, 0), pady=4)
+
+        внутри = ctk.CTkFrame(обёртка, fg_color="transparent")
+        внутри.pack(side="left", fill="both", expand=True, padx=(8, 8), pady=6)
+
+        подписи = []
+        if card.get("site"):
+            сайт = ctk.CTkLabel(внутри, text=card["site"][:60],
+                                font=self.font_small, text_color=ACCENT,
+                                anchor="w")
+            сайт.pack(fill="x")
+            подписи.append(сайт)
+
+        if card.get("title"):
+            заголовок = ctk.CTkLabel(внутри, text=card["title"],
+                                     font=self.font_body, justify="left",
+                                     text_color=TEXT_OUT if own else TEXT,
+                                     anchor="w", wraplength=ширина)
+            заголовок.pack(fill="x", pady=(1, 0))
+            подписи.append(заголовок)
+
+        if card.get("text"):
+            выжимка = ctk.CTkLabel(внутри, text=card["text"][:180],
+                                   font=self.font_small, text_color=MUTED,
+                                   justify="left", anchor="w",
+                                   wraplength=ширина)
+            выжимка.pack(fill="x", pady=(1, 0))
+            подписи.append(выжимка)
+
+        if card.get("image"):
+            место = ctk.CTkLabel(внутри, text="", font=self.font_small,
+                                 text_color=MUTED)
+            место.pack(fill="x", pady=(5, 0))
+            готовое = mediacache.get(card["image"])
+            if готовое:
+                self._paint_link_picture(место, готовое, card)
+            else:
+                self.pending_media[card["image"]] = ("card", место, card)
+                self._ask_media(card["image"])
+
+        куда = card.get("url")
+        if куда:
+            for какая in (обёртка, внутри, *подписи):
+                какая.configure(cursor="hand2")
+                какая.bind("<Button-1>", lambda event, где=куда: self._open_link(где))
+
+    def _paint_link_picture(self, holder, data, card):
+        """Кладёт в карточку картинку — широкую и невысокую, как в ленте."""
+        if not holder.winfo_exists():
+            return
+        try:
+            picture = Image.open(io.BytesIO(data))
+            picture.load()
+            ширина = self.wrap_length - 46
+            высота = max(1, round(picture.height * ширина / max(picture.width, 1)))
+            высота = min(высота, 170)
+            picture = picture.resize(
+                (ширина, высота), Image.LANCZOS) if picture.width != ширина                 else picture
+            готовая = ctk.CTkImage(light_image=picture, dark_image=picture,
+                                   size=(ширина, высота))
+        except Exception:
+            # Картинка не открылась — карточка и без неё хороша
+            holder.pack_forget()
+            return
+
+        self.images.append(готовая)
+        holder.configure(image=готовая, text="", cursor="hand2")
+        if card.get("url"):
+            holder.bind("<Button-1>",
+                        lambda event, где=card["url"]: self._open_link(где))
+
+    def _open_link(self, куда):
+        """Открывает ссылку в браузере."""
+        try:
+            webbrowser.open(куда)
+        except Exception:
+            self._service_label(t("Не получилось открыть ссылку"))
+
+    def _on_preview(self, message):
+        """Сервер сходил по ссылке — показываем карточку под сообщением."""
+        if message.get("conversation") != self.conversation:
+            return
+
+        карточка = {ключ: message[ключ] for ключ in
+                    ("url", "title", "text", "site", "image") if ключ in message}
+        message_id = message.get("id")
+        for item in self.loaded_items:
+            if item.get("id") == message_id:
+                item["preview"] = карточка
+                # Карточка приезжает после истории — сохранённое обновляем,
+                # иначе без сети от ссылки остался бы голый адрес
+                self._keep_history_later()
+                break
+
+        row = self.rows.get(message_id)
+        if row is None or not row.winfo_exists():
+            return
+        bubble = self._bubble_of(row)
+        if bubble is not None:
+            self._add_link_card(bubble, карточка,
+                                getattr(bubble, "velix_own", False))
+            self._scroll_to_bottom()
 
     # ----------------------------------------------------------- вложения
 
@@ -4048,6 +4188,9 @@ class VelixApp(ctk.CTk):
             self._copy_bytes(extra, data)
         elif mode == "picture":
             self._show_picture(widget, extra, data, media_id)
+        elif mode == "card":
+            if widget is not None and widget.winfo_exists():
+                self._paint_link_picture(widget, data, extra)
         elif mode == "cell":
             if widget is not None and widget.winfo_exists():
                 self._paint_cell(widget, data, media_id)

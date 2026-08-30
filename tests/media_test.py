@@ -41,7 +41,7 @@ def fresh_sandbox():
         shutil.rmtree(SANDBOX)
     SANDBOX.mkdir()
     for name in ("server.py", "storage.py", "protocol.py", "media.py", "accounts.py",
-             "push.py", "i18n.py"):
+             "push.py", "i18n.py", "linkpreview.py"):
         shutil.copy(REPO / name, SANDBOX / name)
 
 
