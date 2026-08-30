@@ -33,7 +33,7 @@ def check(name, ok, detail=""):
 песочница = Path(tempfile.mkdtemp(prefix="velix-wal-"))
 
 
-def сколько_сообщений(файл):
+def сколько(файл, таблица="messages"):
     """Открывает копию одного velix.db — без журнала — и считает строки."""
     отдельно = песочница / "одна-база"
     shutil.rmtree(отдельно, ignore_errors=True)
@@ -41,7 +41,7 @@ def сколько_сообщений(файл):
     shutil.copy(файл, отдельно / "velix.db")
     база = sqlite3.connect(отдельно / "velix.db")
     try:
-        return база.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+        return база.execute(f"SELECT COUNT(*) FROM {таблица}").fetchone()[0]
     except sqlite3.OperationalError:
         # Пока журнал не слит, в базе нет даже таблиц — она пустая заготовка
         return None
@@ -59,18 +59,18 @@ async def проверки():
 
     # --- пока журнал не слит, отдельно взятый velix.db пуст
     check("wal-holds-everything-at-first",
-          сколько_сообщений(дом / "velix.db") in (None, 0),
+          сколько(дом / "velix.db") in (None, 0),
           "журнал уже слит сам — проверять нечего")
 
     слито = await storage.checkpoint()
     check("checkpoint-reports-done", слито is True, слито)
     check("checkpoint-moves-messages-into-base",
-          сколько_сообщений(дом / "velix.db") == 1)
+          сколько(дом / "velix.db") == 1)
 
     await storage.save_message(номер, "Гоша", "и второе")
     await storage.close()
     check("close-moves-messages-into-base",
-          сколько_сообщений(дом / "velix.db") == 2)
+          сколько(дом / "velix.db") == 2)
 
     журнал = дом / "velix.db-wal"
     check("close-leaves-no-fat-journal",
@@ -103,6 +103,7 @@ else:
     time.sleep(2.4)
 
     async def поговорить():
+        """Заводит человека: этого хватит, чтобы в базе появилась строчка."""
         import websockets
         import protocol
         async with websockets.connect("ws://localhost:8846",
@@ -113,7 +114,6 @@ else:
                 кадр = protocol.decode(await asyncio.wait_for(ws.recv(), timeout=20))
                 if кадр and кадр.get("type") == "welcome":
                     break
-            await ws.send(protocol.text_message("Гоша", "слово перед остановкой"))
             await asyncio.sleep(1.0)
 
     asyncio.run(поговорить())
@@ -127,8 +127,13 @@ else:
         ушла = False
 
     check("sigterm-stops-service", ушла)
-    осталось = сколько_сообщений(ДОМ / "velix.db")
-    check("sigterm-checkpoints-base", осталось >= 1, осталось)
+    осталось = сколько(ДОМ / "velix.db", "users")
+    check("sigterm-checkpoints-base", осталось == 1, осталось)
+
+    хвост = ДОМ / "velix.db-wal"
+    check("sigterm-leaves-no-fat-journal",
+          not хвост.exists() or хвост.stat().st_size == 0,
+          хвост.stat().st_size if хвост.exists() else "нет")
 
 shutil.rmtree(песочница, ignore_errors=True)
 
