@@ -124,8 +124,13 @@ def main():
          "-d", BUILD / "classes", *sources])
 
     classes = list((BUILD / "classes").rglob("*.class"))
+    # Список классов передаём файлом, а не строкой запуска: у Windows она
+    # кончается примерно на восьми тысячах символов, а классов уже больше
+    список = BUILD / "classes.txt"
+    список.write_text(chr(10).join(str(one) for one in classes),
+                      encoding="utf-8")
     run([d8, "--min-api", MIN_SDK, "--lib", android_jar,
-         "--output", BUILD / "dex", *classes])
+         "--output", BUILD / "dex", f"@{список}"])
 
     # --- dex внутрь apk
     unsigned = BUILD / "unsigned.apk"

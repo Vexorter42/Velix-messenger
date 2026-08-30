@@ -2,8 +2,8 @@
 <!-- Velix для Android: оболочка вокруг того же веб-клиента, что раздаёт сервер -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
           package="org.vexorter.velix"
-          android:versionCode="13"
-          android:versionName="0.2.8.0">
+          android:versionCode="14"
+          android:versionName="0.2.9.0">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- Приложение обновляет себя само: систему всё равно спросят,
@@ -15,6 +15,13 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Голосовые и кружочки: без них записывать нечем -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera"
+                  android:required="false" />
+    <uses-feature android:name="android.hardware.microphone"
+                  android:required="false" />
 
     <application
         android:label="@string/app_name"

@@ -44,6 +44,9 @@ const rows = new Map();        // номер сообщения -> его ряд
 const reactions = new Map();   // номер сообщения -> {смайлик: [кто поставил]}
 const reactionRows = new Map();// куда рисовать реакции
 const mediaSlots = new Map();
+const mediaLinks = new Map(); // вложение -> ссылка на уже скачанное
+let recording = null;          // идущая запись голоса или кружочка
+let recordingTimer = null;
 const cardSlots = new Map();   // куда рисовать картинку карточки ссылки
 const cardUrls = new Map();    // уже скачанные картинки карточек
 const gallery = [];            // что можно листать в полном экране
@@ -388,6 +391,7 @@ function handleBinary(buffer) {
 
   const id = header.id;
   const url = URL.createObjectURL(new Blob([buffer]));
+  mediaLinks.set(id, url);
 
   if (avatarSlots.has(id)) {
     avatarCache.set(id, url);
@@ -411,7 +415,12 @@ function handleBinary(buffer) {
   const slot = mediaSlots.get(id);
   if (slot) {
     mediaSlots.delete(id);
-    fillMedia(slot, header, url);
+    if (slot.tagName === "AUDIO" || slot.tagName === "VIDEO") {
+      // Голос и кружочек ждут не картинку, а сам файл
+      slot.src = url;
+    } else {
+      fillMedia(slot, header, url);
+    }
   } else {
     galleryUrl(id, url);
   }
@@ -782,7 +791,7 @@ function drawList() {
     const preview = document.createElement("span");
     preview.className = "muted small";
     if (item.last) {
-      const what = item.last.kind === "text" ? item.last.text : t("вложение");
+      const what = whatItWas(item.last);
       preview.textContent = `${item.last.nick || ""}: ${what}`.slice(0, 42);
     } else {
       preview.textContent = t("нет сообщений");
@@ -1058,6 +1067,8 @@ function showItem(item, localUrl) {
     bubble.append(text);
     if ((item.mentions || []).includes(user.id)) bubble.classList.add("mention");
     if (item.preview) showCard(bubble, item.preview);
+  } else if (item.kind === "voice" || item.kind === "circle") {
+    showRecorded(bubble, item, localUrl);
   } else {
     const slot = document.createElement("div");
     bubble.append(slot);
@@ -1114,6 +1125,197 @@ function showItem(item, localUrl) {
   row.append(bubble);
   $("messages").append(row);
   scrollDown();
+}
+
+// --- голосовые и кружочки
+//
+// Пишет сам браузер: getUserMedia даёт дорожку, MediaRecorder сразу же её
+// сжимает. Отдельной библиотеки для этого не нужно ни строчки.
+
+function whatItWas(last) {
+  if (last.kind === "text") return last.text || "";
+  if (last.kind === "voice") return t("голосовое");
+  if (last.kind === "circle") return t("кружочек");
+  return t("вложение");
+}
+
+function clockText(сколько, всего) {
+  const часы = (секунд) => {
+    секунд = Math.max(0, Math.floor(секунд));
+    return `${Math.floor(секунд / 60)}:${String(секунд % 60).padStart(2, "0")}`;
+  };
+  return часы(сколько) + (всего ? ` / ${часы(всего)}` : "");
+}
+
+function showRecorded(bubble, item, localUrl) {
+  const url = localUrl || mediaUrl(item.media);
+  if (item.kind === "circle") {
+    const кружок = document.createElement("video");
+    кружок.className = "circle";
+    кружок.playsInline = true;
+    кружок.controls = false;
+    if (url) {
+      кружок.src = url;
+    } else if (item.media) {
+      mediaSlots.set(item.media, кружок);
+      send({type: "fetch", id: item.media});
+    }
+    кружок.addEventListener("click", () => {
+      if (кружок.paused) {
+        кружок.play();
+      } else {
+        кружок.pause();
+      }
+    });
+    bubble.append(кружок);
+    return;
+  }
+
+  const карточка = document.createElement("div");
+  карточка.className = "voice";
+
+  const кнопка = document.createElement("button");
+  кнопка.type = "button";
+  кнопка.textContent = "▶";
+  const полоска = document.createElement("div");
+  полоска.className = "line";
+  const заполнение = document.createElement("span");
+  полоска.append(заполнение);
+  const часы = document.createElement("div");
+  часы.className = "clock";
+  часы.textContent = clockText(0, item.seconds || 0);
+
+  const звук = document.createElement("audio");
+  звук.preload = "none";
+  if (url) {
+    звук.src = url;
+  } else if (item.media) {
+    mediaSlots.set(item.media, звук);
+    send({type: "fetch", id: item.media});
+  }
+
+  звук.addEventListener("timeupdate", () => {
+    const всего = звук.duration || item.seconds || 0;
+    заполнение.style.width = всего
+        ? `${Math.min(100, (звук.currentTime / всего) * 100)}%` : "0";
+    часы.textContent = clockText(звук.currentTime, всего);
+  });
+  звук.addEventListener("ended", () => {
+    кнопка.textContent = "▶";
+    заполнение.style.width = "0";
+    часы.textContent = clockText(0, звук.duration || item.seconds || 0);
+  });
+
+  кнопка.addEventListener("click", () => {
+    // Играем по одному: два голоса разом — это каша
+    for (const другой of document.querySelectorAll("audio")) {
+      if (другой !== звук) другой.pause();
+    }
+    if (звук.paused) {
+      звук.play();
+      кнопка.textContent = "❚❚";
+    } else {
+      звук.pause();
+      кнопка.textContent = "▶";
+    }
+  });
+
+  карточка.append(кнопка, полоска, часы, звук);
+  bubble.append(карточка);
+}
+
+function mediaUrl(id) {
+  return id ? (mediaLinks.get(id) || null) : null;
+}
+
+async function startRecording(kind) {
+  if (recording || conversation === null) return;
+
+  let дорожка;
+  try {
+    дорожка = await navigator.mediaDevices.getUserMedia(
+        kind === "voice" ? {audio: true}
+                         : {audio: true, video: {width: 480, height: 480}});
+  } catch (беда) {
+    service(t("Записать не вышло: {error}", {error: беда.name || беда}));
+    return;
+  }
+
+  const куски = [];
+  const писарь = new MediaRecorder(дорожка);
+  писарь.addEventListener("dataavailable", (событие) => {
+    if (событие.data && событие.data.size) куски.push(событие.data);
+  });
+
+  recording = {kind, дорожка, писарь, куски, начало: Date.now()};
+  писарь.start();
+
+  $("composer").hidden = true;
+  $("recording").hidden = false;
+  tickRecording();
+  recordingTimer = setInterval(tickRecording, 250);
+}
+
+function tickRecording() {
+  if (!recording) return;
+  const прошло = (Date.now() - recording.начало) / 1000;
+  const предел = recording.kind === "voice" ? 300 : 60;
+  $("rec-text").textContent =
+      (recording.kind === "voice" ? t("Записываю голос…") : t("Записываю кружочек…"))
+      + "  " + clockText(прошло, 0);
+  if (прошло >= предел) finishRecording();
+}
+
+function stopRecording() {
+  if (recordingTimer) clearInterval(recordingTimer);
+  recordingTimer = null;
+  $("recording").hidden = true;
+  $("composer").hidden = false;
+  if (!recording) return null;
+
+  const это = recording;
+  recording = null;
+  for (const канал of это.дорожка.getTracks()) канал.stop();
+  return это;
+}
+
+function cancelRecording() {
+  const это = stopRecording();
+  if (это && это.писарь.state !== "inactive") это.писарь.stop();
+}
+
+function finishRecording() {
+  const это = stopRecording();
+  if (!это) return;
+
+  const секунд = Math.max(1, Math.round((Date.now() - это.начало) / 1000));
+  это.писарь.addEventListener("stop", async () => {
+    const кусок = new Blob(это.куски, {type: это.писарь.mimeType});
+    if (!кусок.size) {
+      service(t("Записать не вышло: {error}", {error: t("пустая запись")}));
+      return;
+    }
+    await sendRecorded(кусок, это.kind, секунд);
+  });
+  if (это.писарь.state !== "inactive") это.писарь.stop();
+}
+
+async function sendRecorded(кусок, kind, секунд) {
+  const расширение = кусок.type.includes("mp4") ? "mp4"
+                   : кусок.type.includes("ogg") ? "ogg" : "webm";
+  const имя = `${kind}-${Date.now()}.${расширение}`;
+  const local = `l${++localNumber}`;
+  const buffer = await кусок.arrayBuffer();
+
+  send({type: "media", nick: user.name, kind, name: имя, size: кусок.size,
+        conversation, reply_to: replyTo, local, seconds: секунд}, buffer);
+
+  const item = {nick: user.name, user: user.id, kind, name: имя,
+                size: кусок.size, seconds: секунд, local, conversation,
+                at: new Date().toISOString()};
+  loadedItems.push(item);
+  showItem(item, URL.createObjectURL(кусок));
+  cancelReply();
 }
 
 // --- карточка ссылки: сайт, заголовок, выжимка и картинка
@@ -1766,6 +1968,18 @@ async function sendFile(file) {
 }
 
 // ---------------------------------------------------------------- события
+
+$("voice").addEventListener("click", () => startRecording("voice"));
+$("circle").addEventListener("click", () => startRecording("circle"));
+$("rec-cancel").addEventListener("click", cancelRecording);
+$("rec-send").addEventListener("click", finishRecording);
+
+// Записывать умеет не всякий браузер и не по всякому адресу: без https
+// getUserMedia просто нет
+if (!navigator.mediaDevices || !window.MediaRecorder) {
+  $("voice").hidden = true;
+  $("circle").hidden = true;
+}
 
 $("switch-mode").addEventListener("click", () => {
   if (recoverMode) {

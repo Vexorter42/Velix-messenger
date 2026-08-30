@@ -3148,8 +3148,9 @@ class VelixApp(ctk.CTk):
 
         media_id = item.get("media")
         вид = item.get("kind", "image")
-        подпись = ctk.CTkLabel(клетка, text="▶" if вид == "video" else "…",
-                               font=self.font_body, text_color=MUTED)
+        подпись = ctk.CTkLabel(
+            клетка, text="▶" if вид in ("video", "circle") else "…",
+            font=self.font_body, text_color=MUTED)
         подпись.pack(expand=True)
 
         данные = self.kept_media.get(media_id) or mediacache.get(media_id)
@@ -4248,7 +4249,7 @@ class VelixApp(ctk.CTk):
         Порядок — как в ленте: открыв снимок посреди переписки, человек
         ждёт, что стрелка влево покажет предыдущий, а не что-нибудь ещё.
         """
-        if not media_id or kind not in ("image", "gif", "video"):
+        if not media_id or kind not in ("image", "gif", "video", "circle"):
             return
         if any(one["media"] == media_id for one in self.gallery):
             return
@@ -4665,10 +4666,15 @@ class VelixApp(ctk.CTk):
     def _show_full(self, data, kind, media_id=None):
         """Полный экран: снимок с приближением или ролик прямо в окне.
 
+        Кружочек на весь экран — обычный ролик: круглым он только в ленте.
+
         Листать можно всё, что есть в этой переписке: стрелками, колесом
         по краям и кнопками. Открытое не из ленты (аватарка, например)
         листать не с чем — тогда в списке одна запись.
         """
+        if kind == "circle":
+            kind = "video"
+
         # Второй просмотр поверх первого не нужен: закрываем прежний
         if self.viewer is not None:
             self._close_full(self.viewer)

@@ -38,6 +38,7 @@ The server is a single `python server.py` away.
 | ✓✓ **Delivery ticks** | One grey tick — the server took it. Two grey — it reached the other side. Two blue — it was read. In a group one reader is enough: people read at their own pace, and waiting for the quietest member means waiting forever. |
 | ▶ **Video inside** | A clip plays right in the window — with sound, pause, seeking and volume; on the phone and on the web the system player does the same job. No external programs, no “save it to watch it”. |
 | 🖼 **Gallery** | Full screen pages through the conversation: arrows and the wheel in the window, a swipe on the phone and on the web. The order is the order of the feed, video pages alongside photos, and the corner shows which attachment of how many is open. |
+| 🎤 **Voice and circles** | The microphone button records your voice, the one beside it a short circle from the camera. A voice message arrives as a button with a progress line and a time; a circle as round video that plays right there in the conversation. |
 | 🔗 **Link cards** | A link that arrives is shown with its title, a summary and a picture instead of a bare address. The server is what visits it — once for everyone, remembering what it found: otherwise everyone who merely opened the conversation would show their address to a stranger's site. |
 | 📴 **Offline** | The last thing the server sent lives on disk: the window brings a conversation up immediately at start, before the connection is made, and opens the one you were in last. Anything written on the road waits in line and goes out by itself. |
 | ✏️ **Editing and drafts** | Your own text message can be corrected — “edited” appears next to the time. An unfinished line stays with its conversation and survives closing the window, and anything written offline waits with a clock instead of a tick and goes out on its own when the connection returns. |
@@ -492,6 +493,7 @@ folder; none of them touch live data.
 | `recover.py` | Recovery codes for a forgotten password |
 | `backup.sh`, `restore.sh`, `publish-update.sh`, `test-server.sh` | Server-side chores |
 | `linkpreview.py` | What the server sees when it follows a link that arrived |
+| `recorder.py` | Recording voice and circles in the window |
 | `serve-backup.sh`, `pull-backup.sh` | A copy leaves the card for the home server |
 | `watchdog.py`, `notify.py` | The watchdog, and a word to Telegram when the server goes quiet |
 

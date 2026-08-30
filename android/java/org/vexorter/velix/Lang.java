@@ -202,6 +202,14 @@ class Lang {
         add("▶ Смотреть", "▶ Watch");
         add("Видео не открылось", "The video would not play");
         add("нет связи", "no connection");
+        add("Записываю голос…", "Recording voice…");
+        add("Записываю кружочек…", "Recording a circle…");
+        add("Записать не вышло.", "Could not record.");
+        add("голосовое", "voice message");
+        add("кружочек", "circle");
+        add("Не удалось открыть голосовое",
+            "Could not open the voice message");
+        add("Не удалось открыть кружочек", "Could not open the circle");
         add("Не получилось открыть ссылку",
             "Could not open the link");
         add("Нет связи — показываем сохранённое.",

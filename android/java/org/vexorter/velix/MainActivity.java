@@ -14,6 +14,10 @@ import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
+import android.graphics.Outline;
+import android.hardware.Camera;
+import android.media.MediaPlayer;
+import android.media.MediaRecorder;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -26,15 +30,20 @@ import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.ScaleGestureDetector;
 import android.view.View;
+import android.view.SurfaceHolder;
+import android.view.SurfaceView;
 import android.view.ViewGroup;
+import android.view.ViewOutlineProvider;
 import android.view.WindowManager;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.VideoView;
 import android.widget.Toast;
 
 import org.json.JSONArray;
@@ -587,8 +596,7 @@ public class MainActivity extends Activity implements VelixService.Screen {
         JSONObject last = item.optJSONObject("last");
         String preview = Lang.t("нет сообщений");
         if (last != null) {
-            String what = "text".equals(last.optString("kind"))
-                    ? last.optString("text") : Lang.t("вложение");
+            String what = whatItWas(last);
             preview = last.optString("nick", "") + ": " + what;
         }
         lines.addView(Ui.text(this, cut(preview, 40), 13, Ui.MUTED), Ui.wide());
@@ -983,6 +991,26 @@ public class MainActivity extends Activity implements VelixService.Screen {
         });
         composer.addView(messageField, Ui.grow());
 
+        TextView голос = Ui.text(this, "🎤", 19, Ui.MUTED);
+        голос.setPadding(Ui.dp(this, 8), 0, Ui.dp(this, 4), 0);
+        голос.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                startRecording("voice");
+            }
+        });
+        composer.addView(голос);
+
+        TextView кружок = Ui.text(this, "◉", 21, Ui.MUTED);
+        кружок.setPadding(Ui.dp(this, 4), 0, Ui.dp(this, 4), 0);
+        кружок.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                startRecording("circle");
+            }
+        });
+        composer.addView(кружок);
+
         TextView send = Ui.text(this, "➤", 20, Ui.ACCENT);
         send.setPadding(Ui.dp(this, 12), 0, Ui.dp(this, 6), 0);
         send.setOnClickListener(new View.OnClickListener() {
@@ -992,7 +1020,43 @@ public class MainActivity extends Activity implements VelixService.Screen {
             }
         });
         composer.addView(send);
+        composerRow = composer;
         screen.addView(composer, Ui.wide());
+
+        // Полоска записи встаёт на место строки ввода: пока идёт запись,
+        // писать всё равно нечего
+        recordRow = Ui.row(this);
+        recordRow.setBackgroundColor(Ui.SIDEBAR);
+        recordRow.setGravity(Gravity.CENTER_VERTICAL);
+        recordRow.setPadding(Ui.dp(this, 14), Ui.dp(this, 10), Ui.dp(this, 10),
+                Ui.dp(this, 10));
+        recordDot = Ui.text(this, "●", 16, Ui.DANGER);
+        recordRow.addView(recordDot);
+        recordLabel = Ui.text(this, "", 15, Ui.TEXT);
+        recordLabel.setPadding(Ui.dp(this, 8), 0, 0, 0);
+        recordRow.addView(recordLabel, Ui.grow());
+
+        TextView бросить = Ui.text(this, "✕", 18, Ui.MUTED);
+        бросить.setPadding(Ui.dp(this, 10), 0, Ui.dp(this, 10), 0);
+        бросить.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                cancelRecording();
+            }
+        });
+        recordRow.addView(бросить);
+
+        TextView отправить = Ui.text(this, "➤", 20, Ui.ACCENT);
+        отправить.setPadding(Ui.dp(this, 8), 0, Ui.dp(this, 6), 0);
+        отправить.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                finishRecording();
+            }
+        });
+        recordRow.addView(отправить);
+        recordRow.setVisibility(View.GONE);
+        screen.addView(recordRow, Ui.wide());
 
         return screen;
     }
@@ -1433,7 +1497,10 @@ public class MainActivity extends Activity implements VelixService.Screen {
         }
 
         String kind = item.optString("kind", "text");
-        if ("text".equals(kind)) {
+        if ("voice".equals(kind) || "circle".equals(kind)) {
+            bubble.addView("voice".equals(kind) ? voiceCard(item) : circleCard(item),
+                    Ui.wide());
+        } else if ("text".equals(kind)) {
             TextView body = Ui.text(this, item.optString("text"), 16, Ui.TEXT);
             bubble.addView(body, Ui.wide());
             if (item.optInt("id", 0) > 0) {
@@ -1670,6 +1737,484 @@ public class MainActivity extends Activity implements VelixService.Screen {
             startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(куда)));
         } catch (Exception ignored) {
             toast(Lang.t("Не получилось открыть ссылку"));
+        }
+    }
+
+    // ------------------------------------------- голосовые и кружочки
+    //
+    // Пишет сам телефон: MediaRecorder берёт звук с микрофона (а для
+    // кружочка — и картинку с камеры) и сразу сжимает в aac и h264. Ничего
+    // стороннего для этого не нужно.
+
+    private LinearLayout composerRow;
+    private LinearLayout recordRow;
+    private TextView recordLabel;
+    private TextView recordDot;
+
+    private MediaRecorder recorder;
+    private Camera camera;
+    private View cameraOverlay;
+    private java.io.File recordFile;
+    private String recordKind;
+    private long recordStarted;
+    private Runnable recordTick;
+    private MediaPlayer voicePlayer;
+    private Runnable voiceTick;
+
+    private static final int MAX_VOICE = 300;
+    private static final int MAX_CIRCLE = 60;
+
+    private String whatItWas(JSONObject last) {
+        String вид = last.optString("kind");
+        if ("text".equals(вид)) {
+            return last.optString("text");
+        }
+        if ("voice".equals(вид)) {
+            return Lang.t("голосовое");
+        }
+        if ("circle".equals(вид)) {
+            return Lang.t("кружочек");
+        }
+        return Lang.t("вложение");
+    }
+
+    private String clock(long сколько, long всего) {
+        String один = (сколько / 60) + ":" + String.format("%02d", сколько % 60);
+        if (всего <= 0) {
+            return один;
+        }
+        return один + " / " + (всего / 60) + ":" + String.format("%02d", всего % 60);
+    }
+
+    private boolean askedFor(String разрешение) {
+        if (checkSelfPermission(разрешение)
+                == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            return true;
+        }
+        requestPermissions(new String[]{разрешение}, 3);
+        return false;
+    }
+
+    private void startRecording(String kind) {
+        if (recorder != null || conversation < 0) {
+            return;
+        }
+        if (!askedFor("android.permission.RECORD_AUDIO")) {
+            return;
+        }
+        if ("circle".equals(kind) && !askedFor("android.permission.CAMERA")) {
+            return;
+        }
+
+        recordKind = kind;
+        recordFile = new java.io.File(getCacheDir(),
+                kind + "-" + System.currentTimeMillis()
+                + ("voice".equals(kind) ? ".m4a" : ".mp4"));
+
+        try {
+            if ("circle".equals(kind)) {
+                startCircle();
+            } else {
+                recorder = new MediaRecorder();
+                recorder.setAudioSource(MediaRecorder.AudioSource.MIC);
+                recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
+                recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
+                recorder.setAudioSamplingRate(48000);
+                recorder.setAudioEncodingBitRate(48000);
+                recorder.setOutputFile(recordFile.getAbsolutePath());
+                recorder.prepare();
+                recorder.start();
+            }
+        } catch (Exception беда) {
+            stopEverything();
+            toast(Lang.t("Записать не вышло."));
+            return;
+        }
+
+        recordStarted = System.currentTimeMillis();
+        composerRow.setVisibility(View.GONE);
+        recordRow.setVisibility(View.VISIBLE);
+        tickRecording();
+    }
+
+    /** Камера с предпросмотром: кружочек снимают, глядя на себя. */
+    private void startCircle() throws Exception {
+        camera = Camera.open(findFrontCamera());
+        Camera.Parameters настройки = camera.getParameters();
+        настройки.setPreviewSize(640, 480);
+        camera.setParameters(настройки);
+        camera.setDisplayOrientation(90);
+
+        final SurfaceView вид = new SurfaceView(this);
+        int сторона = Math.min(getResources().getDisplayMetrics().widthPixels,
+                Ui.dp(this, 280));
+        FrameLayout.LayoutParams как = new FrameLayout.LayoutParams(сторона, сторона);
+        как.gravity = Gravity.CENTER;
+        вид.setLayoutParams(как);
+        roundOff(вид, сторона);
+
+        FrameLayout поверх = new FrameLayout(this);
+        поверх.setBackgroundColor(Color.argb(200, 0, 0, 0));
+        поверх.addView(вид);
+        root.addView(поверх, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
+        cameraOverlay = поверх;
+
+        final java.util.concurrent.CountDownLatch готово =
+                new java.util.concurrent.CountDownLatch(1);
+        вид.getHolder().addCallback(new SurfaceHolder.Callback() {
+            @Override
+            public void surfaceCreated(SurfaceHolder holder) {
+                готово.countDown();
+            }
+
+            @Override
+            public void surfaceChanged(SurfaceHolder holder, int format,
+                                       int width, int height) {
+            }
+
+            @Override
+            public void surfaceDestroyed(SurfaceHolder holder) {
+            }
+        });
+        // Поверхность появляется не мгновенно; ждём её, иначе запись
+        // начнётся в никуда
+        готово.await(2, java.util.concurrent.TimeUnit.SECONDS);
+
+        camera.setPreviewDisplay(вид.getHolder());
+        camera.startPreview();
+        camera.unlock();
+
+        recorder = new MediaRecorder();
+        recorder.setCamera(camera);
+        recorder.setAudioSource(MediaRecorder.AudioSource.CAMCORDER);
+        recorder.setVideoSource(MediaRecorder.VideoSource.CAMERA);
+        recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
+        recorder.setVideoEncoder(MediaRecorder.VideoEncoder.H264);
+        recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
+        recorder.setVideoSize(640, 480);
+        recorder.setVideoFrameRate(25);
+        recorder.setVideoEncodingBitRate(1200000);
+        recorder.setOrientationHint(270);
+        recorder.setOutputFile(recordFile.getAbsolutePath());
+        recorder.prepare();
+        recorder.start();
+    }
+
+    private int findFrontCamera() {
+        Camera.CameraInfo сведения = new Camera.CameraInfo();
+        for (int номер = 0; номер < Camera.getNumberOfCameras(); номер++) {
+            Camera.getCameraInfo(номер, сведения);
+            if (сведения.facing == Camera.CameraInfo.CAMERA_FACING_FRONT) {
+                return номер;
+            }
+        }
+        return 0;
+    }
+
+    /** Обрезает вид кругом: кружочек и должен быть кружочком. */
+    private void roundOff(View вид, final int сторона) {
+        вид.setOutlineProvider(new ViewOutlineProvider() {
+            @Override
+            public void getOutline(View какой, Outline контур) {
+                контур.setOval(0, 0, сторона, сторона);
+            }
+        });
+        вид.setClipToOutline(true);
+    }
+
+    private void tickRecording() {
+        if (recorder == null) {
+            return;
+        }
+        long прошло = (System.currentTimeMillis() - recordStarted) / 1000;
+        int предел = "voice".equals(recordKind) ? MAX_VOICE : MAX_CIRCLE;
+        recordLabel.setText(("voice".equals(recordKind)
+                ? Lang.t("Записываю голос…") : Lang.t("Записываю кружочек…"))
+                + "  " + clock(прошло, 0));
+        recordDot.setTextColor(прошло % 2 == 0 ? Ui.DANGER : Ui.SEPARATOR);
+
+        if (прошло >= предел) {
+            finishRecording();
+            return;
+        }
+        recordTick = new Runnable() {
+            @Override
+            public void run() {
+                tickRecording();
+            }
+        };
+        main.postDelayed(recordTick, 500);
+    }
+
+    private void stopEverything() {
+        if (recordTick != null) {
+            main.removeCallbacks(recordTick);
+            recordTick = null;
+        }
+        if (recorder != null) {
+            try {
+                recorder.stop();
+            } catch (Exception ignored) {
+                // Слишком короткая запись — MediaRecorder ругается на stop
+            }
+            try {
+                recorder.release();
+            } catch (Exception ignored) {
+            }
+            recorder = null;
+        }
+        if (camera != null) {
+            try {
+                camera.reconnect();
+                camera.stopPreview();
+            } catch (Exception ignored) {
+            }
+            camera.release();
+            camera = null;
+        }
+        if (cameraOverlay != null) {
+            root.removeView(cameraOverlay);
+            cameraOverlay = null;
+        }
+        if (composerRow != null) {
+            composerRow.setVisibility(View.VISIBLE);
+        }
+        if (recordRow != null) {
+            recordRow.setVisibility(View.GONE);
+        }
+    }
+
+    private void cancelRecording() {
+        java.io.File был = recordFile;
+        stopEverything();
+        if (был != null && был.exists()) {
+            был.delete();
+        }
+        recordFile = null;
+    }
+
+    private void finishRecording() {
+        java.io.File файл = recordFile;
+        String kind = recordKind;
+        long секунд = Math.max(1,
+                (System.currentTimeMillis() - recordStarted + 500) / 1000);
+        stopEverything();
+        recordFile = null;
+
+        if (файл == null || !файл.exists() || файл.length() < 512) {
+            if (файл != null) {
+                файл.delete();
+            }
+            toast(Lang.t("Записать не вышло."));
+            return;
+        }
+
+        try {
+            byte[] байты = new byte[(int) файл.length()];
+            java.io.FileInputStream поток = new java.io.FileInputStream(файл);
+            int прочитано = 0;
+            while (прочитано < байты.length) {
+                int шаг = поток.read(байты, прочитано, байты.length - прочитано);
+                if (шаг <= 0) {
+                    break;
+                }
+                прочитано += шаг;
+            }
+            поток.close();
+
+            String local = "l" + (++localNumber);
+            send(Net.frame("media", "nick", me.optString("name"), "kind", kind,
+                    "name", файл.getName(), "size", байты.length,
+                    "conversation", conversation, "local", local,
+                    "seconds", секунд), байты);
+
+            localMedia.put(local, байты);
+            JSONObject item = Net.frame("media", "nick", me.optString("name"),
+                    "kind", kind, "name", файл.getName(), "size", байты.length,
+                    "user", me.optInt("id"), "local", local, "at", stamp(),
+                    "seconds", секунд, "conversation", conversation);
+            items.add(item);
+            showItem(item);
+        } catch (Exception беда) {
+            toast(Lang.t("Не удалось прочитать файл."));
+        } finally {
+            файл.delete();
+        }
+    }
+
+    // ------------------------------------------------------ показ в ленте
+
+    private View voiceCard(final JSONObject item) {
+        LinearLayout карточка = Ui.row(this);
+        карточка.setGravity(Gravity.CENTER_VERTICAL);
+        карточка.setPadding(0, Ui.dp(this, 4), 0, Ui.dp(this, 2));
+
+        final long секунд = item.optLong("seconds");
+        final TextView кнопка = Ui.text(this, "▶", 14, Color.WHITE);
+        кнопка.setGravity(Gravity.CENTER);
+        кнопка.setBackground(Ui.circle(Ui.ACCENT));
+        LinearLayout.LayoutParams какая = new LinearLayout.LayoutParams(
+                Ui.dp(this, 38), Ui.dp(this, 38));
+        какая.rightMargin = Ui.dp(this, 10);
+        кнопка.setLayoutParams(какая);
+        карточка.addView(кнопка);
+
+        LinearLayout справа = Ui.column(this);
+        final ProgressBar полоска = new ProgressBar(this, null,
+                android.R.attr.progressBarStyleHorizontal);
+        полоска.setMax(1000);
+        полоска.setProgress(0);
+        справа.addView(полоска, Ui.wide());
+        final TextView часы = Ui.text(this, clock(0, секунд), 12, Ui.MUTED);
+        справа.addView(часы, Ui.wide());
+        карточка.addView(справа, Ui.grow());
+
+        кнопка.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                playVoice(item, кнопка, полоска, часы, секунд);
+            }
+        });
+        return карточка;
+    }
+
+    private void playVoice(JSONObject item, final TextView кнопка,
+                           final ProgressBar полоска, final TextView часы,
+                           final long секунд) {
+        if (voicePlayer != null && voicePlayer.isPlaying()) {
+            stopVoice();
+            кнопка.setText("▶");
+            return;
+        }
+
+        byte[] данные = media.get(item.optString("media", ""));
+        if (данные == null) {
+            данные = localMedia.get(item.optString("local", ""));
+        }
+        if (данные == null) {
+            кнопка.setText("…");
+            String id = item.optString("media", "");
+            if (!id.isEmpty()) {
+                send(Net.frame("fetch", "id", id));
+            }
+            return;
+        }
+
+        try {
+            java.io.File где = new java.io.File(getCacheDir(), "играем.m4a");
+            java.io.FileOutputStream поток = new java.io.FileOutputStream(где);
+            поток.write(данные);
+            поток.close();
+
+            stopVoice();
+            voicePlayer = new MediaPlayer();
+            voicePlayer.setDataSource(где.getAbsolutePath());
+            voicePlayer.prepare();
+            voicePlayer.start();
+            кнопка.setText("❚❚");
+
+            voiceTick = new Runnable() {
+                @Override
+                public void run() {
+                    if (voicePlayer == null) {
+                        return;
+                    }
+                    long всего = voicePlayer.getDuration() > 0
+                            ? voicePlayer.getDuration() / 1000 : секунд;
+                    long сейчас = voicePlayer.getCurrentPosition() / 1000;
+                    полоска.setProgress(всего > 0
+                            ? (int) (сейчас * 1000 / всего) : 0);
+                    часы.setText(clock(сейчас, всего));
+                    if (voicePlayer.isPlaying()) {
+                        main.postDelayed(voiceTick, 200);
+                    }
+                }
+            };
+            main.post(voiceTick);
+
+            voicePlayer.setOnCompletionListener(new MediaPlayer.OnCompletionListener() {
+                @Override
+                public void onCompletion(MediaPlayer какой) {
+                    кнопка.setText("▶");
+                    полоска.setProgress(0);
+                    часы.setText(clock(0, секунд));
+                    stopVoice();
+                }
+            });
+        } catch (Exception беда) {
+            toast(Lang.t("Не удалось открыть голосовое"));
+        }
+    }
+
+    private void stopVoice() {
+        if (voiceTick != null) {
+            main.removeCallbacks(voiceTick);
+            voiceTick = null;
+        }
+        if (voicePlayer != null) {
+            try {
+                voicePlayer.stop();
+            } catch (Exception ignored) {
+            }
+            voicePlayer.release();
+            voicePlayer = null;
+        }
+    }
+
+    private View circleCard(final JSONObject item) {
+        final int сторона = Ui.dp(this, 200);
+        LinearLayout карточка = Ui.column(this);
+        карточка.setGravity(Gravity.CENTER_HORIZONTAL);
+
+        final VideoView кино = new VideoView(this);
+        кино.setLayoutParams(new LinearLayout.LayoutParams(сторона, сторона));
+        кино.setBackgroundColor(Color.BLACK);
+        roundOff(кино, сторона);
+        карточка.addView(кино);
+
+        final TextView часы = Ui.text(this, clock(0, item.optLong("seconds")),
+                12, Ui.MUTED);
+        часы.setGravity(Gravity.CENTER);
+        карточка.addView(часы, Ui.wide());
+
+        кино.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                playCircle(item, кино);
+            }
+        });
+        return карточка;
+    }
+
+    private void playCircle(JSONObject item, VideoView кино) {
+        if (кино.isPlaying()) {
+            кино.pause();
+            return;
+        }
+
+        byte[] данные = media.get(item.optString("media", ""));
+        if (данные == null) {
+            данные = localMedia.get(item.optString("local", ""));
+        }
+        if (данные == null) {
+            String id = item.optString("media", "");
+            if (!id.isEmpty()) {
+                send(Net.frame("fetch", "id", id));
+            }
+            return;
+        }
+
+        try {
+            java.io.File где = new java.io.File(getCacheDir(), "кружок.mp4");
+            java.io.FileOutputStream поток = new java.io.FileOutputStream(где);
+            поток.write(данные);
+            поток.close();
+            кино.setVideoPath(где.getAbsolutePath());
+            кино.start();
+        } catch (Exception беда) {
+            toast(Lang.t("Не удалось открыть кружочек"));
         }
     }
 

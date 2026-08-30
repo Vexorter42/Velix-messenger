@@ -80,13 +80,29 @@ def available():
     return FFMPEG is not None and list_dshow_devices is not None
 
 
-def _устройства():
+# Перечисление камер и микрофонов у DirectShow занимает почти секунду, а
+# спрашивают о нём при каждой пересборке настроек. Держим ответ при себе:
+# устройства меняются, когда их втыкают, а не десять раз в минуту
+_помним = {"когда": 0.0, "что": None}
+ПОМНИМ_СЕКУНД = 30
+
+
+def _устройства(заново=False):
     if list_dshow_devices is None:
         return {}, {}, {}
+
+    свежесть = time.monotonic() - _помним["когда"]
+    if not заново and _помним["что"] is not None and свежесть < ПОМНИМ_СЕКУНД:
+        return _помним["что"]
+
     try:
-        return list_dshow_devices()
+        найдено = list_dshow_devices()
     except Exception:                   # pragma: no cover — нет DirectShow
-        return {}, {}, {}
+        найдено = ({}, {}, {})
+
+    _помним["что"] = найдено
+    _помним["когда"] = time.monotonic()
+    return найдено
 
 
 def microphones():

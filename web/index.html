@@ -84,8 +84,18 @@
     <input id="file" type="file" accept="image/*,video/*" hidden>
     <input id="text" type="text" data-t-placeholder="Написать сообщение…"
            placeholder="Написать сообщение…" autocomplete="off">
+    <button id="voice" class="icon-button" type="button" title="Голосовое">🎤</button>
+    <button id="circle" class="icon-button" type="button" title="Кружочек">◉</button>
     <button id="send" class="send" type="submit">➤</button>
   </form>
+
+  <!-- Полоска записи встаёт на место строки ввода -->
+  <div id="recording" hidden>
+    <span class="rec-dot">●</span>
+    <span id="rec-text"></span>
+    <button id="rec-cancel" class="icon-button" type="button">✕</button>
+    <button id="rec-send" class="send" type="button">➤</button>
+  </div>
 </section>
 
 <!-- Профиль -->
