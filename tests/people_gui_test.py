@@ -10,6 +10,8 @@ import threading
 import time
 from pathlib import Path
 
+import harness
+
 from PIL import ImageGrab
 
 REPO = Path(__file__).resolve().parent.parent
@@ -83,7 +85,7 @@ for логин, имя in (("lena", "Лена"), ("dima", "Дима")):
 time.sleep(1.0)
 
 app = gui.VelixApp()
-app.attributes("-topmost", True)
+harness.тихое_окно(app)
 steps = []
 
 

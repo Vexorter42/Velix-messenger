@@ -4,11 +4,18 @@
 замедлением, и мерить сдвиг нужно, когда она закончилась.
 """
 
+# Эту проверку гоняем в одиночку: она меряет, сколько проехала лента за щелчок,
+# а под нагрузкой от соседок часы врут
+ПООДИНОЧКЕ = True
+
+
 import os
 import sys
 import tempfile
 import time
 from pathlib import Path
+
+import harness
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
@@ -32,7 +39,7 @@ def check(name, ok, detail=""):
 
 
 app = gui.VelixApp()
-app.attributes("-topmost", True)
+harness.тихое_окно(app)
 app.geometry("1040x680")
 steps = []
 

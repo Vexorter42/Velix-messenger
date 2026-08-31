@@ -14,6 +14,8 @@ import threading
 import time
 from pathlib import Path
 
+import harness
+
 REPO = Path(os.environ.get("VELIX_SRC")
             or Path(__file__).resolve().parent.parent)
 sys.path.insert(0, str(REPO))
@@ -89,7 +91,7 @@ def сервер():
 
 
 threading.Thread(target=сервер, daemon=True).start()
-time.sleep(1.2)
+harness.дождаться(8833)
 
 
 # ------------------------------------------------- подставная запись
@@ -131,7 +133,7 @@ class ПодставнаяЗапись:
 recorder.Recording = ПодставнаяЗапись
 
 app = gui.VelixApp()
-app.attributes("-topmost", True)
+harness.тихое_окно(app)
 steps = []
 
 
@@ -172,13 +174,27 @@ def открыть():
     app._open(3, force=True)
 
 
+def кружочков():
+    """Сколько круглых заглушек в ленте: у кружочка теперь не надпись."""
+    сколько = [0]
+
+    def обход(widget):
+        for child in widget.winfo_children():
+            if getattr(child, "velix_poster", None) is not None:
+                сколько[0] += 1
+            обход(child)
+
+    обход(app.messages)
+    return сколько[0]
+
+
 @step
 def что_в_ленте():
     строки = подписи()
     check("voice-gui-shows-duration", "0:00 / 0:07" in строки, строки)
     check("voice-gui-has-play-button", "▶" in строки, строки)
     check("voice-gui-circle-shown",
-          "0:00 / 0:12" in строки and "кружочек" in строки, строки)
+          "0:00 / 0:12" in строки and кружочков() == 1, (строки, кружочков()))
     check("voice-gui-not-called-attachment",
           not any("вложение" in one for one in строки), строки)
 

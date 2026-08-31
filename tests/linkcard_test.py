@@ -20,6 +20,8 @@ import threading
 import time
 from pathlib import Path
 
+import harness
+
 import websockets
 
 REPO = Path(__file__).resolve().parent.parent
@@ -126,7 +128,7 @@ ENV = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1",
 ENV.pop("VELIX_ALLOWED_HOSTS", None)
 server = subprocess.Popen([sys.executable, "server.py"], cwd=SANDBOX, env=ENV,
                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-time.sleep(2.4)
+harness.дождаться(8849)
 
 ССЫЛКА = "http://127.0.0.1:8850/статья"
 

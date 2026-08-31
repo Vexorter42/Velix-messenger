@@ -8,6 +8,8 @@ import sys
 import time
 from pathlib import Path
 
+import harness
+
 import websockets
 
 REPO = Path(__file__).resolve().parent.parent
@@ -44,7 +46,7 @@ updates.mkdir()
 
 server = subprocess.Popen([sys.executable, "server.py"], cwd=SANDBOX, env=ENV,
                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-time.sleep(2.4)
+harness.дождаться(8841)
 
 
 async def read_until(ws, kind, timeout=20):

@@ -26,7 +26,7 @@ from tkinter import filedialog
 
 import customtkinter as ctk
 import websockets
-from PIL import Image, ImageDraw, ImageSequence
+from PIL import Image, ImageDraw, ImageSequence, ImageTk
 
 import autostart
 import i18n
@@ -4462,6 +4462,14 @@ class VelixApp(ctk.CTk):
             часы.configure(text=self._duration_text(сейчас, длительность))
 
         def конец():
+            # Проигрыватель закрываем сразу: ffpyplayer держит звук открытым
+            # и доигрывает набранное наперёд — со стороны это слышно как эхо
+            # уже после конца записи
+            прежний = состояние.get("box")
+            if прежний is not None:
+                прежний.close()
+            состояние["box"] = None
+            self.voices.pop(media_id or name, None)
             if not кнопка.winfo_exists():
                 return
             кнопка.configure(text="▶")
@@ -4475,29 +4483,59 @@ class VelixApp(ctk.CTk):
             return
 
         состояние["box"] = коробка
-        self.voices[media_id or name] = коробка
+        self.voices[media_id or name] = (коробка, состояние)
         кнопка.configure(text="❚❚")
 
     def _stop_voices(self):
-        """Закрывает голосовые проигрыватели: SDL держит звук открытым."""
-        for коробка in list(self.voices.values()):
+        """Закрывает проигрыватели: SDL держит звук открытым до последнего.
+
+        Заодно забываем о них в самих карточках, иначе следующее нажатие
+        попало бы в уже закрытый проигрыватель и не сделало бы ничего.
+        """
+        for коробка, состояние in list(self.voices.values()):
             коробка.close()
+            состояние["box"] = None
         self.voices.clear()
-        for одна in self.circles.values():
-            одна.close()
+        for коробка, состояние in list(self.circles.values()):
+            коробка.close()
+            состояние["box"] = None
         self.circles.clear()
+
+    CIRCLE_SIDE = 200
+
+    def _circle_poster(self, own):
+        """Круглая заглушка со стрелкой — то, что видно до нажатия.
+
+        Прежде тут был серый прямоугольник со словом «кружочек», размеченный
+        по буквам, — он и размера был не того, и на кружочек не походил.
+        Рисуем круг ровно того же размера, каким потом придёт кадр.
+        """
+        сторона = self.CIRCLE_SIDE
+        холст = Image.new("RGB", (сторона, сторона),
+                          self._hex(BUBBLE_OUT if own else BUBBLE_IN))
+        перо = ImageDraw.Draw(холст)
+        перо.ellipse((0, 0, сторона - 1, сторона - 1),
+                     fill=self._hex(SEPARATOR))
+
+        середина = сторона / 2
+        крыло = сторона * 0.11
+        перо.polygon([(середина - крыло * 0.6, середина - крыло),
+                      (середина - крыло * 0.6, середина + крыло),
+                      (середина + крыло, середина)], fill=self._hex(MUTED))
+        return ImageTk.PhotoImage(холст)
 
     def _circle_card(self, bubble, own, media_id, name, item, data=None):
         """Кружочек: круглое видео прямо в ленте."""
-        сторона = 200
+        сторона = self.CIRCLE_SIDE
         карточка = ctk.CTkFrame(bubble, fg_color="transparent")
         карточка.pack(padx=10, pady=(6, 2))
 
-        фон = self._hex(BUBBLE_OUT if own else BUBBLE_IN)
-        холст = tkinter.Label(карточка, text=t("кружочек"), bd=0,
-                              highlightthickness=0, bg=фон,
-                              fg=self._hex(MUTED),
-                              width=сторона // 8, height=сторона // 16)
+        заглушка = self._circle_poster(own)
+        холст = tkinter.Label(карточка, image=заглушка, bd=0,
+                              highlightthickness=0,
+                              bg=self._hex(BUBBLE_OUT if own else BUBBLE_IN))
+        # Ссылку держим при метке, иначе Tk сотрёт картинку сборщиком мусора
+        холст.velix_poster = заглушка
         холст.pack()
 
         секунд = int(item.get("seconds") or 0)
@@ -4540,14 +4578,26 @@ class VelixApp(ctk.CTk):
 
         self._stop_voices()
 
+        def не_живо():
+            return not холст.winfo_exists()
+
         def шаг(коробка):
-            if холст.winfo_exists():
+            if not не_живо():
                 подпись.configure(text=self._duration_text(коробка.position,
                                                            коробка.duration))
 
         def конец(коробка):
-            if холст.winfo_exists():
-                подпись.configure(text=self._duration_text(0, коробка.duration))
+            # Закрываем по той же причине, что и голос: иначе доигрывает
+            длительность = коробка.duration
+            коробка.close()
+            состояние["box"] = None
+            self.circles.pop(media_id or name, None)
+            if не_живо():
+                return
+            подпись.configure(text=self._duration_text(0, длительность))
+            заглушка = getattr(холст, "velix_poster", None)
+            if заглушка is not None:
+                холст.configure(image=заглушка)
 
         холст.configure(text="")
         коробка = videoplayer.VideoBox(
@@ -4559,7 +4609,7 @@ class VelixApp(ctk.CTk):
             return
 
         состояние["box"] = коробка
-        self.circles[media_id or name] = коробка
+        self.circles[media_id or name] = (коробка, состояние)
 
     def _hex(self, цвет):
         """Цвет под текущую тему: у обычных Tk-виджетов пары цветов нет."""

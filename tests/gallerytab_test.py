@@ -11,6 +11,8 @@ import threading
 import time
 from pathlib import Path
 
+import harness
+
 import websockets
 from PIL import Image
 
@@ -42,7 +44,7 @@ for name in ("server.py", "storage.py", "protocol.py", "media.py", "accounts.py"
 
 server = subprocess.Popen([sys.executable, "server.py"], cwd=SANDBOX, env=ENV,
                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-time.sleep(2.4)
+harness.дождаться(8837)
 
 
 def снимок(цвет):

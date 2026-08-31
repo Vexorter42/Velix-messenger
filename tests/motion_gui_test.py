@@ -1,10 +1,17 @@
 """Окно двигается плавно: цвета перетекают, прокрутка доезжает."""
 
+# Эту проверку гоняем в одиночку: она меряет длительность движений,
+# а под нагрузкой от соседок часы врут
+ПООДИНОЧКЕ = True
+
+
 import os
 import sys
 import tempfile
 import time
 from pathlib import Path
+
+import harness
 
 REPO = Path(os.environ.get("VELIX_SRC")
             or Path(__file__).resolve().parent.parent)
@@ -45,7 +52,7 @@ check("ease-ends", abs(gui.ease(0)) < 1e-9 and abs(gui.ease(1) - 1) < 1e-9,
       (gui.ease(0), gui.ease(1)))
 
 app = gui.VelixApp()
-app.attributes("-topmost", True)
+harness.тихое_окно(app)
 app.geometry("1040x680")
 steps = []
 запомнили = {}

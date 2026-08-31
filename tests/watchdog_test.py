@@ -17,6 +17,8 @@ import tempfile
 import time
 from pathlib import Path
 
+import harness
+
 REPO = Path(__file__).resolve().parent.parent
 SANDBOX = Path(__file__).with_name("watchsandbox")
 
@@ -66,7 +68,7 @@ for name in ("server.py", "storage.py", "protocol.py", "media.py", "accounts.py"
 СРЕДА.pop("VELIX_ALLOWED_HOSTS", None)
 служба = subprocess.Popen([sys.executable, "server.py"], cwd=SANDBOX, env=СРЕДА,
                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-time.sleep(2.4)
+harness.дождаться(8847)
 
 check("watchdog-sees-a-live-server", asyncio.run(watchdog.отзывается()))
 

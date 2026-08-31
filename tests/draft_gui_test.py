@@ -8,6 +8,8 @@ import threading
 import time
 from pathlib import Path
 
+import harness
+
 REPO = Path(os.environ.get("VELIX_SRC")
             or Path(__file__).resolve().parent.parent)
 sys.path.insert(0, str(REPO))
@@ -70,10 +72,10 @@ def сервер():
 
 
 threading.Thread(target=сервер, daemon=True).start()
-time.sleep(1.2)
+harness.дождаться(8833)
 
 app = gui.VelixApp()
-app.attributes("-topmost", True)
+harness.тихое_окно(app)
 steps = []
 
 

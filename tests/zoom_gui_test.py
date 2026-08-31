@@ -7,6 +7,8 @@ import tempfile
 import time
 from pathlib import Path
 
+import harness
+
 from PIL import Image, ImageDraw, ImageGrab
 
 REPO = Path(__file__).resolve().parent.parent
@@ -47,7 +49,7 @@ holder = bytes_io.BytesIO()
 ФОТО = holder.getvalue()
 
 app = gui.VelixApp()
-app.attributes("-topmost", True)
+harness.тихое_окно(app)
 app.geometry("1040x680")
 
 steps = []

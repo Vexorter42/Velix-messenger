@@ -10,6 +10,8 @@ import threading
 import time
 from pathlib import Path
 
+import harness
+
 from PIL import ImageGrab
 
 REPO = Path(__file__).resolve().parent.parent
@@ -104,12 +106,12 @@ threading.Thread(target=peer_thread, daemon=True).start()
 time.sleep(2.0)
 
 app = gui.VelixApp()
-app.attributes("-topmost", True)
+harness.тихое_окно(app)
 
 
 def grab(name):
     app.lift()
-    app.attributes("-topmost", True)
+    harness.тихое_окно(app)
     app.update_idletasks()
     app.update()
     time.sleep(0.5)

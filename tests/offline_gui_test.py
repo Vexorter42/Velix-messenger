@@ -9,6 +9,8 @@ import threading
 import time
 from pathlib import Path
 
+import harness
+
 REPO = Path(os.environ.get("VELIX_SRC")
             or Path(__file__).resolve().parent.parent)
 sys.path.insert(0, str(REPO))
@@ -60,7 +62,7 @@ localcache.save_rooms(СЕРВЕР, {"id": 1, "login": "gosha", "name": "Гош�
 localcache.save_history(СЕРВЕР, 3, ЛЕНТА)
 
 app = gui.VelixApp()
-app.attributes("-topmost", True)
+harness.тихое_окно(app)
 steps = []
 запомнили = {}
 

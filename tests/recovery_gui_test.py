@@ -8,6 +8,8 @@ import tempfile
 import time
 from pathlib import Path
 
+import harness
+
 from PIL import ImageGrab
 
 REPO = Path(__file__).resolve().parent.parent
@@ -50,13 +52,13 @@ os.environ["VELIX_CACHE"] = tempfile.mkdtemp(prefix="velix-cache-")
 import gui  # noqa: E402
 
 app = gui.VelixApp()
-app.attributes("-topmost", True)
+harness.тихое_окно(app)
 saved = {}
 
 
 def grab(name):
     app.lift()
-    app.attributes("-topmost", True)
+    harness.тихое_окно(app)
     app.update_idletasks()
     app.update()
     time.sleep(0.6)

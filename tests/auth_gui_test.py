@@ -1,5 +1,10 @@
 """Окно: регистрация, вход по сохранённому аккаунту, профиль, аватарки."""
 
+# Эту проверку гоняем в одиночку: она ждёт сообщение от второго клиента по часам, а не по событию,
+# а под нагрузкой от соседок часы врут
+ПООДИНОЧКЕ = True
+
+
 import asyncio
 import io
 import os
@@ -10,6 +15,8 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+
+import harness
 
 from PIL import Image, ImageDraw, ImageGrab
 
@@ -118,13 +125,13 @@ threading.Thread(target=peer_thread, daemon=True).start()
 time.sleep(2.5)
 
 app = gui.VelixApp()
-app.attributes("-topmost", True)
+harness.тихое_окно(app)
 
 
 def grab(name):
     # Поднимаем окно наверх: иначе в кадр попадёт то, что лежит поверх него
     app.lift()
-    app.attributes("-topmost", True)
+    harness.тихое_окно(app)
     app.update_idletasks()
     app.update()
     time.sleep(0.6)

@@ -15,6 +15,8 @@ import sys
 import time
 from pathlib import Path
 
+import harness
+
 import websockets
 
 REPO = Path(os.environ.get("VELIX_SRC")
@@ -95,7 +97,7 @@ check("upload-fresh-kept", свежий.exists(), "свежую загрузку
 server = subprocess.Popen([sys.executable, "server.py"], cwd=SANDBOX, env=ENV,
                           stdout=open(SANDBOX / "log.txt", "w", encoding="utf-8"),
                           stderr=subprocess.STDOUT)
-time.sleep(2.4)
+harness.дождаться(8827)
 
 РОЛИК = bytes(range(256)) * 40000        # ~10 МБ, три куска по 4
 

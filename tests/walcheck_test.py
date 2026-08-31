@@ -18,6 +18,8 @@ import tempfile
 import time
 from pathlib import Path
 
+import harness
+
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 import storage  # noqa: E402
@@ -100,7 +102,7 @@ else:
     служба = subprocess.Popen([sys.executable, "server.py"], cwd=ДОМ, env=среда,
                               stdout=subprocess.DEVNULL,
                               stderr=subprocess.DEVNULL)
-    time.sleep(2.4)
+    harness.дождаться(8846)
 
     async def поговорить():
         """Заводит человека: этого хватит, чтобы в базе появилась строчка."""

@@ -13,6 +13,8 @@ import sys
 import time
 from pathlib import Path
 
+import harness
+
 import websockets
 
 REPO = Path(__file__).resolve().parent.parent
@@ -57,7 +59,7 @@ for name in ("server.py", "storage.py", "protocol.py", "media.py", "accounts.py"
 
 server = subprocess.Popen([sys.executable, "server.py"], cwd=SANDBOX, env=ENV,
                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-time.sleep(2.4)
+harness.дождаться(8843)
 
 ГОЛОС = b"OggS" + bytes(range(256)) * 20
 КРУЖОК = b"\x00\x00\x00\x18ftypmp42" + bytes(range(256)) * 40
