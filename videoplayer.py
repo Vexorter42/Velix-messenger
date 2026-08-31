@@ -312,6 +312,24 @@ class VideoBox:
         пауза = 0.03 if состояние == "paused" or not состояние else float(состояние)
         self.job = self.surface.after(max(int(пауза * 1000), 4), self._tick)
 
+    def _видимый_размер(self, кадр):
+        """Настоящие пропорции кадра, а не число пикселей в нём.
+
+        Телефон пишет кружочек как 720 на 480 — но с пометкой, что пиксель
+        у него не квадратный, а вытянутый: 32 к 27. Показать такой кадр как
+        есть — значит растянуть картинку почти на пятую часть по ширине,
+        и лицо в кружочке выходит шире, чем было. Пометку ffpyplayer знает,
+        применять её — наше дело.
+        """
+        ширина, высота = кадр.get_size()
+        try:
+            отношение = (self.player.get_metadata() or {}).get("aspect_ratio")
+        except Exception:                             # pragma: no cover
+            отношение = None
+        if отношение and отношение[0] and отношение[1]:
+            ширина = int(round(ширина * отношение[0] / отношение[1]))
+        return max(ширина, 1), max(высота, 1)
+
     def _round(self, кадр):
         """Вписывает кадр в круг на заданном фоне."""
         сторона = min(min(кадр.size), min(self.box))
@@ -329,7 +347,7 @@ class VideoBox:
     def _draw(self, картинка):
         if self.size is None:
             размер = cover if self.round_on is not None else fit
-            self.size = размер(картинка.get_size(), self.box)
+            self.size = размер(self._видимый_размер(картинка), self.box)
             if self.size != картинка.get_size():
                 # Уменьшает ffmpeg, в си-коде: дальше кадры приходят готовыми
                 self.player.set_size(*self.size)
