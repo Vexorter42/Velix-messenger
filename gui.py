@@ -158,6 +158,7 @@ DEFAULT_SETTINGS = {
     "tray": True,        # закрытие окна прячет его в трей, а не выходит
     "autostart": False,  # запуск вместе с Windows
     "sound": True,       # короткий звук о новом сообщении
+    "record_mode": "voice",   # чем пишет кнопка: голосом или кружочком
 }
 
 
@@ -560,6 +561,10 @@ class VelixApp(ctk.CTk):
         self.viewer_counter = None     # «3 / 12» в углу просмотра
         self.video = None              # проигрыватель, если открыт ролик
         self.recording = None          # идущая запись голоса или кружочка
+        self.record_mode = ("circle"
+                            if self.settings.get("record_mode") == "circle"
+                            else "voice")
+        self.told_about_holding = False
         self.recording_job = None      # отсчёт секунд у этой записи
         self.voices = {}               # вложение -> проигрыватель голоса
         self.circles = {}              # вложение -> проигрыватель кружочка
@@ -1021,19 +1026,17 @@ class VelixApp(ctk.CTk):
         self.message_entry.bind("<Control-KeyPress>", self._on_ctrl_key)
         self.message_entry.bind("<KeyRelease>", self._notify_typing)
 
-        # Микрофон и кружочек. Если записывать нечем — например, сборка без
-        # ffmpeg или в системе нет ни одного микрофона, — кнопок просто нет:
-        # кнопка, которая всегда отвечает «не могу», хуже её отсутствия
-        self.voice_button = ctk.CTkButton(
+        # Одна кнопка на голос и на кружочек: нажатие переключает её между
+        # ними, зажатие — начинает запись тем, что на ней сейчас нарисовано.
+        # Если записывать нечем — сборка без ffmpeg, ни одного микрофона —
+        # кнопки просто нет: та, что всегда отвечает «не могу», хуже её
+        # отсутствия
+        self.record_button = ctk.CTkButton(
             composer, text="🎤", width=44, height=44, corner_radius=22,
             font=ctk.CTkFont(family="Segoe UI", size=17), fg_color=INPUT_BG,
-            hover_color=SEPARATOR, text_color=MUTED,
-            command=lambda: self._start_recording("voice"))
-        self.circle_button = ctk.CTkButton(
-            composer, text="◉", width=44, height=44, corner_radius=22,
-            font=ctk.CTkFont(family="Segoe UI", size=19), fg_color=INPUT_BG,
-            hover_color=SEPARATOR, text_color=MUTED,
-            command=lambda: self._start_recording("circle"))
+            hover_color=SEPARATOR, text_color=MUTED, command=None)
+        self._hold_button(self.record_button, self._switch_record_mode,
+                          self._hold_to_record)
         self._place_record_buttons()
 
         self.send_button = ctk.CTkButton(
@@ -2008,18 +2011,79 @@ class VelixApp(ctk.CTk):
 
     # ------------------------------------------------- голос и кружочки
 
+    HOLD_MS = 420          # столько держат кнопку, чтобы это было «зажать»
+
     def _place_record_buttons(self):
-        """Ставит кнопки записи, если записывать есть чем."""
-        есть_чем = recorder.available() and recorder.microphones()
-        if not есть_чем:
-            self.voice_button.grid_remove()
-            self.circle_button.grid_remove()
+        """Ставит кнопку записи, если записывать есть чем."""
+        if not (recorder.available() and recorder.microphones()):
+            self.record_button.grid_remove()
             return
-        self.voice_button.grid(row=0, column=2, padx=(0, 8), pady=13)
-        if recorder.cameras():
-            self.circle_button.grid(row=0, column=3, padx=(0, 8), pady=13)
-        else:
-            self.circle_button.grid_remove()
+        if self.record_mode == "circle" and not recorder.cameras():
+            # Камеру могли отключить между запусками
+            self.record_mode = "voice"
+        self.record_button.grid(row=0, column=2, padx=(0, 8), pady=13)
+        self._paint_record_button()
+
+    def _paint_record_button(self):
+        """Показывает на кнопке то, что она сейчас запишет."""
+        кружок = self.record_mode == "circle"
+        self.record_button.configure(
+            text="◉" if кружок else "🎤",
+            font=ctk.CTkFont(family="Segoe UI", size=19 if кружок else 17))
+
+    def _hold_button(self, button, on_tap, on_hold):
+        """Разделяет короткое нажатие и зажатие.
+
+        У CTkButton своя начинка, и события мыши достаются ей, а не самой
+        кнопке, — поэтому вешаемся на всё, что внутри.
+        """
+        держим = {"job": None, "fired": False}
+
+        def нажали(event):
+            держим["fired"] = False
+
+            def пора():
+                держим["job"] = None
+                держим["fired"] = True
+                on_hold()
+
+            держим["job"] = self.after(self.HOLD_MS, пора)
+
+        def отпустили(event):
+            if держим["job"] is not None:
+                self.after_cancel(держим["job"])
+                держим["job"] = None
+            if not держим["fired"]:
+                on_tap()
+
+        def обойти(widget):
+            widget.bind("<ButtonPress-1>", нажали, add="+")
+            widget.bind("<ButtonRelease-1>", отпустили, add="+")
+            for ребёнок in widget.winfo_children():
+                обойти(ребёнок)
+
+        обойти(button)
+
+    def _switch_record_mode(self):
+        """Короткое нажатие: меняет голос на кружочек и обратно."""
+        if not recorder.cameras():
+            self._service_label(t("Камеры нет — записывать можно только голос"))
+            return
+
+        self.record_mode = "circle" if self.record_mode == "voice" else "voice"
+        self.settings["record_mode"] = self.record_mode
+        self._save_settings()
+        self._paint_record_button()
+
+        # Один раз за запуск подсказываем, как записывать: иначе кнопка
+        # выглядит так, будто она просто ничего не делает
+        if not self.told_about_holding:
+            self.told_about_holding = True
+            self._service_label(t("Зажмите кнопку, чтобы записать"))
+
+    def _hold_to_record(self):
+        """Зажатие: пишем то, что нарисовано на кнопке."""
+        self._start_recording(self.record_mode)
 
     def _start_recording(self, kind):
         """Начинает запись голоса или кружочка."""

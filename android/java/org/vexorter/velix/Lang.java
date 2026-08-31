@@ -210,6 +210,7 @@ class Lang {
         add("Не удалось открыть голосовое",
             "Could not open the voice message");
         add("Не удалось открыть кружочек", "Could not open the circle");
+        add("Зажмите кнопку, чтобы записать", "Hold the button to record");
         add("Не получилось открыть ссылку",
             "Could not open the link");
         add("Нет связи — показываем сохранённое.",

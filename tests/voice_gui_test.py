@@ -184,9 +184,30 @@ def что_в_ленте():
 
 
 @step
+def одна_кнопка():
+    check("voice-gui-one-button", app.record_button.winfo_exists())
+    check("voice-gui-starts-with-voice", app.record_mode == "voice",
+          app.record_mode)
+    check("voice-gui-shows-the-microphone",
+          app.record_button.cget("text") == "🎤", app.record_button.cget("text"))
+
+    # Нажатие меняет вид, зажатие — пишет
+    app._switch_record_mode()
+    check("voice-gui-tap-switches", app.record_mode == "circle", app.record_mode)
+    check("voice-gui-icon-follows",
+          app.record_button.cget("text") == "◉", app.record_button.cget("text"))
+    check("voice-gui-mode-remembered",
+          store.load()["settings"].get("record_mode") == "circle",
+          store.load().get("settings"))
+
+    app._switch_record_mode()
+    check("voice-gui-tap-switches-back", app.record_mode == "voice",
+          app.record_mode)
+
+
+@step
 def начать_запись():
-    check("voice-gui-button-exists", app.voice_button.winfo_exists())
-    app._start_recording("voice")
+    app._hold_to_record()
 
 
 @step
@@ -220,7 +241,7 @@ def что_ушло():
 
 @step
 def отмена():
-    app._start_recording("voice")
+    app._hold_to_record()
 
 
 @step

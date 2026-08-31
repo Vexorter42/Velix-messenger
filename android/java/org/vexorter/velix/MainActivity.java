@@ -991,25 +991,25 @@ public class MainActivity extends Activity implements VelixService.Screen {
         });
         composer.addView(messageField, Ui.grow());
 
-        TextView голос = Ui.text(this, "🎤", 19, Ui.MUTED);
-        голос.setPadding(Ui.dp(this, 8), 0, Ui.dp(this, 4), 0);
-        голос.setOnClickListener(new View.OnClickListener() {
+        // Одна кнопка на голос и на кружочек: нажатие меняет её между ними,
+        // зажатие — начинает запись тем, что на ней сейчас нарисовано
+        recordButton = Ui.text(this, "🎤", 19, Ui.MUTED);
+        recordButton.setPadding(Ui.dp(this, 8), 0, Ui.dp(this, 6), 0);
+        recordButton.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View view) {
-                startRecording("voice");
+                switchRecordMode();
             }
         });
-        composer.addView(голос);
-
-        TextView кружок = Ui.text(this, "◉", 21, Ui.MUTED);
-        кружок.setPadding(Ui.dp(this, 4), 0, Ui.dp(this, 4), 0);
-        кружок.setOnClickListener(new View.OnClickListener() {
+        recordButton.setOnLongClickListener(new View.OnLongClickListener() {
             @Override
-            public void onClick(View view) {
-                startRecording("circle");
+            public boolean onLongClick(View view) {
+                startRecording(recordMode);
+                return true;
             }
         });
-        composer.addView(кружок);
+        composer.addView(recordButton);
+        paintRecordButton();
 
         TextView send = Ui.text(this, "➤", 20, Ui.ACCENT);
         send.setPadding(Ui.dp(this, 12), 0, Ui.dp(this, 6), 0);
@@ -1763,6 +1763,34 @@ public class MainActivity extends Activity implements VelixService.Screen {
 
     private static final int MAX_VOICE = 300;
     private static final int MAX_CIRCLE = 60;
+
+    private TextView recordButton;
+    private String recordMode;
+    private boolean toldAboutHolding;
+
+    private void paintRecordButton() {
+        if (recordMode == null) {
+            recordMode = "circle".equals(prefs().getString("record_mode", "voice"))
+                    ? "circle" : "voice";
+        }
+        if (recordButton != null) {
+            recordButton.setText("circle".equals(recordMode) ? "◉" : "🎤");
+        }
+    }
+
+    /** Короткое нажатие: меняет голос на кружочек и обратно. */
+    private void switchRecordMode() {
+        recordMode = "voice".equals(recordMode) ? "circle" : "voice";
+        prefs().edit().putString("record_mode", recordMode).apply();
+        paintRecordButton();
+
+        // Один раз за запуск подсказываем, как записывать: иначе кнопка
+        // выглядит так, будто она просто ничего не делает
+        if (!toldAboutHolding) {
+            toldAboutHolding = true;
+            toast(Lang.t("Зажмите кнопку, чтобы записать"));
+        }
+    }
 
     private String whatItWas(JSONObject last) {
         String вид = last.optString("kind");

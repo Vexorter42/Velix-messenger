@@ -46,6 +46,13 @@ const reactionRows = new Map();// куда рисовать реакции
 const mediaSlots = new Map();
 const mediaLinks = new Map(); // вложение -> ссылка на уже скачанное
 let recording = null;          // идущая запись голоса или кружочка
+// Одна кнопка на два вида: нажатие меняет, зажатие пишет
+let recordMode = localStorage.getItem("velix-record-mode") === "circle"
+    ? "circle" : "voice";
+let holdTimer = null;
+let heldLongEnough = false;
+let toldAboutHolding = false;
+const HOLD_MS = 420;
 let recordingTimer = null;
 const cardSlots = new Map();   // куда рисовать картинку карточки ссылки
 const cardUrls = new Map();    // уже скачанные картинки карточек
@@ -1969,16 +1976,57 @@ async function sendFile(file) {
 
 // ---------------------------------------------------------------- события
 
-$("voice").addEventListener("click", () => startRecording("voice"));
-$("circle").addEventListener("click", () => startRecording("circle"));
+function paintRecordButton() {
+  $("record").textContent = recordMode === "circle" ? "◉" : "🎤";
+  $("record").title = recordMode === "circle" ? t("Кружочек") : t("Голосовое");
+}
+
+function switchRecordMode() {
+  recordMode = recordMode === "voice" ? "circle" : "voice";
+  try {
+    localStorage.setItem("velix-record-mode", recordMode);
+  } catch (ignored) {
+    // Не запомнилось — не беда, на этот раз обойдёмся
+  }
+  paintRecordButton();
+
+  // Один раз за посещение подсказываем, как записывать: иначе кнопка
+  // выглядит так, будто она просто ничего не делает
+  if (!toldAboutHolding) {
+    toldAboutHolding = true;
+    service(t("Зажмите кнопку, чтобы записать"));
+  }
+}
+
+$("record").addEventListener("pointerdown", (событие) => {
+  событие.preventDefault();
+  heldLongEnough = false;
+  holdTimer = setTimeout(() => {
+    holdTimer = null;
+    heldLongEnough = true;
+    startRecording(recordMode);
+  }, HOLD_MS);
+});
+
+for (const событие of ["pointerup", "pointercancel", "pointerleave"]) {
+  $("record").addEventListener(событие, () => {
+    if (holdTimer) {
+      clearTimeout(holdTimer);
+      holdTimer = null;
+      if (!heldLongEnough) switchRecordMode();
+    }
+  });
+}
+
 $("rec-cancel").addEventListener("click", cancelRecording);
 $("rec-send").addEventListener("click", finishRecording);
+
+paintRecordButton();
 
 // Записывать умеет не всякий браузер и не по всякому адресу: без https
 // getUserMedia просто нет
 if (!navigator.mediaDevices || !window.MediaRecorder) {
-  $("voice").hidden = true;
-  $("circle").hidden = true;
+  $("record").hidden = true;
 }
 
 $("switch-mode").addEventListener("click", () => {

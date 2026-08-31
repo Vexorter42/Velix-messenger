@@ -212,6 +212,9 @@ ENGLISH = {
     "Не удалось открыть кружочек": "Could not open the circle",
     "кружочек": "circle",
     "загружаю…": "loading…",
+    "Зажмите кнопку, чтобы записать": "Hold the button to record",
+    "Камеры нет — записывать можно только голос":
+        "No camera — only voice can be recorded",
     "голосовое": "voice message",
     "Микрофон": "Microphone",
     "Камера": "Camera",
