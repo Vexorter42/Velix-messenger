@@ -16,6 +16,7 @@ import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.Outline;
 import android.hardware.Camera;
+import android.media.CamcorderProfile;
 import android.media.MediaPlayer;
 import android.media.MediaRecorder;
 import android.net.Uri;
@@ -1077,6 +1078,8 @@ public class MainActivity extends Activity implements VelixService.Screen {
         items.clear();
         ticks.clear();
         bubbles.clear();
+        stopVoice();
+        stopCircle();
         reactionRows.clear();
         gallery.clear();
 
@@ -1270,6 +1273,8 @@ public class MainActivity extends Activity implements VelixService.Screen {
         items.clear();
         ticks.clear();
         bubbles.clear();
+        stopVoice();
+        stopCircle();
         reactionRows.clear();
         currentDate = null;
 
@@ -1754,12 +1759,18 @@ public class MainActivity extends Activity implements VelixService.Screen {
     private MediaRecorder recorder;
     private Camera camera;
     private View cameraOverlay;
+    private SurfaceView cameraSurface;
+    private int cameraSide;
     private java.io.File recordFile;
     private String recordKind;
     private long recordStarted;
     private Runnable recordTick;
     private MediaPlayer voicePlayer;
     private Runnable voiceTick;
+    private MediaPlayer circlePlayer;
+    private Runnable circleTick;
+    // Что показать, когда приедут байты: первое нажатие иначе уходило впустую
+    private final Map<String, Runnable> pendingPlay = new HashMap<>();
 
     private static final int MAX_VOICE = 300;
     private static final int MAX_CIRCLE = 60;
@@ -1858,6 +1869,7 @@ public class MainActivity extends Activity implements VelixService.Screen {
             recorder.prepare();
             recorder.start();
         } catch (Exception беда) {
+            android.util.Log.e("Velix", "голос не пошёл", беда);
             stopEverything();
             toast(Lang.t("Записать не вышло."));
             return;
@@ -1882,17 +1894,31 @@ public class MainActivity extends Activity implements VelixService.Screen {
      * Поэтому вся работа с камерой живёт внутри surfaceCreated.
      */
     private void showCameraThenRecord() {
-        final SurfaceView вид = new SurfaceView(this);
-        int сторона = Math.min(getResources().getDisplayMetrics().widthPixels,
+        cameraSide = Math.min(getResources().getDisplayMetrics().widthPixels,
                 Ui.dp(this, 280));
-        FrameLayout.LayoutParams как = new FrameLayout.LayoutParams(сторона, сторона);
+
+        // Рамка круглая, а картинка внутри прямоугольная: квадратов камера
+        // не снимает. Поэтому не втискиваем кадр в квадрат — иначе лицо
+        // выходит сплющенным, — а даём ему вылезти за круг и обрезаем
+        FrameLayout рамка = new FrameLayout(this);
+        FrameLayout.LayoutParams рамкой = new FrameLayout.LayoutParams(
+                cameraSide, cameraSide);
+        рамкой.gravity = Gravity.CENTER;
+        рамка.setLayoutParams(рамкой);
+        рамка.setBackgroundColor(Color.BLACK);
+        roundOff(рамка, cameraSide);
+
+        final SurfaceView вид = new SurfaceView(this);
+        FrameLayout.LayoutParams как = new FrameLayout.LayoutParams(
+                cameraSide, cameraSide);
         как.gravity = Gravity.CENTER;
         вид.setLayoutParams(как);
-        roundOff(вид, сторона);
+        рамка.addView(вид);
+        cameraSurface = вид;
 
         FrameLayout поверх = new FrameLayout(this);
         поверх.setBackgroundColor(Color.argb(200, 0, 0, 0));
-        поверх.addView(вид);
+        поверх.addView(рамка);
         root.addView(поверх, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
@@ -1906,8 +1932,13 @@ public class MainActivity extends Activity implements VelixService.Screen {
                 }
                 try {
                     beginCircle(holder);
-                } catch (Exception беда) {
-                    String чего = беда.getClass().getSimpleName();
+                } catch (Throwable беда) {
+                    // В журнал — целиком, на экран — коротко: по одному
+                    // названию исключения не понять ровно ничего
+                    android.util.Log.e("Velix", "кружочек не пошёл", беда);
+                    String чего = беда.getMessage() != null
+                            ? беда.getMessage()
+                            : беда.getClass().getSimpleName();
                     stopEverything();
                     toast(Lang.t("Записать не вышло.") + " " + чего);
                     return;
@@ -1926,65 +1957,87 @@ public class MainActivity extends Activity implements VelixService.Screen {
         });
     }
 
-    /** Заводит камеру и запись на уже готовой поверхности. */
+    /**
+     * Заводит камеру и запись на уже готовой поверхности.
+     *
+     * Размеры, кодеки и частоту не назначаем руками, а берём готовым
+     * профилем: камера, которой не подошло что-то одно из перечисленного,
+     * отвечает отказом на всё сразу — и это тот самый RuntimeException,
+     * который не объясняет ничего. Профиль же собран под эту самую камеру.
+     */
     private void beginCircle(SurfaceHolder holder) throws Exception {
-        camera = Camera.open(findFrontCamera());
+        int номер = findFrontCamera();
+        camera = Camera.open(номер);
 
-        Camera.Parameters настройки = camera.getParameters();
-        Camera.Size размер = bestPreviewSize(настройки);
-        if (размер != null) {
-            настройки.setPreviewSize(размер.width, размер.height);
-        }
-        camera.setParameters(настройки);
-        camera.setDisplayOrientation(90);
+        Camera.CameraInfo сведения = new Camera.CameraInfo();
+        Camera.getCameraInfo(номер, сведения);
+        boolean передняя = сведения.facing == Camera.CameraInfo.CAMERA_FACING_FRONT;
+        int поворот = передняя
+                ? (360 - сведения.orientation % 360) % 360
+                : сведения.orientation % 360;
+
+        camera.setDisplayOrientation(поворот);
+        fitPreview(поворот);
         camera.setPreviewDisplay(holder);
         camera.startPreview();
         camera.unlock();
+
+        CamcorderProfile профиль = circleProfile(номер);
 
         recorder = new MediaRecorder();
         recorder.setCamera(camera);
         recorder.setAudioSource(MediaRecorder.AudioSource.CAMCORDER);
         recorder.setVideoSource(MediaRecorder.VideoSource.CAMERA);
-        recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
-        recorder.setVideoEncoder(MediaRecorder.VideoEncoder.H264);
-        recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
-        if (размер != null) {
-            recorder.setVideoSize(размер.width, размер.height);
-        }
-        recorder.setVideoFrameRate(25);
-        recorder.setVideoEncodingBitRate(1200000);
-        // Передняя камера смотрит зеркально, и без поворота кружочек
-        // приезжает лежащим на боку
-        recorder.setOrientationHint(270);
+        recorder.setProfile(профиль);
+        // Кружочек — не кино: полтора мегабита на секунду тут лишние
+        recorder.setVideoEncodingBitRate(Math.min(профиль.videoBitRate, 1500000));
+        recorder.setOrientationHint(поворот);
         recorder.setPreviewDisplay(holder.getSurface());
         recorder.setOutputFile(recordFile.getAbsolutePath());
         recorder.prepare();
         recorder.start();
     }
 
-    /**
-     * Размер предпросмотра из тех, что камера и правда умеет.
-     *
-     * Просить 640 на 480 наугад нельзя: камера, которая такого не умеет,
-     * отвечает отказом на setParameters, и запись не начинается вовсе.
-     */
-    private Camera.Size bestPreviewSize(Camera.Parameters настройки) {
-        List<Camera.Size> какие = настройки.getSupportedPreviewSizes();
-        if (какие == null || какие.isEmpty()) {
-            return null;
+    /** Даёт предпросмотру настоящие пропорции камеры, а не квадрат. */
+    private void fitPreview(int поворот) {
+        if (cameraSurface == null || camera == null || cameraSide <= 0) {
+            return;
         }
-        Camera.Size лучший = null;
-        long ближе = Long.MAX_VALUE;
-        for (Camera.Size один : какие) {
-            // Кружочку хватает небольшой стороны, лишние пиксели он всё
-            // равно потеряет при обрезке в квадрат
-            long разница = Math.abs((long) один.width * один.height - 640L * 480L);
-            if (разница < ближе) {
-                ближе = разница;
-                лучший = один;
+        Camera.Size кадр = camera.getParameters().getPreviewSize();
+        if (кадр == null || кадр.width <= 0 || кадр.height <= 0) {
+            return;
+        }
+        // При повороте на 90 и 270 ширина с высотой на экране меняются местами
+        boolean боком = поворот == 90 || поворот == 270;
+        int ширина = боком ? кадр.height : кадр.width;
+        int высота = боком ? кадр.width : кадр.height;
+
+        float доля = Math.max((float) cameraSide / ширина,
+                              (float) cameraSide / высота);
+        FrameLayout.LayoutParams как = new FrameLayout.LayoutParams(
+                Math.round(ширина * доля), Math.round(высота * доля));
+        как.gravity = Gravity.CENTER;
+        cameraSurface.setLayoutParams(как);
+    }
+
+    /**
+     * Профиль съёмки для кружочка.
+     *
+     * QUALITY_LOW есть на любом телефоне по определению — им и подстрахуемся,
+     * если 480p эта камера не умеет.
+     */
+    private CamcorderProfile circleProfile(int номер) {
+        for (int какой : new int[]{CamcorderProfile.QUALITY_480P,
+                                   CamcorderProfile.QUALITY_LOW}) {
+            try {
+                if (CamcorderProfile.hasProfile(номер, какой)) {
+                    return CamcorderProfile.get(номер, какой);
+                }
+            } catch (Exception ignored) {
+                // Эта камера такого профиля не знает — пробуем следующий
             }
         }
-        return лучший;
+        return CamcorderProfile.get(номер, CamcorderProfile.QUALITY_LOW);
     }
 
     private int findFrontCamera() {
@@ -2066,6 +2119,7 @@ public class MainActivity extends Activity implements VelixService.Screen {
             root.removeView(cameraOverlay);
             cameraOverlay = null;
         }
+        cameraSurface = null;
         if (composerRow != null) {
             composerRow.setVisibility(View.VISIBLE);
         }
@@ -2187,16 +2241,24 @@ public class MainActivity extends Activity implements VelixService.Screen {
             данные = localMedia.get(item.optString("local", ""));
         }
         if (данные == null) {
-            кнопка.setText("…");
-            String id = item.optString("media", "");
-            if (!id.isEmpty()) {
-                send(Net.frame("fetch", "id", id));
+            final String id = item.optString("media", "");
+            if (id.isEmpty()) {
+                return;
             }
+            кнопка.setText("…");
+            pendingPlay.put(id, new Runnable() {
+                @Override
+                public void run() {
+                    кнопка.setText("▶");
+                    playVoice(item, кнопка, полоска, часы, секунд);
+                }
+            });
+            send(Net.frame("fetch", "id", id));
             return;
         }
 
         try {
-            java.io.File где = new java.io.File(getCacheDir(), "играем.m4a");
+            java.io.File где = new java.io.File(getCacheDir(), "voice-play.m4a");
             java.io.FileOutputStream поток = new java.io.FileOutputStream(где);
             поток.write(данные);
             поток.close();
@@ -2256,58 +2318,202 @@ public class MainActivity extends Activity implements VelixService.Screen {
         }
     }
 
+    /**
+     * Кружочек в ленте.
+     *
+     * Снимает камера прямоугольником — квадратов она не умеет, — поэтому
+     * круглую рамку и плёнку внутри разводим: рамка квадратная и обрезает
+     * всё круглым, а плёнка внутри крупнее её ровно настолько, чтобы
+     * заполнить круг без растягивания. Лишнее уходит за край.
+     */
     private View circleCard(final JSONObject item) {
         final int сторона = Ui.dp(this, 200);
         LinearLayout карточка = Ui.column(this);
         карточка.setGravity(Gravity.CENTER_HORIZONTAL);
 
-        final VideoView кино = new VideoView(this);
-        кино.setLayoutParams(new LinearLayout.LayoutParams(сторона, сторона));
-        кино.setBackgroundColor(Color.BLACK);
-        roundOff(кино, сторона);
-        карточка.addView(кино);
+        FrameLayout рамка = new FrameLayout(this);
+        рамка.setLayoutParams(new LinearLayout.LayoutParams(сторона, сторона));
+        рамка.setBackgroundColor(Color.BLACK);
+        roundOff(рамка, сторона);
+
+        final android.view.TextureView плёнка = new android.view.TextureView(this);
+        FrameLayout.LayoutParams как = new FrameLayout.LayoutParams(сторона, сторона);
+        как.gravity = Gravity.CENTER;
+        плёнка.setLayoutParams(как);
+        рамка.addView(плёнка);
+        карточка.addView(рамка);
 
         final TextView часы = Ui.text(this, clock(0, item.optLong("seconds")),
                 12, Ui.MUTED);
         часы.setGravity(Gravity.CENTER);
         карточка.addView(часы, Ui.wide());
 
-        кино.setOnClickListener(new View.OnClickListener() {
+        рамка.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View view) {
-                playCircle(item, кино);
+                playCircle(item, плёнка, часы, сторона);
             }
         });
         return карточка;
     }
 
-    private void playCircle(JSONObject item, VideoView кино) {
-        if (кино.isPlaying()) {
-            кино.pause();
+    private void playCircle(final JSONObject item,
+                            final android.view.TextureView плёнка,
+                            final TextView часы, final int сторона) {
+        if (circlePlayer != null && circlePlayer.isPlaying()) {
+            circlePlayer.pause();
+            return;
+        }
+        if (circlePlayer != null) {
+            circlePlayer.start();
             return;
         }
 
-        byte[] данные = media.get(item.optString("media", ""));
+        final String id = item.optString("media", "");
+        byte[] данные = media.get(id);
         if (данные == null) {
             данные = localMedia.get(item.optString("local", ""));
         }
         if (данные == null) {
-            String id = item.optString("media", "");
-            if (!id.isEmpty()) {
-                send(Net.frame("fetch", "id", id));
+            if (id.isEmpty()) {
+                return;
             }
+            // Байты ещё не приехали: попросим и вернёмся сюда же, когда
+            // приедут, — иначе первое нажатие уходило впустую
+            pendingPlay.put(id, new Runnable() {
+                @Override
+                public void run() {
+                    playCircle(item, плёнка, часы, сторона);
+                }
+            });
+            send(Net.frame("fetch", "id", id));
             return;
         }
 
+        if (!плёнка.isAvailable()) {
+            // Поверхность ещё не готова — подождём её же сообщения
+            final byte[] эти = данные;
+            плёнка.setSurfaceTextureListener(
+                    new android.view.TextureView.SurfaceTextureListener() {
+                @Override
+                public void onSurfaceTextureAvailable(
+                        android.graphics.SurfaceTexture texture, int w, int h) {
+                    startCirclePlayer(эти, плёнка, часы, сторона, item);
+                }
+
+                @Override
+                public void onSurfaceTextureSizeChanged(
+                        android.graphics.SurfaceTexture texture, int w, int h) {
+                }
+
+                @Override
+                public boolean onSurfaceTextureDestroyed(
+                        android.graphics.SurfaceTexture texture) {
+                    stopCircle();
+                    return true;
+                }
+
+                @Override
+                public void onSurfaceTextureUpdated(
+                        android.graphics.SurfaceTexture texture) {
+                }
+            });
+            return;
+        }
+
+        startCirclePlayer(данные, плёнка, часы, сторона, item);
+    }
+
+    private void startCirclePlayer(byte[] данные,
+                                   final android.view.TextureView плёнка,
+                                   final TextView часы, final int сторона,
+                                   final JSONObject item) {
         try {
-            java.io.File где = new java.io.File(getCacheDir(), "кружок.mp4");
+            // Имя файла держим латиницей: кириллица в дорожке к видео
+            // однажды уже обернулась «No content provider»
+            java.io.File где = new java.io.File(getCacheDir(), "circle-play.mp4");
             java.io.FileOutputStream поток = new java.io.FileOutputStream(где);
             поток.write(данные);
             поток.close();
-            кино.setVideoPath(где.getAbsolutePath());
-            кино.start();
+
+            stopCircle();
+            circlePlayer = new MediaPlayer();
+            circlePlayer.setSurface(new android.view.Surface(
+                    плёнка.getSurfaceTexture()));
+            circlePlayer.setDataSource(где.getAbsolutePath());
+            circlePlayer.setOnPreparedListener(new MediaPlayer.OnPreparedListener() {
+                @Override
+                public void onPrepared(MediaPlayer какой) {
+                    fitCircle(плёнка, сторона, какой.getVideoWidth(),
+                            какой.getVideoHeight());
+                    какой.start();
+                    tickCircle(часы, item.optLong("seconds"));
+                }
+            });
+            circlePlayer.setOnCompletionListener(new MediaPlayer.OnCompletionListener() {
+                @Override
+                public void onCompletion(MediaPlayer какой) {
+                    часы.setText(clock(0, item.optLong("seconds")));
+                    stopCircle();
+                }
+            });
+            circlePlayer.prepareAsync();
         } catch (Exception беда) {
+            android.util.Log.e("Velix", "кружочек не открылся", беда);
             toast(Lang.t("Не удалось открыть кружочек"));
+            stopCircle();
+        }
+    }
+
+    /**
+     * Растягивает кадр так, чтобы он заполнил круг, не сплющившись.
+     *
+     * Кадр приходит прямоугольным; вписать его в квадрат — значит сплющить,
+     * а вписать по короткой стороне и обрезать лишнее — значит показать то,
+     * что снимали.
+     */
+    private void fitCircle(android.view.TextureView плёнка, int сторона,
+                           int ширина, int высота) {
+        if (ширина <= 0 || высота <= 0) {
+            return;
+        }
+        float доля = Math.max((float) сторона / ширина, (float) сторона / высота);
+        android.graphics.Matrix как = new android.graphics.Matrix();
+        как.setScale(ширина * доля / сторона, высота * доля / сторона,
+                сторона / 2f, сторона / 2f);
+        плёнка.setTransform(как);
+    }
+
+    private void tickCircle(final TextView часы, final long запасом) {
+        circleTick = new Runnable() {
+            @Override
+            public void run() {
+                if (circlePlayer == null) {
+                    return;
+                }
+                long всего = circlePlayer.getDuration() > 0
+                        ? circlePlayer.getDuration() / 1000 : запасом;
+                часы.setText(clock(circlePlayer.getCurrentPosition() / 1000, всего));
+                if (circlePlayer.isPlaying()) {
+                    main.postDelayed(circleTick, 200);
+                }
+            }
+        };
+        main.post(circleTick);
+    }
+
+    private void stopCircle() {
+        if (circleTick != null) {
+            main.removeCallbacks(circleTick);
+            circleTick = null;
+        }
+        if (circlePlayer != null) {
+            try {
+                circlePlayer.stop();
+            } catch (Exception ignored) {
+            }
+            circlePlayer.release();
+            circlePlayer = null;
         }
     }
 
@@ -4110,6 +4316,8 @@ public class MainActivity extends Activity implements VelixService.Screen {
         items.clear();
         ticks.clear();
         bubbles.clear();
+        stopVoice();
+        stopCircle();
         reactionRows.clear();
         currentDate = null;
         emptyHint = null;
@@ -4206,6 +4414,10 @@ public class MainActivity extends Activity implements VelixService.Screen {
         }
 
         media.put(id, data);
+        Runnable ждало = pendingPlay.remove(id);
+        if (ждало != null) {
+            ждало.run();
+        }
         if (waitingVideos.remove(id) != null) {
             keepVideo(id, data);
         }

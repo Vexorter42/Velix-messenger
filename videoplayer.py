@@ -31,6 +31,21 @@ def circle_mask(side):
     return маска.resize((side, side), Image.LANCZOS)
 
 
+def cover(size, box):
+    """Во что растянуть кадр, чтобы он заполнил коробку целиком.
+
+    Кружочку нужно именно это: камера снимает прямоугольником, и вписать
+    такой кадр в круг целиком — значит оставить по бокам пустоту. Лучше
+    заполнить круг и обрезать лишнее, как это делает всякая круглая рамка.
+    """
+    ширина, высота = size
+    коробка_ш, коробка_в = box
+    if ширина <= 0 or высота <= 0:
+        return коробка_ш, коробка_в
+    доля = max(коробка_ш / ширина, коробка_в / высота)
+    return max(int(ширина * доля), 16), max(int(высота * доля), 16)
+
+
 def fit(size, box):
     """Во что вписать кадр, не искажая пропорций."""
     ширина, высота = size
@@ -299,7 +314,7 @@ class VideoBox:
 
     def _round(self, кадр):
         """Вписывает кадр в круг на заданном фоне."""
-        сторона = min(кадр.size)
+        сторона = min(min(кадр.size), min(self.box))
         if self.mask is None or self.mask.size != (сторона, сторона):
             self.mask = circle_mask(сторона)
 
@@ -313,7 +328,8 @@ class VideoBox:
 
     def _draw(self, картинка):
         if self.size is None:
-            self.size = fit(картинка.get_size(), self.box)
+            размер = cover if self.round_on is not None else fit
+            self.size = размер(картинка.get_size(), self.box)
             if self.size != картинка.get_size():
                 # Уменьшает ffmpeg, в си-коде: дальше кадры приходят готовыми
                 self.player.set_size(*self.size)
