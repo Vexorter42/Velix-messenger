@@ -8,6 +8,7 @@ import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.ComponentName;
 import android.content.ServiceConnection;
 import android.content.SharedPreferences;
@@ -3711,15 +3712,6 @@ public class MainActivity extends Activity implements VelixService.Screen {
                 showProfile();
             }
         }), Ui.wide());
-        column.addView(settingsRow(Lang.t("Фото профиля"),
-                Lang.t("Кружок, который видят остальные"), new Runnable() {
-            @Override
-            public void run() {
-                photoTarget = MY_AVATAR;
-                pickPhoto();
-            }
-        }), Ui.wide());
-
         column.addView(section(Lang.t("ПРИЛОЖЕНИЕ")), Ui.wide());
         column.addView(settingsRow(Lang.t("Язык"),
                 "ru".equals(Lang.current()) ? "Русский" : "English",
@@ -3842,11 +3834,23 @@ public class MainActivity extends Activity implements VelixService.Screen {
      * FileProvider у нас нет, а системе поток отдать можно и так. Спросить
      * человека она всё равно спросит — это её дело, не наше.
      */
+    /**
+     * Ставит скачанное обновление.
+     *
+     * Тут была тихая яма. Система не ставит приложение молча: собрав сессию,
+     * она отвечает «нужно спросить человека» и присылает вместе с ответом
+     * готовое окно с вопросом. Ответ приходит рассылкой — а слушать её было
+     * некому, так что окно никто не показывал, и обновление вечно ждало
+     * согласия, которого не у кого было спросить. Со стороны это выглядит
+     * так, будто кнопка не работает.
+     */
     private void installApk(byte[] данные) {
         if (данные == null || данные.length == 0) {
             toast(Lang.t("Обновление не установилось"));
             return;
         }
+
+        слушатьУстановку();
 
         try {
             android.content.pm.PackageInstaller ставщик =
@@ -3855,6 +3859,7 @@ public class MainActivity extends Activity implements VelixService.Screen {
                     new android.content.pm.PackageInstaller.SessionParams(
                             android.content.pm.PackageInstaller.SessionParams
                                     .MODE_FULL_INSTALL);
+            условия.setAppPackageName(getPackageName());
             int номер = ставщик.createSession(условия);
             android.content.pm.PackageInstaller.Session сессия =
                     ставщик.openSession(номер);
@@ -3864,14 +3869,68 @@ public class MainActivity extends Activity implements VelixService.Screen {
             поток.close();
 
             android.app.PendingIntent ответ = android.app.PendingIntent.getBroadcast(
-                    this, номер, new Intent("org.vexorter.velix.INSTALLED"),
+                    this, номер, new Intent(УСТАНОВЛЕНО).setPackage(getPackageName()),
                     android.app.PendingIntent.FLAG_MUTABLE
                             | android.app.PendingIntent.FLAG_UPDATE_CURRENT);
             сессия.commit(ответ.getIntentSender());
             сессия.close();
-            toast(Lang.t("Установить обновление"));
         } catch (Exception беда) {
+            android.util.Log.e("Velix", "обновление не поставилось", беда);
             toast(Lang.t("Обновление не установилось"));
+        }
+    }
+
+    private static final String УСТАНОВЛЕНО = "org.vexorter.velix.INSTALLED";
+    private android.content.BroadcastReceiver установщикОтветил;
+
+    /** Слушает, что скажет система об установке, и показывает её вопрос. */
+    private void слушатьУстановку() {
+        if (установщикОтветил != null) {
+            return;
+        }
+        установщикОтветил = new android.content.BroadcastReceiver() {
+            @Override
+            public void onReceive(Context где, Intent что) {
+                int как = что.getIntExtra(
+                        android.content.pm.PackageInstaller.EXTRA_STATUS,
+                        android.content.pm.PackageInstaller.STATUS_FAILURE);
+
+                if (как == android.content.pm.PackageInstaller
+                        .STATUS_PENDING_USER_ACTION) {
+                    // Вот оно, то самое окно с вопросом «поставить?»
+                    Intent спросить = что.getParcelableExtra(Intent.EXTRA_INTENT);
+                    if (спросить != null) {
+                        спросить.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                        try {
+                            startActivity(спросить);
+                        } catch (Exception беда) {
+                            toast(Lang.t("Обновление не установилось"));
+                        }
+                    }
+                    return;
+                }
+
+                if (как == android.content.pm.PackageInstaller.STATUS_SUCCESS) {
+                    toast(Lang.t("Обновление установлено"));
+                    return;
+                }
+
+                String почему = что.getStringExtra(
+                        android.content.pm.PackageInstaller.EXTRA_STATUS_MESSAGE);
+                android.util.Log.e("Velix", "установка не прошла: " + как
+                        + " " + почему);
+                toast(Lang.t("Обновление не установилось")
+                        + (почему == null ? "" : " " + почему));
+            }
+        };
+
+        IntentFilter про = new IntentFilter(УСТАНОВЛЕНО);
+        if (Build.VERSION.SDK_INT >= 33) {
+            // С Android 13 рассылку без этого не примут: своя она или чужая,
+            // система хочет знать наверняка
+            registerReceiver(установщикОтветил, про, RECEIVER_NOT_EXPORTED);
+        } else {
+            registerReceiver(установщикОтветил, про);
         }
     }
 
