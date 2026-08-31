@@ -150,6 +150,10 @@ class Recording:
         self.started = time.monotonic()
         self.error = None
         self.process = None
+        # Жалобы ffmpeg отводим в файл, а не в никуда: когда запись не
+        # получается, человеку стоит сказать почему, а не «не вышло».
+        # В трубу их отводить нельзя — заполнится и ffmpeg встанет
+        self.log = self.path.with_suffix(".log")
 
         if FFMPEG is None:
             self.error = "нет ffmpeg"
@@ -162,10 +166,11 @@ class Recording:
             return
 
         try:
+            self._жалобы = open(self.log, "wb")
             self.process = subprocess.Popen(
                 self._команда(microphone, camera),
                 stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL, creationflags=БЕЗ_ОКНА)
+                stderr=self._жалобы, creationflags=БЕЗ_ОКНА)
         except OSError as беда:         # pragma: no cover — занятое устройство
             self.error = str(беда)
 
@@ -230,7 +235,7 @@ class Recording:
             self._закрыть_вход()
 
         if not self.path.exists() or self.path.stat().st_size < 512:
-            self.error = self.error or "запись не получилась"
+            self.error = self.error or self.сказанное() or "запись не получилась"
             self.forget()
             return None
 
@@ -248,13 +253,23 @@ class Recording:
         self._закрыть_вход()
         self.forget()
 
+    def сказанное(self):
+        """Последняя жалоба ffmpeg — коротко, чтобы влезла в подпись."""
+        try:
+            строки = self.log.read_text(encoding="utf-8",
+                                        errors="replace").strip().splitlines()
+        except OSError:
+            return ""
+        return строки[-1][:160] if строки else ""
+
     def forget(self):
         """Убирает временный файл, если он остался."""
-        try:
-            if self.path.exists():
-                self.path.unlink()
-        except OSError:                 # pragma: no cover — файл ещё занят
-            pass
+        for один in (self.path, self.log):
+            try:
+                if один.exists():
+                    один.unlink()
+            except OSError:             # pragma: no cover — файл ещё занят
+                pass
 
     def _закрыть_вход(self):
         if self.process is not None and self.process.stdin is not None:
@@ -262,3 +277,10 @@ class Recording:
                 self.process.stdin.close()
             except OSError:             # pragma: no cover
                 pass
+        жалобы = getattr(self, "_жалобы", None)
+        if жалобы is not None:
+            try:
+                жалобы.close()
+            except OSError:             # pragma: no cover
+                pass
+            self._жалобы = None

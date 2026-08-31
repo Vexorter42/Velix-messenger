@@ -1839,40 +1839,49 @@ public class MainActivity extends Activity implements VelixService.Screen {
                 kind + "-" + System.currentTimeMillis()
                 + ("voice".equals(kind) ? ".m4a" : ".mp4"));
 
+        if ("circle".equals(kind)) {
+            // Камере нужна поверхность, а она появляется не сразу и говорит
+            // об этом сюда же, в главный поток. Поэтому не ждём её, а
+            // начинаем запись из её же сообщения о готовности
+            showCameraThenRecord();
+            return;
+        }
+
         try {
-            if ("circle".equals(kind)) {
-                startCircle();
-            } else {
-                recorder = new MediaRecorder();
-                recorder.setAudioSource(MediaRecorder.AudioSource.MIC);
-                recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
-                recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
-                recorder.setAudioSamplingRate(48000);
-                recorder.setAudioEncodingBitRate(48000);
-                recorder.setOutputFile(recordFile.getAbsolutePath());
-                recorder.prepare();
-                recorder.start();
-            }
+            recorder = new MediaRecorder();
+            recorder.setAudioSource(MediaRecorder.AudioSource.MIC);
+            recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
+            recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
+            recorder.setAudioSamplingRate(48000);
+            recorder.setAudioEncodingBitRate(48000);
+            recorder.setOutputFile(recordFile.getAbsolutePath());
+            recorder.prepare();
+            recorder.start();
         } catch (Exception беда) {
             stopEverything();
             toast(Lang.t("Записать не вышло."));
             return;
         }
 
+        beginRecordingBar();
+    }
+
+    /** Полоска записи и отсчёт: зовём, когда запись и правда пошла. */
+    private void beginRecordingBar() {
         recordStarted = System.currentTimeMillis();
         composerRow.setVisibility(View.GONE);
         recordRow.setVisibility(View.VISIBLE);
         tickRecording();
     }
 
-    /** Камера с предпросмотром: кружочек снимают, глядя на себя. */
-    private void startCircle() throws Exception {
-        camera = Camera.open(findFrontCamera());
-        Camera.Parameters настройки = camera.getParameters();
-        настройки.setPreviewSize(640, 480);
-        camera.setParameters(настройки);
-        camera.setDisplayOrientation(90);
-
+    /**
+     * Показывает предпросмотр и начинает запись, когда поверхность готова.
+     *
+     * Ждать поверхность нельзя: о её появлении Android сообщает в тот же
+     * главный поток, из которого мы бы ждали, — и дождаться было бы нечего.
+     * Поэтому вся работа с камерой живёт внутри surfaceCreated.
+     */
+    private void showCameraThenRecord() {
         final SurfaceView вид = new SurfaceView(this);
         int сторона = Math.min(getResources().getDisplayMetrics().widthPixels,
                 Ui.dp(this, 280));
@@ -1889,12 +1898,21 @@ public class MainActivity extends Activity implements VelixService.Screen {
                 ViewGroup.LayoutParams.MATCH_PARENT));
         cameraOverlay = поверх;
 
-        final java.util.concurrent.CountDownLatch готово =
-                new java.util.concurrent.CountDownLatch(1);
         вид.getHolder().addCallback(new SurfaceHolder.Callback() {
             @Override
             public void surfaceCreated(SurfaceHolder holder) {
-                готово.countDown();
+                if (recorder != null) {
+                    return;         // уже пишем: поверхность вернулась дважды
+                }
+                try {
+                    beginCircle(holder);
+                } catch (Exception беда) {
+                    String чего = беда.getClass().getSimpleName();
+                    stopEverything();
+                    toast(Lang.t("Записать не вышло.") + " " + чего);
+                    return;
+                }
+                beginRecordingBar();
             }
 
             @Override
@@ -1906,11 +1924,20 @@ public class MainActivity extends Activity implements VelixService.Screen {
             public void surfaceDestroyed(SurfaceHolder holder) {
             }
         });
-        // Поверхность появляется не мгновенно; ждём её, иначе запись
-        // начнётся в никуда
-        готово.await(2, java.util.concurrent.TimeUnit.SECONDS);
+    }
 
-        camera.setPreviewDisplay(вид.getHolder());
+    /** Заводит камеру и запись на уже готовой поверхности. */
+    private void beginCircle(SurfaceHolder holder) throws Exception {
+        camera = Camera.open(findFrontCamera());
+
+        Camera.Parameters настройки = camera.getParameters();
+        Camera.Size размер = bestPreviewSize(настройки);
+        if (размер != null) {
+            настройки.setPreviewSize(размер.width, размер.height);
+        }
+        camera.setParameters(настройки);
+        camera.setDisplayOrientation(90);
+        camera.setPreviewDisplay(holder);
         camera.startPreview();
         camera.unlock();
 
@@ -1921,13 +1948,43 @@ public class MainActivity extends Activity implements VelixService.Screen {
         recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
         recorder.setVideoEncoder(MediaRecorder.VideoEncoder.H264);
         recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
-        recorder.setVideoSize(640, 480);
+        if (размер != null) {
+            recorder.setVideoSize(размер.width, размер.height);
+        }
         recorder.setVideoFrameRate(25);
         recorder.setVideoEncodingBitRate(1200000);
+        // Передняя камера смотрит зеркально, и без поворота кружочек
+        // приезжает лежащим на боку
         recorder.setOrientationHint(270);
+        recorder.setPreviewDisplay(holder.getSurface());
         recorder.setOutputFile(recordFile.getAbsolutePath());
         recorder.prepare();
         recorder.start();
+    }
+
+    /**
+     * Размер предпросмотра из тех, что камера и правда умеет.
+     *
+     * Просить 640 на 480 наугад нельзя: камера, которая такого не умеет,
+     * отвечает отказом на setParameters, и запись не начинается вовсе.
+     */
+    private Camera.Size bestPreviewSize(Camera.Parameters настройки) {
+        List<Camera.Size> какие = настройки.getSupportedPreviewSizes();
+        if (какие == null || какие.isEmpty()) {
+            return null;
+        }
+        Camera.Size лучший = null;
+        long ближе = Long.MAX_VALUE;
+        for (Camera.Size один : какие) {
+            // Кружочку хватает небольшой стороны, лишние пиксели он всё
+            // равно потеряет при обрезке в квадрат
+            long разница = Math.abs((long) один.width * один.height - 640L * 480L);
+            if (разница < ближе) {
+                ближе = разница;
+                лучший = один;
+            }
+        }
+        return лучший;
     }
 
     private int findFrontCamera() {
@@ -1977,6 +2034,7 @@ public class MainActivity extends Activity implements VelixService.Screen {
     }
 
     private void stopEverything() {
+        recordStarted = 0;
         if (recordTick != null) {
             main.removeCallbacks(recordTick);
             recordTick = null;
@@ -1995,7 +2053,9 @@ public class MainActivity extends Activity implements VelixService.Screen {
         }
         if (camera != null) {
             try {
-                camera.reconnect();
+                // После записи камера остаётся за MediaRecorder: не забрав её
+                // обратно, второй кружочек уже не снять
+                camera.lock();
                 camera.stopPreview();
             } catch (Exception ignored) {
             }
@@ -2024,6 +2084,11 @@ public class MainActivity extends Activity implements VelixService.Screen {
     }
 
     private void finishRecording() {
+        if (recordStarted == 0) {
+            // Зажали и сразу отпустили: камера ещё не открылась
+            cancelRecording();
+            return;
+        }
         java.io.File файл = recordFile;
         String kind = recordKind;
         long секунд = Math.max(1,
