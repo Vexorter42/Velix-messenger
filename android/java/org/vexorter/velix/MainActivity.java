@@ -1996,6 +1996,7 @@ public class MainActivity extends Activity implements VelixService.Screen {
         recorder.setAudioSource(MediaRecorder.AudioSource.CAMCORDER);
         recorder.setVideoSource(MediaRecorder.VideoSource.CAMERA);
         recorder.setProfile(профиль);
+        честныйРазмер(профиль);
         // Кружочек — не кино: полтора мегабита на секунду тут лишние
         recorder.setVideoEncodingBitRate(Math.min(профиль.videoBitRate, 1500000));
         recorder.setOrientationHint(подсказка);
@@ -2030,11 +2031,18 @@ public class MainActivity extends Activity implements VelixService.Screen {
     /**
      * Профиль съёмки для кружочка.
      *
-     * QUALITY_LOW есть на любом телефоне по определению — им и подстрахуемся,
-     * если 480p эта камера не умеет.
+     * 720p идёт первым не ради чёткости, а ради пропорций. Профиль 480p на
+     * этом телефоне — это 720 на 480: формат родом из телевидения, где
+     * пиксель не квадратный. Само по себе это не беда, но MediaRecorder не
+     * пишет в файл пометку об этом, и всякий, кто такой файл откроет, честно
+     * считает пиксели квадратными — и растягивает лицо на восьмую часть
+     * вширь. У 1280 на 720 пиксель квадратный, и растягивать нечего.
+     *
+     * QUALITY_LOW есть на любом телефоне по определению — им и подстрахуемся.
      */
     private CamcorderProfile circleProfile(int номер) {
-        for (int какой : new int[]{CamcorderProfile.QUALITY_480P,
+        for (int какой : new int[]{CamcorderProfile.QUALITY_720P,
+                                   CamcorderProfile.QUALITY_480P,
                                    CamcorderProfile.QUALITY_LOW}) {
             try {
                 if (CamcorderProfile.hasProfile(номер, какой)) {
@@ -2045,6 +2053,29 @@ public class MainActivity extends Activity implements VelixService.Screen {
             }
         }
         return CamcorderProfile.get(номер, CamcorderProfile.QUALITY_LOW);
+    }
+
+    /**
+     * Размер кадра с квадратным пикселем.
+     *
+     * Если выбранный профиль всё-таки телевизионный, сужаем кадр до 640 на
+     * 480 — те же четыре к трём, но уже честно, без растягивания.
+     */
+    private void честныйРазмер(CamcorderProfile профиль) {
+        int ширина = профиль.videoFrameWidth;
+        int высота = профиль.videoFrameHeight;
+        if (ширина == 720 && высота == 480) {
+            ширина = 640;
+        } else if (ширина == 720 && высота == 576) {
+            ширина = 768;       // PAL: та же беда, только в другую сторону
+        } else {
+            return;             // тут пиксель и так квадратный
+        }
+        try {
+            recorder.setVideoSize(ширина, высота);
+        } catch (Exception ignored) {
+            // Камера отказалась — пусть снимает как умеет, кривовато, но снимет
+        }
     }
 
     private int findFrontCamera() {
