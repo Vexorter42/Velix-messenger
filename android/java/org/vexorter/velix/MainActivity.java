@@ -1972,9 +1972,15 @@ public class MainActivity extends Activity implements VelixService.Screen {
         Camera.CameraInfo сведения = new Camera.CameraInfo();
         Camera.getCameraInfo(номер, сведения);
         boolean передняя = сведения.facing == Camera.CameraInfo.CAMERA_FACING_FRONT;
+        // Два разных поворота, и их легко перепутать. Тот, что для экрана,
+        // у передней камеры ещё и отменяет зеркальность — иначе предпросмотр
+        // показывает не то, что видит человек. А записи зеркальность не
+        // касается: ей нужен ровно тот угол, о котором говорит сама камера.
+        // Подставив туда экранный, я и получил кружочек вверх ногами
         int поворот = передняя
                 ? (360 - сведения.orientation % 360) % 360
                 : сведения.orientation % 360;
+        int подсказка = сведения.orientation % 360;
 
         camera.setDisplayOrientation(поворот);
         fitPreview(поворот);
@@ -1991,7 +1997,7 @@ public class MainActivity extends Activity implements VelixService.Screen {
         recorder.setProfile(профиль);
         // Кружочек — не кино: полтора мегабита на секунду тут лишние
         recorder.setVideoEncodingBitRate(Math.min(профиль.videoBitRate, 1500000));
-        recorder.setOrientationHint(поворот);
+        recorder.setOrientationHint(подсказка);
         recorder.setPreviewDisplay(holder.getSurface());
         recorder.setOutputFile(recordFile.getAbsolutePath());
         recorder.prepare();
