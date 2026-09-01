@@ -119,7 +119,7 @@ if SANDBOX.exists():
     shutil.rmtree(SANDBOX)
 SANDBOX.mkdir()
 for name in ("server.py", "storage.py", "protocol.py", "media.py", "accounts.py",
-             "push.py", "i18n.py", "linkpreview.py"):
+             "push.py", "i18n.py", "linkpreview.py", "mediatools.py"):
     shutil.copy(REPO / name, SANDBOX / name)
 
 ENV = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1",

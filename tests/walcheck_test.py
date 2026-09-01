@@ -93,7 +93,7 @@ else:
     ДОМ = песочница / "служба"
     ДОМ.mkdir()
     for name in ("server.py", "storage.py", "protocol.py", "media.py",
-                 "accounts.py", "push.py", "i18n.py", "linkpreview.py"):
+                 "accounts.py", "push.py", "i18n.py", "linkpreview.py", "mediatools.py"):
         shutil.copy(REPO / name, ДОМ / name)
 
     среда = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1",

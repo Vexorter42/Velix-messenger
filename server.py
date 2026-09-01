@@ -19,6 +19,7 @@ import accounts
 import i18n
 import linkpreview
 import media
+import mediatools
 import protocol
 import push
 import storage
@@ -1189,9 +1190,24 @@ async def handle_media(websocket, user, message):
     original_size = len(payload)
     name, packed = await asyncio.to_thread(media.compress, kind, name, bytes(payload))
 
-    message_id, media_id, created_at = await storage.save_media(
+    # Голосу считаем волну, кружочек приводим к общему виду и снимаем обложку.
+    # Делается это здесь, один раз на всех: телефоны у каждого свои, и
+    # разбираться с их причудами в каждом клиенте — работа без конца
+    волна, обложка = None, None
+    хвост = Path(name).suffix.lower() or ".bin"
+    if kind == "voice":
+        волна = await asyncio.to_thread(mediatools.waveform, packed, хвост)
+    elif kind == "circle":
+        ровный = await asyncio.to_thread(mediatools.tidy_circle, packed, хвост)
+        if ровный:
+            packed = ровный
+            name = Path(name).with_suffix(".mp4").name
+            хвост = ".mp4"
+        обложка = await asyncio.to_thread(mediatools.circle_poster, packed, хвост)
+
+    message_id, media_id, created_at, poster_id = await storage.save_media(
         user["id"], user["name"], kind, name, packed, conversation, reply_to,
-        seconds)
+        seconds, волна, обложка)
     print(f"[Лог]: {user['name']} прислал {kind} '{name}' "
           f"({protocol.human_size(len(packed))}, {media.describe(original_size, len(packed))})")
 
@@ -1203,6 +1219,10 @@ async def handle_media(websocket, user, message):
              "user": user["id"]}
     if seconds:
         frame["seconds"] = seconds
+    if волна:
+        frame["waveform"] = волна
+    if poster_id:
+        frame["poster"] = poster_id
     if reply_to:
         frame["reply_to"] = reply_to
     if user.get("avatar"):

@@ -414,7 +414,12 @@ function handleBinary(buffer) {
   if (cardSlots.has(id)) {
     // Картинка карточки ссылки: в ленте она сообщением не висит
     cardUrls.set(id, url);
-    paintCardPicture(cardSlots.get(id), url);
+    const куда = cardSlots.get(id);
+    if (куда.tagName === "VIDEO") {
+      куда.poster = url;          // это обложка кружочка, а не карточки
+    } else {
+      paintCardPicture(куда, url);
+    }
     cardSlots.delete(id);
     return;
   }
@@ -1146,6 +1151,17 @@ function whatItWas(last) {
   return t("вложение");
 }
 
+function readWave(строка) {
+  /* Волна приходит строкой: сорок восемь столбиков, каждый в один байт. */
+  if (!строка) return new Array(48).fill(70);
+  try {
+    const байты = atob(строка);
+    return Array.from(байты, (буква) => буква.charCodeAt(0));
+  } catch (ignored) {
+    return new Array(48).fill(70);
+  }
+}
+
 function clockText(сколько, всего) {
   const часы = (секунд) => {
     секунд = Math.max(0, Math.floor(секунд));
@@ -1161,6 +1177,14 @@ function showRecorded(bubble, item, localUrl) {
     кружок.className = "circle";
     кружок.playsInline = true;
     кружок.controls = false;
+    // Первый кадр снимает сервер: до нажатия видно, что там снято
+    if (item.poster) {
+      кружок.poster = cardUrls.get(item.poster) || "";
+      if (!кружок.poster) {
+        cardSlots.set(item.poster, кружок);
+        send({type: "fetch", id: item.poster});
+      }
+    }
     if (url) {
       кружок.src = url;
     } else if (item.media) {
@@ -1184,13 +1208,33 @@ function showRecorded(bubble, item, localUrl) {
   const кнопка = document.createElement("button");
   кнопка.type = "button";
   кнопка.textContent = "▶";
+
+  const справа = document.createElement("div");
+  справа.className = "right";
+
+  // Волну считает сервер и присылает вместе с описанием. Нет её — рисуем
+  // ровный ряд: это всё ещё полоска, просто без рисунка
+  const столбики = readWave(item.waveform);
   const полоска = document.createElement("div");
   полоска.className = "line";
-  const заполнение = document.createElement("span");
-  полоска.append(заполнение);
+  for (const высота of столбики) {
+    const один = document.createElement("i");
+    один.style.height = `${Math.max(2, Math.round(высота / 255 * 24))}px`;
+    полоска.append(один);
+  }
+
+  const низ = document.createElement("div");
+  низ.className = "under";
   const часы = document.createElement("div");
   часы.className = "clock";
   часы.textContent = clockText(0, item.seconds || 0);
+
+  const скорость = document.createElement("button");
+  скорость.type = "button";
+  скорость.className = "speed";
+  скорость.textContent = "1×";
+  низ.append(часы, скорость);
+  справа.append(полоска, низ);
 
   const звук = document.createElement("audio");
   звук.preload = "none";
@@ -1201,15 +1245,21 @@ function showRecorded(bubble, item, localUrl) {
     send({type: "fetch", id: item.media});
   }
 
+  const закрасить = (доля) => {
+    const сколько = Math.round(полоска.children.length * доля);
+    for (let номер = 0; номер < полоска.children.length; номер++) {
+      полоска.children[номер].classList.toggle("done", номер < сколько);
+    }
+  };
+
   звук.addEventListener("timeupdate", () => {
     const всего = звук.duration || item.seconds || 0;
-    заполнение.style.width = всего
-        ? `${Math.min(100, (звук.currentTime / всего) * 100)}%` : "0";
+    закрасить(всего ? Math.min(1, звук.currentTime / всего) : 0);
     часы.textContent = clockText(звук.currentTime, всего);
   });
   звук.addEventListener("ended", () => {
     кнопка.textContent = "▶";
-    заполнение.style.width = "0";
+    закрасить(0);
     часы.textContent = clockText(0, звук.duration || item.seconds || 0);
   });
 
@@ -1227,7 +1277,24 @@ function showRecorded(bubble, item, localUrl) {
     }
   });
 
-  карточка.append(кнопка, полоска, часы, звук);
+  // Длинное голосовое приятнее слушать быстрее
+  скорость.addEventListener("click", () => {
+    const дальше = {1: 1.5, 1.5: 2, 2: 1};
+    звук.playbackRate = дальше[звук.playbackRate] || 1;
+    скорость.textContent = `${звук.playbackRate}×`;
+  });
+
+  // Ткнули в волну — перескочили туда
+  полоска.addEventListener("click", (событие) => {
+    const где = полоска.getBoundingClientRect();
+    const всего = звук.duration || item.seconds || 0;
+    if (всего) {
+      звук.currentTime = всего * Math.min(1, Math.max(0,
+          (событие.clientX - где.left) / где.width));
+    }
+  });
+
+  карточка.append(кнопка, справа, звук);
   bubble.append(карточка);
 }
 

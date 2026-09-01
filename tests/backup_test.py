@@ -56,7 +56,7 @@ async def набить():
     лена = await storage.create_user("lena", "хеш", "Лена")
     беседа = await storage.direct_id(гоша["id"], лена["id"])
     await storage.save_message(гоша["id"], "Гоша", "привет", беседа)
-    номер, media_id, когда = await storage.save_media(
+    номер, media_id, когда, _ = await storage.save_media(
         лена["id"], "Лена", "image", "кот.png", b"\x89PNG" + bytes(2048), беседа)
     await storage.close()
     return media_id

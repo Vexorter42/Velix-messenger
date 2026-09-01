@@ -46,9 +46,11 @@ PORT = int(os.environ.get("VELIX_TESTPORT", "8833"))
 # путь по всей отправке — от кнопки до кадра на сервере — пройти должен
 ЗАПИСЬ = b"OggS" + b"\x00" * 4000
 
+ВОЛНА = "AAUKDxQZHiMoLTI3PEFGS1BVWl9kaW5zeH2Ch4yRlpugpaqvtLm+w8jN0tfc4ebr"
+
 ЛЕНТА = [
     {"id": 5, "nick": "Лена", "kind": "voice", "media": "abc123",
-     "name": "voice.ogg", "size": 4004, "seconds": 7,
+     "name": "voice.ogg", "size": 4004, "seconds": 7, "waveform": ВОЛНА,
      "at": "2026-08-30T09:00:00+00:00", "user": 2},
     {"id": 6, "nick": "Лена", "kind": "circle", "media": "def456",
      "name": "circle.mp4", "size": 90000, "seconds": 12,
@@ -197,6 +199,34 @@ def что_в_ленте():
           "0:00 / 0:12" in строки and кружочков() == 1, (строки, кружочков()))
     check("voice-gui-not-called-attachment",
           not any("вложение" in one for one in строки), строки)
+
+
+def волны():
+    """Полоски-волны в ленте: столько столбиков, сколько прислали."""
+    найдено = []
+
+    def обход(widget):
+        for child in widget.winfo_children():
+            if getattr(child, "velix_bars", None) is not None:
+                найдено.append(child)
+            обход(child)
+
+    обход(app.messages)
+    return найдено
+
+
+@step
+def волна_нарисована():
+    полоски = волны()
+    check("voice-gui-waveform-drawn", len(полоски) == 1, len(полоски))
+    if полоски:
+        check("voice-gui-waveform-bars",
+              len(полоски[0].velix_bars) == 48, len(полоски[0].velix_bars))
+        # Столбики должны быть разной высоты, иначе это просто черта
+        check("voice-gui-waveform-varies",
+              len(set(полоски[0].velix_bars)) > 5,
+              sorted(set(полоски[0].velix_bars))[:5])
+    check("voice-gui-speed-shown", "1×" in подписи(), подписи())
 
 
 @step

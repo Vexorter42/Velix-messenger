@@ -7,6 +7,7 @@
 """
 
 import asyncio
+import base64
 import io
 import os
 import queue
@@ -4390,22 +4391,102 @@ class VelixApp(ctk.CTk):
         справа = ctk.CTkFrame(карточка, fg_color="transparent")
         справа.pack(side="left", fill="x", expand=True)
 
-        полоска = ctk.CTkProgressBar(справа, width=150, height=5,
-                                     corner_radius=3, progress_color=ACCENT,
-                                     fg_color=SEPARATOR)
-        полоска.set(0)
-        полоска.pack(fill="x", pady=(6, 3))
+        полоска = self._waveform(справа, item.get("waveform"), own)
+        полоска.pack(fill="x", pady=(4, 3))
 
-        часы = ctk.CTkLabel(справа, text=self._duration_text(0, секунд),
+        низ = ctk.CTkFrame(справа, fg_color="transparent")
+        низ.pack(fill="x")
+        часы = ctk.CTkLabel(низ, text=self._duration_text(0, секунд),
                             font=self.font_small,
                             text_color=TIME_OUT if own else TIME_IN, anchor="w")
-        часы.pack(fill="x")
+        часы.pack(side="left")
 
-        состояние = {"box": None, "data": data, "seconds": секунд}
+        состояние = {"box": None, "data": data, "seconds": секунд, "speed": 1.0}
         if data is None and media_id:
             состояние["data"] = mediacache.get(media_id)
+
+        # Скорость: длинное голосовое приятнее слушать быстрее, а нажимать
+        # ради этого куда-то в настройки — незачем
+        быстрее = ctk.CTkLabel(низ, text="1×", font=self.font_small,
+                               text_color=ACCENT, cursor="hand2")
+        быстрее.pack(side="right")
+        быстрее.bind("<Button-1>", lambda event: self._switch_voice_speed(
+            media_id, name, состояние, кнопка, полоска, часы, быстрее))
+
         кнопка.configure(command=lambda: self._play_voice(
             media_id, name, состояние, кнопка, полоска, часы))
+
+    # Столбики волны: сколько их и какие они
+    WAVE_BARS = 48
+    WAVE_HEIGHT = 26
+    WAVE_STEP = 3
+
+    def _waveform(self, master, строка, own):
+        """Полоска голосового: столбики громкости, а не ровная черта.
+
+        Волну считает сервер и присылает вместе с описанием. Если её нет —
+        у сообщения постарше или когда считать было нечем, — рисуем ровный
+        ряд коротких столбиков: это всё ещё полоска, просто без рисунка.
+        """
+        столбики = []
+        if строка:
+            try:
+                столбики = list(base64.b64decode(строка))
+            except Exception:
+                столбики = []
+        if not столбики:
+            столбики = [70] * self.WAVE_BARS
+
+        ширина = len(столбики) * self.WAVE_STEP
+        холст = tkinter.Canvas(master, width=ширина, height=self.WAVE_HEIGHT,
+                               highlightthickness=0, bd=0,
+                               bg=self._hex(BUBBLE_OUT if own else BUBBLE_IN))
+        холст.velix_bars = столбики
+        холст.velix_at = 0.0
+        self._paint_wave(холст)
+        холст.configure(cursor="hand2")
+        return холст
+
+    def _paint_wave(self, холст):
+        """Перерисовывает столбики: пройденное — цветом, остальное — серым."""
+        if not холст.winfo_exists():
+            return
+        столбики = getattr(холст, "velix_bars", [])
+        доля = getattr(холст, "velix_at", 0.0)
+        холст.delete("all")
+
+        сыграно = int(len(столбики) * max(0.0, min(доля, 1.0)))
+        середина = self.WAVE_HEIGHT / 2
+        for номер, высота in enumerate(столбики):
+            # Совсем нулевых столбиков не бывает: тишина — это тоже часть
+            # записи, и полоска не должна в ней исчезать
+            половина = max(1.5, высота / 255 * (self.WAVE_HEIGHT / 2 - 1))
+            x = номер * self.WAVE_STEP + 1
+            холст.create_line(
+                x, середина - половина, x, середина + половина,
+                width=2, capstyle="round",
+                fill=self._hex(ACCENT if номер < сыграно else SEPARATOR))
+
+    def _set_wave(self, холст, доля):
+        холст.velix_at = доля
+        self._paint_wave(холст)
+
+    def _switch_voice_speed(self, media_id, name, состояние, кнопка, полоска,
+                            часы, подпись):
+        """Переключает скорость по кругу: обычная, полторы, две."""
+        дальше = {1.0: 1.5, 1.5: 2.0, 2.0: 1.0}
+        состояние["speed"] = дальше.get(состояние.get("speed", 1.0), 1.0)
+        подпись.configure(text=("1×" if состояние["speed"] == 1.0
+                                else f"{состояние['speed']:g}×"))
+
+        # Если сейчас играет — переигрываем на новой скорости с начала:
+        # ускорять на ходу ffpyplayer не умеет, а врать про место нельзя
+        коробка = состояние.get("box")
+        if коробка is not None:
+            коробка.close()
+            состояние["box"] = None
+            self.voices.pop(media_id or name, None)
+            self._play_voice(media_id, name, состояние, кнопка, полоска, часы)
 
     def _what_it_was(self, last):
         """Чем было последнее сообщение — строчкой для списка переписок."""
@@ -4451,14 +4532,23 @@ class VelixApp(ctk.CTk):
             self._service_label(t("Не удалось открыть голосовое"))
             return
 
+        скорость = состояние.get("speed", 1.0)
+        if скорость != 1.0:
+            быстрее = self._faster_copy(путь, скорость)
+            if быстрее is None:
+                self._service_label(t("Ускорить не вышло"))
+            else:
+                путь = быстрее
+
         # Играем по одному: два голоса разом — это каша
         self._stop_voices()
 
         def шаг(сейчас, всего):
             if not кнопка.winfo_exists():
                 return
-            длительность = всего or состояние.get("seconds") or 0
-            полоска.set(min(1.0, сейчас / длительность) if длительность else 0)
+            длительность = всего or (состояние.get("seconds") or 0) / скорость
+            self._set_wave(полоска,
+                           min(1.0, сейчас / длительность) if длительность else 0)
             часы.configure(text=self._duration_text(сейчас, длительность))
 
         def конец():
@@ -4473,7 +4563,7 @@ class VelixApp(ctk.CTk):
             if not кнопка.winfo_exists():
                 return
             кнопка.configure(text="▶")
-            полоска.set(0)
+            self._set_wave(полоска, 0)
             часы.configure(text=self._duration_text(
                 0, состояние.get("seconds") or 0))
 
@@ -4485,6 +4575,32 @@ class VelixApp(ctk.CTk):
         состояние["box"] = коробка
         self.voices[media_id or name] = (коробка, состояние)
         кнопка.configure(text="❚❚")
+
+    def _faster_copy(self, путь, скорость):
+        """Готовит ускоренную копию записи тем же ffmpeg, что и записывал.
+
+        Ускорять на ходу проигрыватель не умеет — на попытке он попросту
+        падает, — а пересобрать полминуты речи он успевает за доли секунды.
+        Готовое лежит рядом и второй раз не пересобирается.
+        """
+        if recorder.FFMPEG is None:
+            return None
+
+        куда = путь.with_name(f"{путь.stem}-x{скорость:g}{путь.suffix}")
+        if куда.exists() and куда.stat().st_size:
+            return куда
+        try:
+            готово = subprocess.run(
+                [str(recorder.FFMPEG), "-hide_banner", "-loglevel", "error",
+                 "-i", str(путь), "-filter:a", f"atempo={скорость:g}",
+                 "-y", str(куда)],
+                capture_output=True, timeout=60,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if готово.returncode != 0 or not куда.exists() or not куда.stat().st_size:
+            return None
+        return куда
 
     def _stop_voices(self):
         """Закрывает проигрыватели: SDL держит звук открытым до последнего.
@@ -4538,6 +4654,17 @@ class VelixApp(ctk.CTk):
         холст.velix_poster = заглушка
         холст.pack()
 
+        # Сервер снимает с кружочка первый кадр — покажем его вместо
+        # нарисованного круга: до нажатия видно, что там снято
+        обложка = item.get("poster")
+        if обложка:
+            снимок = mediacache.get(обложка)
+            if снимок is not None:
+                self._show_circle_poster(холст, снимок, own)
+            else:
+                self.pending_media[обложка] = ("poster", холст, own)
+                self._ask_media(обложка)
+
         секунд = int(item.get("seconds") or 0)
         подпись = ctk.CTkLabel(карточка, text=self._duration_text(0, секунд),
                                font=self.font_small,
@@ -4551,6 +4678,26 @@ class VelixApp(ctk.CTk):
         холст.configure(cursor="hand2")
         холст.bind("<Button-1>", lambda event: self._play_circle(
             media_id, name, состояние, холст, подпись, сторона, own))
+
+    def _show_circle_poster(self, холст, данные, own):
+        """Ставит на место круглой заглушки настоящий кадр из кружочка."""
+        if not холст.winfo_exists():
+            return
+        try:
+            снимок = Image.open(io.BytesIO(данные))
+            снимок.load()
+            снимок = снимок.convert("RGB").resize(
+                (self.CIRCLE_SIDE, self.CIRCLE_SIDE), Image.LANCZOS)
+            круглый = Image.new("RGB", снимок.size,
+                                self._hex(BUBBLE_OUT if own else BUBBLE_IN))
+            круглый.paste(снимок, (0, 0),
+                          videoplayer.circle_mask(self.CIRCLE_SIDE))
+        except Exception:
+            return          # кадр не открылся — останется нарисованный круг
+
+        готовый = ImageTk.PhotoImage(круглый)
+        холст.velix_poster = готовый
+        холст.configure(image=готовый)
 
     def _play_circle(self, media_id, name, состояние, холст, подпись, сторона,
                      own):
@@ -4730,6 +4877,9 @@ class VelixApp(ctk.CTk):
                 состояние["data"] = data
                 self._play_circle(media_id, имя, состояние, widget, подпись,
                                   сторона, own)
+        elif mode == "poster":
+            if widget is not None and widget.winfo_exists():
+                self._show_circle_poster(widget, data, extra)
         elif mode == "card":
             if widget is not None and widget.winfo_exists():
                 self._paint_link_picture(widget, data, extra)

@@ -27,6 +27,18 @@ ENV.pop("VELIX_ALLOWED_HOSTS", None)
 sys.path.insert(0, str(REPO))
 import protocol  # noqa: E402
 
+# ffmpeg на этой машине может лежать не в PATH, а в сборке: покажем его и
+# себе, и серверу-песочнице
+try:
+    import recorder  # noqa: E402
+    if recorder.FFMPEG:
+        ENV["VELIX_FFMPEG"] = str(recorder.FFMPEG)
+        os.environ["VELIX_FFMPEG"] = str(recorder.FFMPEG)
+except Exception:
+    pass
+
+import mediatools  # noqa: E402
+
 results = []
 
 
@@ -54,7 +66,7 @@ if SANDBOX.exists():
     shutil.rmtree(SANDBOX)
 SANDBOX.mkdir()
 for name in ("server.py", "storage.py", "protocol.py", "media.py", "accounts.py",
-             "push.py", "i18n.py", "linkpreview.py"):
+             "push.py", "i18n.py", "linkpreview.py", "mediatools.py"):
     shutil.copy(REPO / name, SANDBOX / name)
 
 server = subprocess.Popen([sys.executable, "server.py"], cwd=SANDBOX, env=ENV,
@@ -79,6 +91,32 @@ async def войти(login, name):
     ws = await websockets.connect(URI, max_size=protocol.MAX_FRAME_SIZE)
     await ws.send(protocol.register_message(login, "parol12345", name))
     return ws, await read_until(ws, "welcome")
+
+
+def сделать_голос():
+    """Пара секунд настоящего звука — волну есть из чего считать."""
+    куда = SANDBOX / "речь.ogg"
+    subprocess.run([mediatools.FFMPEG, "-hide_banner", "-loglevel", "error",
+                    "-f", "lavfi", "-i",
+                    "sine=frequency=300:duration=2,volume=enable=" +
+                    "'between(t,0.6,1.2)':volume=0.05",
+                    "-ac", "1", "-c:a", "libopus", "-y", str(куда)], check=True)
+    данные = куда.read_bytes()
+    куда.unlink()
+    return данные
+
+
+def сделать_кружок():
+    """Кружочек, как его пишет телефон: 720 на 480 и лёжа."""
+    куда = SANDBOX / "кружок.mp4"
+    subprocess.run([mediatools.FFMPEG, "-hide_banner", "-loglevel", "error",
+                    "-f", "lavfi", "-i", "testsrc=size=720x480:rate=25:duration=2",
+                    "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+                    "-y", str(куда)], check=True)
+    данные = куда.read_bytes()
+    куда.unlink()
+    return данные
 
 
 async def проверки():
@@ -133,6 +171,45 @@ async def проверки():
         виды = [one.get("kind") for one in полка.get("items", [])]
         check("gallery-has-the-circle", "circle" in виды, виды)
         check("gallery-has-no-voice", "voice" not in виды, виды)
+
+        # ------------------- волна у голоса и обложка у кружочка
+        #
+        # Считает их сервер: телефоны у всех разные, и разбираться с их
+        # причудами в каждом клиенте — работа без конца.
+
+        if not mediatools.available():
+            print("TEST voice-waveform: SKIP — ffmpeg рядом не нашёлся")
+        else:
+            звук = сделать_голос()
+            await гоша.send(protocol.media_header("Гоша", "voice", "речь.ogg",
+                                                  len(звук), беседа, None, "l4", 2))
+            await гоша.send(звук)
+            живой = await read_until(лена, "media")
+            столбики = mediatools.read_waveform(живой.get("waveform", ""))
+            check("voice-waveform-counted", len(столбики) == mediatools.СТОЛБИКОВ,
+                  len(столбики))
+            check("voice-waveform-not-flat", max(столбики or [0]) > 0, столбики[:8])
+
+            кино = сделать_кружок()
+            await гоша.send(protocol.media_header("Гоша", "circle", "кружок.mp4",
+                                                  len(кино), беседа, None, "l5", 2))
+            await гоша.send(кино)
+            круглый = await read_until(лена, "media")
+            check("circle-poster-made", bool(круглый.get("poster")), круглый)
+            check("circle-got-smaller", круглый.get("size", 0) < len(кино),
+                  (круглый.get("size"), len(кино)))
+
+            # Обложка забирается тем же путём, что и вложение, и она квадратная
+            if круглый.get("poster"):
+                await лена.send(protocol.fetch_request(круглый["poster"]))
+                await read_until(лена, "blob")
+                картинка = await asyncio.wait_for(лена.recv(), timeout=25)
+                from PIL import Image
+                import io as поток
+                снимок = Image.open(поток.BytesIO(картинка))
+                check("circle-poster-is-square",
+                      снимок.size == (mediatools.КРУЖОК, mediatools.КРУЖОК),
+                      снимок.size)
 
         # --------------------------------- содержимое забирается как всегда
         await лена.send(protocol.fetch_request(голос_id))

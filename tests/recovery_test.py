@@ -42,7 +42,7 @@ if SANDBOX.exists():
     shutil.rmtree(SANDBOX)
 SANDBOX.mkdir()
 for name in ("server.py", "storage.py", "protocol.py", "media.py", "accounts.py",
-             "push.py", "i18n.py", "linkpreview.py", "recover.py"):
+             "push.py", "i18n.py", "linkpreview.py", "mediatools.py", "recover.py"):
     shutil.copy(REPO / name, SANDBOX / name)
 
 server = subprocess.Popen([sys.executable, "server.py"], cwd=SANDBOX, env=ENV,

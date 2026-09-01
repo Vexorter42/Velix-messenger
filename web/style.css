@@ -287,15 +287,25 @@ main {
 }
 
 .voice .line {
-  flex: 1; height: 5px; border-radius: 3px; background: var(--separator);
-  overflow: hidden;
+  flex: 1; display: flex; align-items: center; gap: 1px; height: 26px;
+  cursor: pointer;
 }
 
-.voice .line span {
-  display: block; height: 100%; width: 0; background: var(--accent);
+/* Столбик волны: пройденное — цветом, остальное — серым */
+.voice .line i {
+  flex: 1; min-width: 2px; border-radius: 1px; background: var(--separator);
 }
 
-.voice .clock { font-size: 12px; color: var(--muted); min-width: 74px; }
+.voice .line i.done { background: var(--accent); }
+
+.voice .under { display: flex; align-items: center; gap: 8px; }
+.voice .clock { font-size: 12px; color: var(--muted); }
+.voice .speed {
+  font-size: 12px; color: var(--accent); margin-left: auto; cursor: pointer;
+  background: none; border: none; padding: 0;
+}
+
+.voice .right { flex: 1; }
 
 .circle {
   width: 200px; height: 200px; border-radius: 50%; object-fit: cover;

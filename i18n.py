@@ -210,6 +210,7 @@ ENGLISH = {
     "пустая запись": "nothing was recorded",
     "Не удалось открыть голосовое": "Could not open the voice message",
     "Не удалось открыть кружочек": "Could not open the circle",
+    "Ускорить не вышло": "Could not speed it up",
     "кружочек": "circle",
     "загружаю…": "loading…",
     "Зажмите кнопку, чтобы записать": "Hold the button to record",

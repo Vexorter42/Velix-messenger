@@ -49,6 +49,10 @@ MESSAGE_COLUMNS = {
     "edited_at": "TEXT",
     # Длительность голоса и кружочка: полоску рисуют раньше, чем доедут байты
     "seconds": "INTEGER",
+    # Волна голосового — столбики, по которым видно, где говорят
+    "waveform": "TEXT",
+    # Обложка кружочка: первый кадр, чтобы до нажатия было на что смотреть
+    "poster": "TEXT",
 }
 
 # Код восстановления пароля хранится хешем, как и сам пароль
@@ -790,23 +794,30 @@ def _pin_sync(conversation_id, message_id):
 
 
 def _save_media_sync(user_id, nickname, kind, name, data, conversation_id,
-                     reply_to, seconds=None):
+                     reply_to, seconds=None, waveform=None, poster=None):
     media_id = uuid.uuid4().hex
     suffix = Path(name).suffix.lower()[:16]
     (_media_dir / f"{media_id}{suffix}").write_bytes(data)
+
+    # Обложка кружочка ложится своим файлом рядом: сообщением она не
+    # становится, но забирается тем же путём, что и вложение
+    poster_id = None
+    if poster:
+        poster_id = uuid.uuid4().hex
+        (_media_dir / f"{poster_id}.jpg").write_bytes(poster)
 
     created_at = now()
     with _lock:
         cursor = _connection.execute(
             "INSERT INTO messages (nickname, text, created_at, kind,"
             " media_id, media_name, media_size, user_id, conversation_id,"
-            " reply_to, seconds)"
-            " VALUES (?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " reply_to, seconds, waveform, poster)"
+            " VALUES (?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (nickname, created_at, kind, media_id, name, len(data), user_id,
-             conversation_id, reply_to, seconds),
+             conversation_id, reply_to, seconds, waveform or None, poster_id),
         )
         _connection.commit()
-    return cursor.lastrowid, media_id, created_at
+    return cursor.lastrowid, media_id, created_at, poster_id
 
 
 def _settings_sync():
@@ -1064,7 +1075,7 @@ def _row_to_item(row):
     """Одна строка из базы — в то, что понимает клиент."""
     (message_id, nickname, text, created_at, kind, media_id, media_name,
      media_size, deleted, reply_to, user_id, profile_name, avatar_id,
-     forwarded, edited_at, seconds) = row
+     forwarded, edited_at, seconds, waveform, poster) = row
 
     item = {"id": message_id, "nick": profile_name or nickname, "at": created_at,
             "kind": kind or "text", "user": user_id}
@@ -1089,12 +1100,17 @@ def _row_to_item(row):
         item["size"] = media_size
         if seconds:
             item["seconds"] = seconds
+        if waveform:
+            item["waveform"] = waveform
+        if poster:
+            item["poster"] = poster
     return item
 
 
 MESSAGE_FIELDS = ("m.id, m.nickname, m.text, m.created_at, m.kind, m.media_id,"
                   " m.media_name, m.media_size, m.deleted, m.reply_to, m.user_id,"
-                  " u.name, u.avatar_id, m.forwarded, m.edited_at, m.seconds")
+                  " u.name, u.avatar_id, m.forwarded, m.edited_at, m.seconds,"
+                  " m.waveform, m.poster")
 
 
 def _messages_sync(conversation_id, limit, before):
@@ -1615,6 +1631,11 @@ def _media_described_sync(media_id):
             "SELECT kind, media_name FROM messages WHERE media_id = ?",
             (media_id,)).fetchone()
         if row is None:
+            # Обложка кружочка — тоже не сообщение, а живёт рядом с ним
+            row = _connection.execute(
+                "SELECT 'image', 'poster' FROM messages WHERE poster = ?",
+                (media_id,)).fetchone()
+        if row is None:
             # Картинка карточки ссылки сообщением не является: в переписке она
             # не висит и во вкладку «медиа» не попадает, — но забирается тем
             # же путём, что и обычное вложение
@@ -1643,10 +1664,15 @@ async def save_media_file(user_id, nickname, kind, name, path, size,
 
 
 async def save_media(user_id, nickname, kind, name, data,
-                     conversation_id=GENERAL_ID, reply_to=None, seconds=None):
-    """Сохраняет вложение файлом, возвращает (номер, идентификатор, время)."""
+                     conversation_id=GENERAL_ID, reply_to=None, seconds=None,
+                     waveform=None, poster=None):
+    """Сохраняет вложение файлом.
+
+    Возвращает (номер, идентификатор, время, обложку).
+    """
     return await asyncio.to_thread(_save_media_sync, user_id, nickname, kind, name,
-                                   data, conversation_id, reply_to, seconds)
+                                   data, conversation_id, reply_to, seconds,
+                                   waveform, poster)
 
 
 async def add_push(user_id, subscription):

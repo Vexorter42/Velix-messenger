@@ -34,7 +34,7 @@ if SANDBOX.exists():
     shutil.rmtree(SANDBOX)
 SANDBOX.mkdir()
 for name in ("server.py", "storage.py", "protocol.py", "media.py", "accounts.py",
-             "push.py", "i18n.py", "linkpreview.py"):
+             "push.py", "i18n.py", "linkpreview.py", "mediatools.py"):
     shutil.copy(REPO / name, SANDBOX / name)
 
 # Кладём «приложение» руками — так же, как это делает publish-update.sh

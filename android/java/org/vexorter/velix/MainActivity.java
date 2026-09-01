@@ -2247,14 +2247,40 @@ public class MainActivity extends Activity implements VelixService.Screen {
         карточка.addView(кнопка);
 
         LinearLayout справа = Ui.column(this);
-        final ProgressBar полоска = new ProgressBar(this, null,
-                android.R.attr.progressBarStyleHorizontal);
-        полоска.setMax(1000);
-        полоска.setProgress(0);
-        справа.addView(полоска, Ui.wide());
+        final Волна полоска = new Волна(this, item.optString("waveform", ""));
+        LinearLayout.LayoutParams полоской = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(this, 26));
+        справа.addView(полоска, полоской);
+
+        LinearLayout низ = Ui.row(this);
+        низ.setGravity(Gravity.CENTER_VERTICAL);
         final TextView часы = Ui.text(this, clock(0, секунд), 12, Ui.MUTED);
-        справа.addView(часы, Ui.wide());
+        низ.addView(часы, Ui.grow());
+
+        // Длинное голосовое приятнее слушать быстрее
+        final TextView скорость = Ui.text(this, "1×", 12, Ui.ACCENT);
+        скорость.setPadding(Ui.dp(this, 8), 0, 0, 0);
+        низ.addView(скорость);
+        справа.addView(низ, Ui.wide());
         карточка.addView(справа, Ui.grow());
+
+        скорость.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                voiceSpeed = voiceSpeed == 1f ? 1.5f
+                        : (voiceSpeed == 1.5f ? 2f : 1f);
+                скорость.setText(voiceSpeed == 1f ? "1×"
+                        : (voiceSpeed == 1.5f ? "1.5×" : "2×"));
+                if (voicePlayer != null) {
+                    try {
+                        voicePlayer.setPlaybackParams(
+                                voicePlayer.getPlaybackParams().setSpeed(voiceSpeed));
+                    } catch (Exception ignored) {
+                        // Не всякий телефон умеет менять скорость на ходу
+                    }
+                }
+            }
+        });
 
         кнопка.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -2265,8 +2291,73 @@ public class MainActivity extends Activity implements VelixService.Screen {
         return карточка;
     }
 
+    private float voiceSpeed = 1f;
+
+    /**
+     * Волна голосового: столбики, по которым видно, где говорят.
+     *
+     * Считает их сервер и присылает строкой вместе с описанием — телефону
+     * остаётся нарисовать. Волны нет (сообщение постарше) — рисуем ровный
+     * ряд: это всё ещё полоска, просто без рисунка.
+     */
+    private class Волна extends View {
+        private final int[] столбики;
+        private float доля;
+        private final android.graphics.Paint кисть = new android.graphics.Paint();
+
+        Волна(Context где, String строка) {
+            super(где);
+            byte[] байты;
+            try {
+                байты = android.util.Base64.decode(строка,
+                        android.util.Base64.DEFAULT);
+            } catch (Exception ignored) {
+                байты = new byte[0];
+            }
+            if (байты.length == 0) {
+                байты = new byte[48];
+                java.util.Arrays.fill(байты, (byte) 70);
+            }
+            столбики = new int[байты.length];
+            for (int место = 0; место < байты.length; место++) {
+                столбики[место] = байты[место] & 0xff;
+            }
+            кисть.setAntiAlias(true);
+            кисть.setStrokeCap(android.graphics.Paint.Cap.ROUND);
+            кисть.setStrokeWidth(Ui.dp(где, 2));
+        }
+
+        void setProgress(float сколько) {
+            доля = Math.max(0f, Math.min(1f, сколько));
+            invalidate();
+        }
+
+        @Override
+        protected void onDraw(android.graphics.Canvas холст) {
+            int ширина = getWidth();
+            int высота = getHeight();
+            if (ширина <= 0 || столбики.length == 0) {
+                return;
+            }
+            float шаг = (float) ширина / столбики.length;
+            float середина = высота / 2f;
+            int сыграно = Math.round(столбики.length * доля);
+
+            for (int номер = 0; номер < столбики.length; номер++) {
+                // Совсем нулевых столбиков не бывает: тишина — тоже часть
+                // записи, и полоска не должна в ней пропадать
+                float половина = Math.max(Ui.dp(getContext(), 1),
+                        столбики[номер] / 255f * (высота / 2f - 1));
+                кисть.setColor(номер < сыграно ? Ui.ACCENT : Ui.SEPARATOR);
+                float x = номер * шаг + шаг / 2f;
+                холст.drawLine(x, середина - половина, x, середина + половина,
+                        кисть);
+            }
+        }
+    }
+
     private void playVoice(JSONObject item, final TextView кнопка,
-                           final ProgressBar полоска, final TextView часы,
+                           final Волна полоска, final TextView часы,
                            final long секунд) {
         if (voicePlayer != null && voicePlayer.isPlaying()) {
             stopVoice();
@@ -2305,6 +2396,14 @@ public class MainActivity extends Activity implements VelixService.Screen {
             voicePlayer = new MediaPlayer();
             voicePlayer.setDataSource(где.getAbsolutePath());
             voicePlayer.prepare();
+            if (voiceSpeed != 1f) {
+                try {
+                    voicePlayer.setPlaybackParams(
+                            voicePlayer.getPlaybackParams().setSpeed(voiceSpeed));
+                } catch (Exception ignored) {
+                    // Не всякий телефон это умеет — сыграем как обычно
+                }
+            }
             voicePlayer.start();
             кнопка.setText("❚❚");
 
@@ -2318,7 +2417,7 @@ public class MainActivity extends Activity implements VelixService.Screen {
                             ? voicePlayer.getDuration() / 1000 : секунд;
                     long сейчас = voicePlayer.getCurrentPosition() / 1000;
                     полоска.setProgress(всего > 0
-                            ? (int) (сейчас * 1000 / всего) : 0);
+                            ? (float) сейчас / всего : 0f);
                     часы.setText(clock(сейчас, всего));
                     if (voicePlayer.isPlaying()) {
                         main.postDelayed(voiceTick, 200);
@@ -2331,7 +2430,7 @@ public class MainActivity extends Activity implements VelixService.Screen {
                 @Override
                 public void onCompletion(MediaPlayer какой) {
                     кнопка.setText("▶");
-                    полоска.setProgress(0);
+                    полоска.setProgress(0f);
                     часы.setText(clock(0, секунд));
                     stopVoice();
                 }
@@ -2380,6 +2479,32 @@ public class MainActivity extends Activity implements VelixService.Screen {
         плёнка.setLayoutParams(как);
         рамка.addView(плёнка);
         карточка.addView(рамка);
+
+        // Первый кадр снимает сервер: до нажатия видно, что там снято
+        final String обложка = item.optString("poster", "");
+        if (!обложка.isEmpty()) {
+            ImageView кадр = new ImageView(this);
+            кадр.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            FrameLayout.LayoutParams какой = new FrameLayout.LayoutParams(
+                    сторона, сторона);
+            какой.gravity = Gravity.CENTER;
+            кадр.setLayoutParams(какой);
+            рамка.addView(кадр, 0);
+
+            byte[] снимок = media.get(обложка);
+            if (снимок != null) {
+                кадр.setImageBitmap(BitmapFactory.decodeByteArray(
+                        снимок, 0, снимок.length));
+            } else {
+                List<ImageView> слоты = waiting.get(обложка);
+                if (слоты == null) {
+                    слоты = new ArrayList<>();
+                    waiting.put(обложка, слоты);
+                    send(Net.frame("fetch", "id", обложка));
+                }
+                слоты.add(кадр);
+            }
+        }
 
         final TextView часы = Ui.text(this, clock(0, item.optLong("seconds")),
                 12, Ui.MUTED);
