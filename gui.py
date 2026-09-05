@@ -95,13 +95,27 @@ def mix(первый, второй, доля):
 # разом, забивают канал: ответ на «покажи переписку» ждёт своей очереди за
 # мегабайтами, и лента стоит пустая — именно так пропадали личные
 # переписки, где фотографий нет вовсе
-FETCH_WINDOW = 2
+FETCH_WINDOW = 6
 
 # Сколько картинок разбираем за один заход. Каждая — это распаковка,
-# уменьшение и запись на диск, десятки миллисекунд. Два десятка подряд
-# заняли бы окно на секунды, и пришедшая тем временем переписка
-# показалась бы только в конце
-BLOBS_PER_TURN = 2
+# уменьшение и запись на диск: померено — сорок восемь миллисекунд на
+# снимок с телефона. По две за заход вложения проявлялись парами примерно
+# раз в пятую долю секунды — те самые «полоски»; по четыре окно занято
+# впятеро меньшее время, чем ждало бы иначе
+BLOBS_PER_TURN = 4
+
+# Сколько сообщений рисуем, входя в переписку.
+#
+# Один пузырь в CustomTkinter стоит около двадцати миллисекунд: почти
+# тысяча обращений к Tcl, и большая часть их — на скруглённые углы, каждый
+# из которых рисуется отдельными фигурами на холсте. Полсотни сообщений
+# разом — это полторы секунды замершего окна при каждом входе. На экран
+# всё равно помещается десяток, а за остальным человек сходит кнопкой:
+# она тут и так была, для того, что лежит на сервере
+ЛЕНТА_СРАЗУ = 15
+
+# По столько добавляем, когда за старым всё-таки пришли
+ЛЕНТА_ЕЩЁ = 25
 
 MAX_GIF_FRAMES = 120
 
@@ -548,7 +562,8 @@ class VelixApp(ctk.CTk):
         self.pending_direct = False    # ждём номер только что созданной личной
         self.reactions = {}            # номер сообщения -> {смайлик: [кто]}
         self.reaction_rows = {}        # где рисовать реакции у сообщения
-        self.loaded_items = []         # что сейчас показано в ленте
+        self.loaded_items = []         # что пришло с сервера и лежит при нас
+        self.feed_from = 0             # с какого из них лента нарисована
         self.ticks = {}                # номер сообщения -> надпись с галочками
         self.states = {}               # номер сообщения -> sent/delivered/read
         self.local_number = 0          # свои сообщения до ответа сервера
@@ -1375,6 +1390,7 @@ class VelixApp(ctk.CTk):
         self.last_sender = None
         self.current_date = None
         self.loaded_items = []
+        self.feed_from = 0
         self.viewer = None
 
         self._build_auth_view()
@@ -1703,14 +1719,10 @@ class VelixApp(ctk.CTk):
     def _show_cached_history(self, conversation_id):
         """Рисует ленту из сохранённого и честно говорит, что она такая."""
         items = localcache.load_history(self.server, conversation_id)
-        self._clear_messages()
         self.loaded_items = list(items)
-        self.drawing_history = True
-        try:
-            for item in self.loaded_items:
-                self._show_item(item)
-        finally:
-            self.drawing_history = False
+        self.feed_from = max(0, len(self.loaded_items) - ЛЕНТА_СРАЗУ)
+        self.has_older = False
+        self._redraw_feed()
         self._service_label(t("Нет связи — показываем сохранённое.")
                             if items else t("Нет связи. Переписка откроется, "
                                             "как только она вернётся."))
@@ -2354,6 +2366,7 @@ class VelixApp(ctk.CTk):
         self.seen = {}
         self.quotes = {}
         self.loaded_items = []
+        self.feed_from = 0
         self._clear_messages()
         self.pending_media.clear()
         self.avatar_waiters.clear()
@@ -3366,11 +3379,34 @@ class VelixApp(ctk.CTk):
             # Подгрузка старого: перерисовываем всё, чтобы порядок не сбился
             already = self.loaded_items
             self.loaded_items = items + already
+            # За старым сходили нарочно — значит, его и показываем
+            self.feed_from = 0
         else:
             self.loaded_items = items
+            self.feed_from = max(0, len(items) - ЛЕНТА_СРАЗУ)
+
+        self._redraw_feed()
+
+        self._mark_read([item["id"] for item in self.loaded_items
+                         if item.get("id") and item.get("user") != self.user.get("id")])
+
+        # То, что пришло, кладём на диск: в следующий раз без связи это и
+        # покажется
+        localcache.save_history(self.server, self.conversation,
+                                self.loaded_items)
+
+    def _redraw_feed(self):
+        """Рисует ленту с того места, до которого её раскрыли.
+
+        Целиком её рисовать незачем: пузырь стоит около двадцати
+        миллисекунд, полсотни — полторы секунды замершего окна, а видно
+        всё равно десяток. Остальное лежит при нас и ждёт кнопки.
+        """
+        видно = self.loaded_items[self.feed_from:]
+        ещё_есть = self.has_older or self.feed_from > 0
 
         self._clear_messages()
-        if self.has_older:
+        if ещё_есть:
             self.older_button = ctk.CTkButton(
                 self.messages, text=t("Показать более старые"), height=30,
                 corner_radius=R_ITEM, font=self.font_small, fg_color=INPUT_BG,
@@ -3380,24 +3416,20 @@ class VelixApp(ctk.CTk):
         if not self.loaded_items:
             self.empty_hint = self._service_label(t("Пока тихо. Напишите первым."))
 
-        # Историю рисуем разом: проявлять два десятка пузырей по очереди —
-        # это не плавность, а мельтешение
+        # То, что рисуем, рисуем разом: проявлять пузыри по очереди — это не
+        # плавность, а мельтешение
         self.drawing_history = True
         try:
-            for item in self.loaded_items:
+            for item in видно:
                 self._show_item(item)
         finally:
             self.drawing_history = False
+        self._scroll_to_bottom()
 
-        self._mark_read([item["id"] for item in self.loaded_items
-                         if item.get("id") and item.get("user") != self.user.get("id")])
+        # Просить у сервера будем от самого старого, что при нас есть, а не
+        # от самого старого нарисованного
         if self.loaded_items:
             self.oldest = self.loaded_items[0].get("id")
-
-        # То, что пришло, кладём на диск: в следующий раз без связи это и
-        # покажется
-        localcache.save_history(self.server, self.conversation,
-                                self.loaded_items)
 
     def _nudge_history(self, conversation_id, попытка, пропуск):
         """История не пришла — просим ещё раз, а потом сознаёмся.
@@ -3423,6 +3455,13 @@ class VelixApp(ctk.CTk):
         self._service_label(t("Сервер не ответил. Ждём связи…"))
 
     def _load_older(self):
+        """Показывает то, что старее. Сперва своё, за сервером — только потом."""
+        if self.feed_from > 0:
+            # Это уже пришло вместе с историей, просто не нарисовано:
+            # ходить за ним второй раз незачем
+            self.feed_from = max(0, self.feed_from - ЛЕНТА_ЕЩЁ)
+            self._redraw_feed()
+            return
         if self.oldest:
             self.network.send(protocol.open_request(self.conversation, self.oldest))
 
@@ -5421,6 +5460,12 @@ class VelixApp(ctk.CTk):
         return область
 
     def _scroll_to_bottom(self):
+        # Пока рисуется история, крутить незачем: каждый вызов — это
+        # update_idletasks, то есть пересчёт разметки всей ленты, и на
+        # полсотни пузырей набегает пятая часть времени. Внизу окажемся
+        # один раз, когда лента будет готова
+        if self.drawing_history:
+            return
         self.messages.update_idletasks()
         self._refit_feed()
         self._stop_glide(self.messages._parent_canvas)

@@ -517,6 +517,15 @@ only the description, and the bytes are requested when it is time to show them.
 Video is fetched only when the button is pressed, so opening a chat does not
 drag in every clip at once.
 
+The feed draws its tail, not the whole of it. One bubble in CustomTkinter costs
+about twenty milliseconds — nearly a thousand calls into Tcl, most of them for
+the rounded corners, which are drawn as separate shapes on a canvas. Fifty
+messages at once is a second and a half of frozen window on every entry into a
+conversation, and a screen holds a dozen anyway. So the server still sends
+fifty, the window draws fifteen, and the rest is behind the same "Show older
+messages" button — which now first hands over what has already arrived and only
+then goes to the server.
+
 ## Limits, honestly
 
 - **No end-to-end encryption.** Messages are protected in transit, but they sit
