@@ -482,6 +482,7 @@ folder; none of them touch live data.
 | `media.py` | Server-side image compression |
 | `push.py` | Push notifications through the browser's own service |
 | `gui.py` | The desktop client, in Telegram's visual language |
+| `kivyclient.py` | A second client, on Kivy: window and network in one asyncio loop |
 | `client.py` | The terminal client |
 | `web/` | The mobile web client |
 | `android/` | The native Android app: WebSocket, protocol, screens, Gradle-free build |
@@ -502,6 +503,14 @@ A message travels as a JSON text frame; the bytes of an attachment follow in a
 separate binary frame. The desktop client keeps the network on its own thread
 with its own asyncio loop and talks to the interface through a queue — Tkinter
 must not be touched from another thread.
+
+`kivyclient.py` is the same client built the other way round. Kivy hands its
+loop over (`App.async_run(async_lib="asyncio")`), so there the drawing and the
+socket live in one loop on one thread: a button handler simply writes `await`,
+with no queue and no rules about threads. It does the essentials so far — log
+in, list conversations, read history, receive messages live and send text;
+attachments, voice and circles stayed in the Tk window. It is a try of the
+approach, not a replacement: `gui.py` remains the main one.
 
 Attachment payloads are never pushed to a client on their own: history carries
 only the description, and the bytes are requested when it is time to show them.

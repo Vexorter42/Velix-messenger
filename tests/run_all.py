@@ -20,11 +20,20 @@
 
 Те, что меряют время движений, помечены у себя ПООДИНОЧКЕ = True: под
 нагрузкой от соседок их часы врут, поэтому им даётся тишина.
+
+Повисшую проверку прогон снимает сам: без этого одна застрявшая держала бы
+остальные семьдесят четыре сколько угодно долго.
+
+Вывод проверки складывается в файл, а не в трубу. Труба у Windows размером
+в шестьдесят четыре килобайта, и никто её не разбирает, пока проверка не
+вышла: болтливая проверка — а Kivy болтлив — упирается в полную трубу и
+встаёт навсегда. С файлом писать можно сколько угодно.
 """
 
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -34,11 +43,33 @@ SKIP = {"run_all.py", "harness.py", "peer_send.py"}
 # Оконные узнаём по тому, что они ввозят: имя файла врёт (проверка про
 # запоздавшую картинку окно поднимает, а «gui» в названии не имеет)
 ОКОННОЕ = ("import gui", "customtkinter", "import videoplayer",
-           "ffpyplayer", "pystray", "ImageGrab")
+           "ffpyplayer", "pystray", "ImageGrab", "import kivyclient")
 
 # Больше этого одновременно не запускаем: на четырёх ядрах десять проверок
 # начинают мешать друг другу и врать таймингами
 СРАЗУ = 4
+
+# Дольше этого проверка идти не должна: самая долгая укладывается в минуту с
+# небольшим. Не уложилась — значит повисла, и ждать её нечего: снимаем и идём
+# дальше, а в конце она будет среди сорвавшихся
+ПРЕДЕЛ = 240
+
+
+def прибить(процесс):
+    """Снимает проверку вместе с поднятым ею сервером-песочницей.
+
+    Простого kill мало: проверка запускает server.py отдельным процессом и
+    прибирает его сама в finally, а до finally повисшая как раз и не дошла.
+    """
+    if sys.platform == "win32":
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(процесс.pid)],
+                       capture_output=True)
+    else:
+        процесс.kill()
+    try:
+        процесс.wait(timeout=10)
+    except subprocess.TimeoutExpired:    # pragma: no cover — уже не наша забота
+        pass
 
 
 def нужен_экран(текст):
@@ -76,19 +107,22 @@ def собрать(быстро):
     return sorted(список, key=lambda одна: not одна[2])
 
 
-def показать(имя, result, сколько):
+def показать(имя, result, сколько, беда=""):
     tail = [line for line in (result.stdout or "").splitlines()
             if line.startswith("ИТОГО")]
     mark = "OK  " if result.returncode == 0 else "ПЛОХО"
-    print(f"{mark} {имя:<28} {tail[-1] if tail else '(нет итога)'}"
-          f"  {сколько:.0f}с", flush=True)
+    итог = беда or (tail[-1] if tail else "(нет итога)")
+    print(f"{mark} {имя:<28} {итог}  {сколько:.0f}с", flush=True)
     if result.returncode != 0:
-        for line in (result.stdout or "").splitlines():
-            if "FAIL" in line:
-                print(f"      {line}")
-        error = (result.stderr or "").strip().splitlines()
-        if error:
-            print(f"      {error[-1][:160]}")
+        строки = (result.stdout or "").splitlines()
+        сорвалось = [one for one in строки if "FAIL" in one]
+        for line in сорвалось:
+            print(f"      {line}")
+        # Ни одной FAIL — значит проверка не дошла до своих проверок вовсе:
+        # показываем хвост, там будет либо трассировка, либо на чём встала
+        if not сорвалось:
+            for line in [one for one in строки if one.strip()][-3:]:
+                print(f"      {line[:160]}")
 
 
 def main():
@@ -118,24 +152,35 @@ def main():
                 место += 1      # сейчас в одиночку идёт другая
                 continue
             очередь.pop(место)
+            куда = tempfile.TemporaryFile(mode="w+", encoding="utf-8",
+                                          errors="replace")
             процесс = subprocess.Popen(
                 [sys.executable, "-X", "utf8", имя], cwd=HERE,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                stdout=куда, stderr=subprocess.STDOUT, text=True,
                 encoding="utf-8", errors="replace")
-            идут.append((имя, процесс, свои, time.time(), одна))
+            идут.append((имя, процесс, свои, time.time(), одна, куда))
             занятые |= свои
 
         # --- ждём, пока хоть одна закончится
         дождались = False
         while not дождались:
-            for место, (имя, процесс, свои, когда, _) in enumerate(идут):
-                if процесс.poll() is None:
+            for место, (имя, процесс, свои, когда, _, куда) in enumerate(идут):
+                повисла = (процесс.poll() is None
+                           and time.time() - когда > ПРЕДЕЛ)
+                if повисла:
+                    прибить(процесс)
+                elif процесс.poll() is None:
                     continue
-                out, err = процесс.communicate()
-                готово = subprocess.CompletedProcess(
-                    имя, процесс.returncode, out, err)
-                показать(имя, готово, time.time() - когда)
-                if процесс.returncode != 0:
+
+                процесс.wait()
+                куда.seek(0)
+                out = куда.read()
+                куда.close()
+                код = 1 if повисла else процесс.returncode
+                готово = subprocess.CompletedProcess(имя, код, out, None)
+                показать(имя, готово, time.time() - когда,
+                         f"повисла, сняли через {ПРЕДЕЛ}с" if повисла else "")
+                if код != 0:
                     плохие.append(имя)
                 идут.pop(место)
                 занятые -= свои

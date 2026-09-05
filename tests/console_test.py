@@ -25,7 +25,7 @@ def check(name, ok, detail=""):
     print(f"TEST {name}: {'OK' if ok else 'FAIL' + (' — ' + str(detail) if detail else '')}")
 
 if SANDBOX.exists():
-    shutil.rmtree(SANDBOX)
+    shutil.rmtree(SANDBOX, ignore_errors=True)
 SANDBOX.mkdir()
 for name in ("server.py", "storage.py", "protocol.py", "media.py", "accounts.py",
              "push.py", "i18n.py", "linkpreview.py", "mediatools.py"):

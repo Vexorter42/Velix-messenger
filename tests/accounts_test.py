@@ -58,7 +58,7 @@ check("token-unique", accounts.new_token() != accounts.new_token())
 
 def fresh_sandbox():
     if SANDBOX.exists():
-        shutil.rmtree(SANDBOX)
+        shutil.rmtree(SANDBOX, ignore_errors=True)
     SANDBOX.mkdir()
     for name in ("server.py", "storage.py", "protocol.py", "media.py", "accounts.py",
              "push.py", "i18n.py", "linkpreview.py", "mediatools.py"):

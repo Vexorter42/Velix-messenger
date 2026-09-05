@@ -30,6 +30,32 @@ def тихое_окно(app):
     app.geometry("+-3000+-3000")
 
 
+def тихое_окно_kivy():
+    """То же для Kivy — но сказать это нужно до того, как он проснётся.
+
+    Настоящее окно ему нужно обязательно: без него он попросту завершает
+    работу. Зато место окна выбирается настройками, и их читают один раз при
+    первом ввозе — поэтому звать её надо раньше любого ввоза kivy.core.
+
+    Заодно затыкаем его журнал. Kivy по умолчанию рассказывает о себе на
+    уровне debug и заодно поднимает до debug общий журнал — вместе с ним
+    начинает говорить websockets, и на прогоне это сотни килобайт ни о чём.
+    """
+    # Журнал глушим всегда, а не только в тихом прогоне: смотреть в проверке
+    # на то, какие поставщики окон Kivy перебрал, всё равно незачем
+    os.environ.setdefault("KIVY_LOG_LEVEL", "warning")
+    os.environ.setdefault("KIVY_NO_FILELOG", "1")
+    os.environ.setdefault("KIVY_NO_CONSOLELOG", "1")
+    if not ТИХО:
+        return
+    from kivy.config import Config
+    Config.set("graphics", "position", "custom")
+    Config.set("graphics", "left", "-3000")
+    Config.set("graphics", "top", "-3000")
+    Config.set("graphics", "width", "900")
+    Config.set("graphics", "height", "600")
+
+
 def дождаться(port, host="localhost", предел=25):
     """Ждёт, пока сервер начнёт слушать порт.
 

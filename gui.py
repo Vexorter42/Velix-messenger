@@ -4534,11 +4534,18 @@ class VelixApp(ctk.CTk):
 
         скорость = состояние.get("speed", 1.0)
         if скорость != 1.0:
-            быстрее = self._faster_copy(путь, скорость)
-            if быстрее is None:
-                self._service_label(t("Ускорить не вышло"))
-            else:
-                путь = быстрее
+            готовое = self._faster_ready(путь, скорость)
+            if готовое is None:
+                # Ускоренной копии ещё нет. Считать её прямо тут нельзя: это
+                # поток, который рисует окно, и на время пересборки оно
+                # замрёт. Уходим в сторону и вернёмся сюда же, когда будет
+                кнопка.configure(text="…")
+                self._faster_later(
+                    путь, скорость,
+                    lambda: self._play_voice(media_id, name, состояние,
+                                             кнопка, полоска, часы))
+                return
+            путь = готовое
 
         # Играем по одному: два голоса разом — это каша
         self._stop_voices()
@@ -4576,6 +4583,30 @@ class VelixApp(ctk.CTk):
         self.voices[media_id or name] = (коробка, состояние)
         кнопка.configure(text="❚❚")
 
+    def _faster_name(self, путь, скорость):
+        return путь.with_name(f"{путь.stem}-x{скорость:g}{путь.suffix}")
+
+    def _faster_ready(self, путь, скорость):
+        """Готовая ускоренная копия, если её уже пересобрали раньше."""
+        куда = self._faster_name(путь, скорость)
+        return куда if куда.exists() and куда.stat().st_size else None
+
+    def _faster_later(self, путь, скорость, потом):
+        """Пересобирает запись в стороне и зовёт «потом» уже в потоке окна."""
+        def в_стороне():
+            вышло = self._faster_copy(путь, скорость)
+            # Возвращаться в окно можно только через after: трогать виджеты
+            # из чужого потока Tkinter не позволяет
+            self.after(0, лишь_бы_живо, вышло)
+
+        def лишь_бы_живо(вышло):
+            if вышло is None:
+                self._service_label(t("Ускорить не вышло"))
+                return
+            потом()
+
+        threading.Thread(target=в_стороне, daemon=True).start()
+
     def _faster_copy(self, путь, скорость):
         """Готовит ускоренную копию записи тем же ffmpeg, что и записывал.
 
@@ -4586,7 +4617,7 @@ class VelixApp(ctk.CTk):
         if recorder.FFMPEG is None:
             return None
 
-        куда = путь.with_name(f"{путь.stem}-x{скорость:g}{путь.suffix}")
+        куда = self._faster_name(путь, скорость)
         if куда.exists() and куда.stat().st_size:
             return куда
         try:

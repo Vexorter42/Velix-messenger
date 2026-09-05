@@ -38,7 +38,7 @@ def check(name, ok, detail=""):
 
 def fresh_sandbox():
     if SANDBOX.exists():
-        shutil.rmtree(SANDBOX)
+        shutil.rmtree(SANDBOX, ignore_errors=True)
     SANDBOX.mkdir()
     for name in ("server.py", "storage.py", "protocol.py", "media.py", "accounts.py",
              "push.py", "i18n.py", "linkpreview.py", "mediatools.py"):

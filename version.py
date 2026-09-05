@@ -11,7 +11,7 @@ android/AndroidManifest.xml.
 средние — последнюю (0.2.2.0 → 0.2.2.1).
 """
 
-VERSION = "0.3.0.0"
+VERSION = "0.3.0.1"
 
 
 def as_tuple(text):

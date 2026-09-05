@@ -63,7 +63,7 @@ check("kind-plain-song-stays-a-file",
       protocol.claimed_kind("песня.mp3", None) == "file")
 
 if SANDBOX.exists():
-    shutil.rmtree(SANDBOX)
+    shutil.rmtree(SANDBOX, ignore_errors=True)
 SANDBOX.mkdir()
 for name in ("server.py", "storage.py", "protocol.py", "media.py", "accounts.py",
              "push.py", "i18n.py", "linkpreview.py", "mediatools.py"):

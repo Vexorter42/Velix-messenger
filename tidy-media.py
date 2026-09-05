@@ -12,6 +12,7 @@
 всё-таки снимите: ~/velix/backup.sh — это полминуты.
 """
 
+import asyncio
 import sys
 from pathlib import Path
 
@@ -34,7 +35,7 @@ def сохранить(данные, suffix):
     return новый
 
 
-def главное():
+async def главное():
     if not mediatools.available():
         print("ffmpeg рядом не нашёлся — делать нечего")
         return 1
@@ -65,12 +66,12 @@ def главное():
         новый_id = None
 
         if вид == "voice" and not волна:
-            новая_волна = mediatools.waveform(данные, хвост) or None
+            новая_волна = await mediatools.waveform(данные, хвост) or None
             print(f"  {номер}: голос {было} байт — волна"
                   + (" посчитана" if новая_волна else " не вышла"))
 
         if вид == "circle":
-            ровный = mediatools.tidy_circle(данные, хвост)
+            ровный = await mediatools.tidy_circle(данные, хвост)
             if ровный and not ПОСМОТРЕТЬ:
                 новый_id = сохранить(ровный, ".mp4")
                 данные = ровный
@@ -80,7 +81,7 @@ def главное():
                   + ("" if ровный else " (пересобрать не вышло)"))
 
             if not обложка:
-                кадр = mediatools.circle_poster(данные, ".mp4")
+                кадр = await mediatools.circle_poster(данные, ".mp4")
                 if кадр and not ПОСМОТРЕТЬ:
                     новая_обложка = сохранить(кадр, ".jpg")
                 print(f"       обложка: {'снята' if кадр else 'не вышла'}")
@@ -114,4 +115,4 @@ def главное():
 
 
 if __name__ == "__main__":
-    sys.exit(главное())
+    sys.exit(asyncio.run(главное()))

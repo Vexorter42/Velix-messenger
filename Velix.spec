@@ -33,6 +33,9 @@ for пакет in ('customtkinter', 'darkdetect', 'ffpyplayer'):
     'numpy', 'scipy', 'pandas', 'matplotlib', 'IPython', 'notebook',
     'pytest', 'setuptools', 'pip', 'wheel',
     'PyQt5', 'PyQt6', 'PySide2', 'PySide6', 'wx',
+    # kivyclient.py — отдельный клиент и в Velix.exe не входит, а Kivy везёт
+    # с собой SDL2, GLEW и ANGLE: попади он сюда, сборка потолстела бы вдвое
+    'kivy',
 ]
 
 # Отдельные файлы, которые ни на что не влияют:

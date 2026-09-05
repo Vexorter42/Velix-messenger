@@ -1196,14 +1196,14 @@ async def handle_media(websocket, user, message):
     волна, обложка = None, None
     хвост = Path(name).suffix.lower() or ".bin"
     if kind == "voice":
-        волна = await asyncio.to_thread(mediatools.waveform, packed, хвост)
+        волна = await mediatools.waveform(packed, хвост)
     elif kind == "circle":
-        ровный = await asyncio.to_thread(mediatools.tidy_circle, packed, хвост)
+        ровный = await mediatools.tidy_circle(packed, хвост)
         if ровный:
             packed = ровный
             name = Path(name).with_suffix(".mp4").name
             хвост = ".mp4"
-        обложка = await asyncio.to_thread(mediatools.circle_poster, packed, хвост)
+        обложка = await mediatools.circle_poster(packed, хвост)
 
     message_id, media_id, created_at, poster_id = await storage.save_media(
         user["id"], user["name"], kind, name, packed, conversation, reply_to,

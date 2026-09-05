@@ -39,7 +39,7 @@ check("recovery-unique", accounts.new_recovery() != accounts.new_recovery())
 check("recovery-no-lookalikes", not set("O0I1") & set(code.replace("-", "")), code)
 
 if SANDBOX.exists():
-    shutil.rmtree(SANDBOX)
+    shutil.rmtree(SANDBOX, ignore_errors=True)
 SANDBOX.mkdir()
 for name in ("server.py", "storage.py", "protocol.py", "media.py", "accounts.py",
              "push.py", "i18n.py", "linkpreview.py", "mediatools.py", "recover.py"):
